@@ -784,29 +784,38 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
         // Compute Newton step
         FLOATVec s_newt(n, 0.0f);
         float norm_newt = 0.0f;
-        if (hessian_mode != "default") {
-            // Estimate Hessian eigenvalues. If the smallest eigenvalue is
-            // strongly negative, CG will immediately detect indefiniteness
-            // and fall back to Cauchy. Skip CG in that case.
+        if (hessian_mode != "default") {  // --- full / block-diagonal Hessian ---
+            // Estimate Hessian eigenvalues for diagnostic output.
+            // The inner CG loop handles indefiniteness naturally via
+            // the pHp < 0 check, falling back to the Cauchy step.
             float eig_min = 0.0f, eig_max = 0.0f;
             estimate_hessian_eigenvalues(min(5, n), &eig_min, &eig_max);
-            if (eig_min < -1.0e-4f) {
-                cerr << "DEBUG: CG skip (indefinite H, eig_min=" << eig_min
-                     << "), fall back to Cauchy" << endl;
-            } else {
-            cerr << "DEBUG: CG solver start, n=" << n << " delta=" << delta << endl;
-            // Conjugate gradient: solve H * s = -g
-            // H should be SPD; if not, CG may fail, fall back to diagonal
+            cerr << "DEBUG: CG solver start (Jacobi PC), n=" << n << " delta=" << delta
+                 << " eig_min=" << eig_min << " eig_max=" << eig_max << endl;
+            // Preconditioned conjugate gradient: solve H * s = -g
+            // with Jacobi preconditioner M = diag(H).
+            // The PCG algorithm replaces the r·r / p·H·p ratio with
+            // r·z / p·H·p where z = M^{-1}·r = r_i / H_ii.
+            // This normalizes by per-variable curvature, which varies
+            // by ~10,000× between translation (1.0 Å) and torsion (10°)
+            // DOF types, dramatically improving convergence.
             int cg_iter;
             const int max_cg = n;
-            float alpha, beta, rdot, rdot_new;
-            FLOATVec r(n, 0.0f), p(n, 0.0f), Hp(n, 0.0f);
+            float alpha, beta, rz, rz_new;
+            FLOATVec r(n, 0.0f), z(n, 0.0f), p(n, 0.0f), Hp(n, 0.0f);
+            // Preconditioner: M = diag(H), M^{-1}_i = 1/max(|H_ii|, eps)
+            FLOATVec pc(n, 0.0f);
+            for (i = 0; i < n; i++) {
+                float hii = (i < (int)H.size() && i < (int)H[i].size()) ? H[i][i] : Hdiag[i];
+                pc[i] = 1.0f / max(fabs(hii), 1.0e-12f);
+            }
             for (i = 0; i < n; i++) {
                 r[i] = -g[i];
-                p[i] = r[i];
+                z[i] = pc[i] * r[i];   // z = M^{-1} * r
+                p[i] = z[i];
             }
-            rdot = 0.0f;
-            for (i = 0; i < n; i++) rdot += r[i] * r[i];
+            rz = 0.0f;
+            for (i = 0; i < n; i++) rz += r[i] * z[i];
             bool cg_converged = false;
             for (cg_iter = 0; cg_iter < max_cg; cg_iter++) {
                 // H * p
@@ -824,7 +833,7 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                 // Check for non-positive-definite Hessian.
                 // pHp = p^T * H * p.  If pHp < 0, H is not positive definite
                 // (negative curvature direction). CG would compute a negative
-                // step alpha = rdot / pHp, pushing the solution in the wrong
+                // step alpha = rz / pHp, pushing the solution in the wrong
                 // direction. Fall back to steepest descent (Cauchy step).
                 if (fabs(pHp) < 1.0e-20f || pHp < 0.0f) {
                     if (pHp < 0.0f) {
@@ -833,17 +842,24 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                     }
                     break;
                 }
-                alpha = rdot / pHp;
+                alpha = rz / pHp;
                 for (i = 0; i < n; i++) {
                     s_newt[i] += alpha * p[i];
                     r[i] -= alpha * Hp[i];
                 }
-                rdot_new = 0.0f;
-                for (i = 0; i < n; i++) rdot_new += r[i] * r[i];
-                if (rdot_new < 1.0e-20f) { cg_converged = true; break; }
-                beta = rdot_new / rdot;
-                rdot = rdot_new;
-                for (i = 0; i < n; i++) p[i] = r[i] + beta * p[i];
+                // Preconditioner solve: z_new = M^{-1} * r
+                FLOATVec z_new(n, 0.0f);
+                float rnorm = 0.0f;
+                for (i = 0; i < n; i++) {
+                    z_new[i] = pc[i] * r[i];
+                    rnorm += r[i] * r[i];
+                }
+                if (rnorm < 1.0e-20f) { cg_converged = true; break; }
+                rz_new = 0.0f;
+                for (i = 0; i < n; i++) rz_new += r[i] * z_new[i];
+                beta = rz_new / rz;
+                rz = rz_new;
+                for (i = 0; i < n; i++) p[i] = z_new[i] + beta * p[i];
             }
             cerr << "DEBUG: CG done, converged=" << cg_converged << " n_newt=" << norm_newt << endl;
             norm_newt = 0.0f;
@@ -852,7 +868,7 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
             // If CG didn't converge or gave a bad step, fall back to Cauchy
             if (!cg_converged || norm_newt > 100.0f * delta || norm_newt < 1.0e-20f) {
                 // Fall back to Cauchy step (already in s)
-            } else if (norm_newt <= delta) {
+            } else if (norm_newt <= delta) {  // use full Newton step
                 s = s_newt;
             } else {
                 // Dogleg method: interpolate between Cauchy and Newton steps.
@@ -899,9 +915,8 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                     }
                 }
                 // Fallback: if computation fails, keep Cauchy step
-            }
-        }
-        } else {
+            }  // end if-elseif-else (CG/convergence/dogleg)
+        } else {  // --- diagonal Hessian ---
             // Diagonal Hessian: s_newt_i = -g_i / H_ii
             for (i = 0; i < n; i++) {
                 s_newt[i] = -g[i] / max(Hdiag[i], 1.0e-12f);
@@ -912,8 +927,8 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
             // Dogleg: if Newton step is within trust region, use it
             if (norm_newt <= delta) {
                 s = s_newt;
-            }
-        }
+            }  // end norm check (diagonal)
+        }  // end hessian_mode else
 
         // ---- 2b) Evaluate trial point ----
         // cerr << "DEBUG: 2b start, n=" << n << " delta=" << delta << endl;
