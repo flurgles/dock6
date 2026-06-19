@@ -106,23 +106,44 @@ BOBYQA_Minimizer::input_parameters(Parameter_Reader & parm,
                     exit(1);
                 }
 
-                //                 // Global optimization features (py_bobyqa-inspired) (commented out - TODO: implement properly)
-                // use_adaptive_restart = (parm.query_param("bobyqa_use_adaptive_restart", "no", "yes no") == "yes") ? true : false;
-                // max_restarts = atoi(parm.query_param("bobyqa_max_restarts", "3").c_str());
-                // if (max_restarts < 0) {
-                //     cout << "ERROR:  bobyqa_max_restarts must be non-negative. Program will terminate." << endl;
-                //     exit(1);
-                // }
-                // restart_delta_scale = atof(parm.query_param("bobyqa_restart_delta_scale", "5.0").c_str());
-                // if (restart_delta_scale <= 0.0) {
-                //     cout << "ERROR:  bobyqa_restart_delta_scale must be positive. Program will terminate." << endl;
-                //     exit(1);
-                // }
-                // noise_threshold = atof(parm.query_param("bobyqa_noise_threshold", "0.1").c_str());
-                // if (noise_threshold < 0.0) {
-                //     cout << "ERROR:  bobyqa_noise_threshold must be non-negative. Program will terminate." << endl;
-                //     exit(1);
-                // }
+                // Adaptive restart on stagnation
+                use_adaptive_restart = (parm.query_param("bobyqa_use_adaptive_restart", "no", "yes no") == "yes") ? true : false;
+                max_restarts = atoi(parm.query_param("bobyqa_max_restarts", "3").c_str());
+                if (max_restarts < 0) {
+                    cout << "ERROR:  bobyqa_max_restarts must be non-negative. Program will terminate." << endl;
+                    exit(1);
+                }
+                restart_delta_scale = atof(parm.query_param("bobyqa_restart_delta_scale", "1.0").c_str());
+                if (restart_delta_scale <= 0.0) {
+                    cout << "ERROR:  bobyqa_restart_delta_scale must be positive. Program will terminate." << endl;
+                    exit(1);
+                }
+                stagnation_window = atoi(parm.query_param("bobyqa_stagnation_window", "30").c_str());
+                if (stagnation_window < 5) {
+                    cout << "ERROR:  bobyqa_stagnation_window must be >= 5. Program will terminate." << endl;
+                    exit(1);
+                }
+                stagnation_tol = atof(parm.query_param("bobyqa_stagnation_tol", "0.001").c_str());
+                if (stagnation_tol < 0.0f) {
+                    cout << "ERROR:  bobyqa_stagnation_tol must be non-negative. Program will terminate." << endl;
+                    exit(1);
+                }
+                stagnation_abs_tol = atof(parm.query_param("bobyqa_stagnation_abs_tol", "0.1").c_str());
+                if (stagnation_abs_tol < 0.0f) {
+                    cout << "ERROR:  bobyqa_stagnation_abs_tol must be non-negative. Program will terminate." << endl;
+                    exit(1);
+                }
+                restart_min_delta_ratio = atof(parm.query_param("bobyqa_restart_min_delta_ratio", "0.05").c_str());
+                if (restart_min_delta_ratio < 0.0f || restart_min_delta_ratio > 1.0f) {
+                    cout << "ERROR:  bobyqa_restart_min_delta_ratio must be in [0,1]. Program will terminate." << endl;
+                    exit(1);
+                }
+                restart_perturbation = atof(parm.query_param("bobyqa_restart_perturbation", "0.05").c_str());
+                if (restart_perturbation < 0.0f) {
+                    cout << "ERROR:  bobyqa_restart_perturbation must be non-negative. Program will terminate." << endl;
+                    exit(1);
+                }
+                restart_from_best = (parm.query_param("bobyqa_restart_from_best", "yes", "yes no") == "yes") ? true : false;
 
                 if (!use_min_flex_growth_ramp) {
                     score_converge =
@@ -471,6 +492,7 @@ BOBYQA_Minimizer::initialize()
     // restart_count = 0; (commented out - TODO: implement properly)
     // ratio_history.clear(); (commented out - TODO: implement properly)
     fopt_history.clear();
+    restart_count = 0;
     diagnostics = ConvergenceDiagnostics();
 }
 
@@ -1055,10 +1077,30 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
         // Standard BOBYQA convergence: trust region has shrunk to minimum radius.
         if (delta <= rho_end_actual && iter > 5) break;
 
-        // Track best-score history for future adaptive-restart use.
-        // Not used for convergence — the delta check is sufficient.
-        while ((int)fopt_history.size() >= 20) fopt_history.pop_front();
+        // Track best-score history for adaptive-restart use.
+        while ((int)fopt_history.size() >= stagnation_window) fopt_history.pop_front();
         fopt_history.push_back(fopt);
+
+        // ---- 2i) Adaptive restart on stagnation ----
+        // If the best score has not improved meaningfully for a sustained
+        // window, reset the trust region and rebuild the model around xopt.
+        // This gives BOBYQA a chance to escape a poor local quadratic model.
+        if (use_adaptive_restart && restart_count < max_restarts &&
+            (int)fopt_history.size() == stagnation_window &&
+            delta <= rho_beg_actual * restart_min_delta_ratio) {
+            float f_min = *min_element(fopt_history.begin(), fopt_history.end());
+            float f_max = *max_element(fopt_history.begin(), fopt_history.end());
+            float range = f_max - f_min;
+            float scale = max(1.0f, fabs(f_min));
+            if (range < stagnation_abs_tol || range / scale < stagnation_tol) {
+                perform_adaptive_restart(score, mol, ref_mol, tmp_mol, rmsd_ref, best_mol,
+                                         trans_step_size, rot_step_size, tors_step_size,
+                                         rho_beg_actual);
+                fopt_history.clear();
+                diagnostics.restarts = restart_count;
+                continue;
+            }
+        }
     }
 
     // Record convergence diagnostics
@@ -1328,6 +1370,116 @@ BOBYQA_Minimizer::rescue(Base_Score & score, DOCKMol & mol, DOCKMol & ref_mol,
     // Rebuild full Hessian if using full quadratic model.
     // The old off-diagonal elements are from the degenerate interpolation set
     // and would mislead the CG solver. Rebuild from fresh corner evaluations.
+    if (use_full_quadratic) {
+        build_full_model(score, ref_mol, tmp_mol, rmsd_ref, best_mol,
+                         trans_step_size, rot_step_size, tors_step_size);
+    }
+}
+
+/**********************************************************************/
+// Adaptive restart: escape stagnation by resetting the trust region to
+// restart_delta_scale * rho_beg and rebuilding the interpolation set
+// around the current best point. This gives BOBYQA a fresh quadratic
+// model when progress has plateaued.
+/**********************************************************************/
+void
+BOBYQA_Minimizer::perform_adaptive_restart(Base_Score & score, DOCKMol & mol,
+                                            DOCKMol & ref_mol, DOCKMol & tmp_mol,
+                                            DOCKMol & rmsd_ref, DOCKMol & best_mol,
+                                            float trans_step_size, float rot_step_size,
+                                            float tors_step_size, float rho_beg_actual)
+{
+    cout << "BOBYQA ADAPTIVE RESTART " << (restart_count + 1)
+         << ": stagnation detected, delta=" << delta
+         << ", fopt=" << fopt << endl;
+
+    int i;
+    restart_count++;
+
+    // Reset trust region to a multiple of the initial radius.
+    // Default restart_delta_scale = 1.0 gives a soft restart at rho_beg.
+    delta = rho_beg_actual * restart_delta_scale;
+    delta = min(delta, rho_beg_actual * 10.0f);
+
+    // Rebuild interpolation set around current best point with the new radius.
+    xpts[0] = xopt;
+    fvals[0] = fopt;
+
+    int n_axis_restart = min(n, (nptmax - 1) / 2);
+
+    for (i = 0; i < n_axis_restart; i++) {
+        int idx_p = 1 + i;
+        xpts[idx_p] = xopt;
+        xpts[idx_p][i] += delta;
+
+        if (eval_score(score, ref_mol, tmp_mol, xpts[idx_p],
+                       trans_step_size, rot_step_size, tors_step_size)) {
+            fvals[idx_p] = tmp_mol.current_score + tmp_mol.internal_energy;
+            if (restrained_min) {
+                fvals[idx_p] += coefficient_restraint * calc_active_rmsd2(rmsd_ref, tmp_mol);
+            }
+        } else {
+            fvals[idx_p] = fopt + 1000.0f;
+        }
+
+        int idx_m = 1 + n_axis_restart + i;
+        if (idx_m < nptmax) {
+            xpts[idx_m] = xopt;
+            xpts[idx_m][i] -= delta;
+
+            if (eval_score(score, ref_mol, tmp_mol, xpts[idx_m],
+                           trans_step_size, rot_step_size, tors_step_size)) {
+                fvals[idx_m] = tmp_mol.current_score + tmp_mol.internal_energy;
+                if (restrained_min) {
+                    fvals[idx_m] += coefficient_restraint * calc_active_rmsd2(rmsd_ref, tmp_mol);
+                }
+            } else {
+                fvals[idx_m] = fopt + 1000.0f;
+            }
+        }
+    }
+
+    // Find best point among restart points (axis evaluations may have found
+    // something better than the previous xopt).
+    kopt = 0;
+    for (i = 0; i < nptmax; i++) {
+        if (fvals[i] < fopt) {
+            fopt = fvals[i];
+            xopt = xpts[i];
+            kopt = i;
+        }
+    }
+    // Make sure best_mol corresponds to the chosen xopt.
+    if (eval_score(score, ref_mol, tmp_mol, xopt,
+                   trans_step_size, rot_step_size, tors_step_size)) {
+        copy_crds(best_mol, tmp_mol);
+    }
+    xpts[0] = xopt;
+    fvals[0] = fopt;
+    kopt = 0;
+
+    // Recompute diagonal gradient and Hessian from the new axis points.
+    float inv_delta2 = 1.0f / (delta * delta);
+    for (i = 0; i < n_axis_restart; i++) {
+        float fp = fvals[1 + i];
+        float fm = fvals[1 + n_axis_restart + i];
+        g[i] = (fp - fm) / (2.0f * delta);
+        Hdiag[i] = (fp + fm - 2.0f * fopt) * inv_delta2;
+        if (Hdiag[i] < 1.0e-12f) Hdiag[i] = 1.0e-12f;
+    }
+    for (i = n_axis_restart; i < n; i++) {
+        g[i] = 0.0f;
+        Hdiag[i] = 1.0f;
+    }
+
+    // Clear off-diagonal Hessian before optional rebuild.
+    if (use_full_quadratic) {
+        for (i = 0; i < n; i++) {
+            std::fill(H[i].begin(), H[i].end(), 0.0f);
+        }
+    }
+
+    // Rebuild full Hessian if using full quadratic model.
     if (use_full_quadratic) {
         build_full_model(score, ref_mol, tmp_mol, rmsd_ref, best_mol,
                          trans_step_size, rot_step_size, tors_step_size);

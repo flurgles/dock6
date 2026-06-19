@@ -22,6 +22,15 @@ class           BOBYQA_Minimizer : public Minimizer {
     bool            use_full_quadratic;  // enable full quadratic model (off-diagonal Hessian)
     bool            use_multi_start;     // enable multi-start with random restarts
     int             multi_start_restarts; // number of random restarts for multi-start
+    bool            use_adaptive_restart; // enable adaptive restart on stagnation
+    int             max_restarts;         // maximum number of adaptive restarts
+    float           restart_delta_scale;  // factor to scale rho_beg on restart
+    int             stagnation_window;    // iterations without fopt improvement to trigger restart
+    float           stagnation_tol;       // relative tolerance for stagnation (default 0.001)
+    float           stagnation_abs_tol;   // absolute tolerance for stagnation (default 0.1)
+    float           restart_min_delta_ratio; // only restart once delta/rho_beg <= this (default 0.05)
+    float           restart_perturbation; // random perturbation scale for restart center (default 0.05)
+    bool            restart_from_best;    // restart from best point seen (yes) or current xopt (no)
 
     void            input_parameters(Parameter_Reader & parm,
                                      bool flexible_ligand, bool genetic_algorithm,
@@ -53,13 +62,10 @@ class           BOBYQA_Minimizer : public Minimizer {
     float            fnew_val;    // function value at last accepted step
     std::deque<float> fopt_history; // sliding window of best scores for stall detection
 
-    // Global optimization: noise tracking (kept for compilation, not actively used)
-    float           noise_level;         // estimated noise in objective function
-    float           noise_threshold;     // threshold for noise classification
-    // int             noise_window;        // window size for noise estimation
-    // std::vector<float> ratio_history;   // recent ratio values for noise estimation
-    // int             stagnation_count;    // consecutive iterations with poor progress
-    // int             restart_count;       // number of restarts performed
+    // Global optimization: adaptive restart state
+    int             restart_count;       // number of restarts performed
+    float           noise_level;         // estimated noise in objective function (placeholder)
+    float           noise_threshold;     // threshold for noise classification (placeholder)
 
     // Convergence diagnostics (minimal for compilation)
     struct ConvergenceDiagnostics {
@@ -75,6 +81,9 @@ class           BOBYQA_Minimizer : public Minimizer {
         std::string termination_reason = "";
     } diagnostics;
 
+    // Adaptive restart on stagnation
+    void            perform_adaptive_restart(Base_Score &, DOCKMol &, DOCKMol &, DOCKMol &, DOCKMol &, DOCKMol &,
+                                              float, float, float, float);
     // RESCUE: recover from degenerate interpolation set
     void            rescue(Base_Score &, DOCKMol &, DOCKMol &, DOCKMol &, DOCKMol &, DOCKMol &,
                            float, float, float, float);
