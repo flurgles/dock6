@@ -98,7 +98,11 @@ BOBYQA_Minimizer::input_parameters(Parameter_Reader & parm,
 
                 // Configurable advanced features
                 use_rescue = (parm.query_param("bobyqa_use_rescue", "yes", "yes no") == "yes") ? true : false;
-                use_full_quadratic = (parm.query_param("bobyqa_use_full_quadratic", "no", "yes no") == "yes") ? true : false;
+                hessian_mode = parm.query_param("bobyqa_hessian_mode", "default");
+                if (hessian_mode != "default" && hessian_mode != "block_diag" && hessian_mode != "full_quad") {
+                    cout << "ERROR:  bobyqa_hessian_mode must be 'default', 'block_diag', or 'full_quad'.  Program will terminate." << endl;
+                    exit(1);
+                }
                 use_multi_start = (parm.query_param("bobyqa_use_multi_start", "no", "yes no") == "yes") ? true : false;
                 multi_start_restarts = atoi(parm.query_param("bobyqa_multi_start_restarts", "3").c_str());
                 if (multi_start_restarts < 0) {
@@ -517,7 +521,7 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
         cerr << "ERROR: BOBYQA: zero degrees of freedom" << endl;
         return 1.0e10f;
     }
-    cerr << "DEBUG: do_minimize entry, n=" << n << " use_full_quad=" << use_full_quadratic << " use_multi_start=" << use_multi_start << endl;
+    cerr << "DEBUG: do_minimize entry, n=" << n << " hessian_mode=" << hessian_mode << " use_multi_start=" << use_multi_start << endl;
 
     // -- Multi-start wrapper --
     // If enabled, delegate to multi_start_minimize() which calls back into
@@ -571,7 +575,7 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
     fvals.assign(np, PENALTY_SCORE);
     g.resize(n, 0.0f);
     Hdiag.resize(n, 0.0f);
-    if (use_full_quadratic) {
+    if (hessian_mode != "default") {
         H.resize(n);
         for (i = 0; i < n; i++) H[i].resize(n, 0.0f);
     }
@@ -719,7 +723,7 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
     }
 
     // Full quadratic model: build off-diagonal elements if enabled
-    if (use_full_quadratic) {
+    if (hessian_mode != "default") {
         cerr << "DEBUG: Calling build_full_model at PRELIM" << endl;
         build_full_model(score, ref_mol, tmp_mol, rmsd_ref, best_mol,
                          trans_step_size, rot_step_size, tors_step_size);
@@ -750,7 +754,7 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
         // Compute Cauchy point (steepest descent)
         FLOATVec s(n, 0.0f);
         float gHg = 0.0f;
-        if (use_full_quadratic) {
+        if (hessian_mode != "default") {
             // cerr << "DEBUG: gHg full_quad computation, n=" << n << endl;
             // g^T * H * g with full Hessian
             for (i = 0; i < n; i++) {
@@ -780,7 +784,7 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
         // Compute Newton step
         FLOATVec s_newt(n, 0.0f);
         float norm_newt = 0.0f;
-        if (use_full_quadratic) {
+        if (hessian_mode != "default") {
             // Estimate Hessian eigenvalues. If the smallest eigenvalue is
             // strongly negative, CG will immediately detect indefiniteness
             // and fall back to Cauchy. Skip CG in that case.
@@ -931,7 +935,7 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
 
         // Predicted reduction = m(0) - m(s)
         dPred = 0.0f;
-        if (use_full_quadratic) {
+        if (hessian_mode != "default") {
             // dPred = -[g^T s + 0.5 * s^T * H * s]
             float gs = 0.0f, sHs = 0.0f;
             for (i = 0; i < n; i++) {
@@ -969,7 +973,7 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
         if (ratio > 0.0f) {
             // cerr << "DEBUG: inside 2d accept" << endl;
             // Save state before updating fopt for model update
-            if (use_full_quadratic) {
+            if (hessian_mode != "default") {
                 // cerr << "DEBUG: copy s_step" << endl;
                 fopt_before = fopt;
                 s_step = s;
@@ -1073,7 +1077,7 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
 
         // ---- 2g) Update model (gradient and Hessian) ----
         if (ratio > 0.0f) {
-            if (use_full_quadratic) {
+            if (hessian_mode != "default") {
                 update_model_full(score, ref_mol, tmp_mol, rmsd_ref, best_mol,
                                   trans_step_size, rot_step_size, tors_step_size,
                                   fopt, fnew);
@@ -1174,7 +1178,7 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
     Hdiag.clear();
     xopt.clear();
     s_step.clear();
-    if (use_full_quadratic) {
+    if (hessian_mode != "default") {
         H.clear();
     }
 
@@ -1185,7 +1189,7 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
 // Build full quadratic model (off-diagonal Hessian elements)
 // Uses paired perturbations: evaluate along (i,j) directions and compute
 // H[i][j] = [f(x+rho*ei+rho*ej) - f(x+rho*ei) - f(x+rho*ej) + f(x)] / rho^2
-// Only called when use_full_quadratic is true and npt >= (n+1)*(n+2)/2
+// Only called when hessian_mode != "default" and npt >= (n+1)*(n+2)/2
 /**********************************************************************/
 void
 BOBYQA_Minimizer::build_full_model(Base_Score & score, DOCKMol & ref_mol,
@@ -1210,48 +1214,80 @@ BOBYQA_Minimizer::build_full_model(Base_Score & score, DOCKMol & ref_mol,
     //   x_corner = xopt + rho_eff * (e_i + e_j) for each pair (i,j)
     //   H[i][j] = (f(corner) - f(xopt+rho*e_i) - f(xopt+rho*e_j) + fopt) / rho^2
     //
+    // When hessian_mode == "block_diag", only pairs (i,j) within the same DOF
+    // block are computed: translation (0-2), rotation (3-5), torsion (6..n-1).
+    // Cross-block coupling is assumed weak and set to zero.
+    //
     // Cap at max_corners off-diagonal pairs to balance cost vs accuracy.
     // Scale the cap with DOFs: small systems (< 25 DOF) get all pairs;
     // larger systems get more pairs (10*n) up to a hard cap of 500.
-    // The old fixed cap of 300 meant n > 31 got only ~25% of off-diagonals.
     int max_corners = min(500, max(10 * n, 300));
     int n_pairs = 0;
     int pair_cap = min(n * (n - 1) / 2, max_corners);
-    for (i = 0; i < n && n_pairs < pair_cap; i++) {
-        for (j = i + 1; j < n && n_pairs < pair_cap; j++) {
-            // Only evaluate pairs with significant diagonal elements
-            if (Hdiag[i] < 1.0e-10f && Hdiag[j] < 1.0e-10f) continue;
-            n_pairs++;
-            
-            // Build corner point: xopt + rho * (e_i + e_j)
-            FLOATVec corner(n, 0.0f);
-            for (int k = 0; k < n; k++) {
-                corner[k] = xopt[k];
-                if (k == i) corner[k] += rho_eff;
-                if (k == j) corner[k] += rho_eff;
+    
+    // Define DOF block boundaries: translation (0-2), rotation (3-5), torsion (6..n-1)
+    int block_start[3] = {0, 3, 6};
+    int block_end[3]   = {3, 6, n};
+    
+    // Helper lambda: evaluate a corner point and set H[i][j] and H[j][i]
+    auto eval_corner = [&](int ii, int jj) -> void {
+        FLOATVec corner(n, 0.0f);
+        for (int k = 0; k < n; k++) {
+            corner[k] = xopt[k];
+            if (k == ii) corner[k] += rho_eff;
+            if (k == jj) corner[k] += rho_eff;
+        }
+        DOCKMol eval_mol;
+        copy_molecule(eval_mol, ref_mol);
+        float f_corner = 0.0f;
+        if (eval_score(score, ref_mol, eval_mol, corner,
+                       trans_step_size, rot_step_size, tors_step_size)) {
+            f_corner = eval_mol.current_score + eval_mol.internal_energy;
+            if (restrained_min) {
+                f_corner += coefficient_restraint * calc_active_rmsd2(rmsd_ref, eval_mol);
             }
-            
-            // Evaluate at corner
-            DOCKMol eval_mol;
-            copy_molecule(eval_mol, ref_mol);
-            float f_corner = 0.0f;
-            if (eval_score(score, ref_mol, eval_mol, corner,
-                           trans_step_size, rot_step_size, tors_step_size)) {
-                f_corner = eval_mol.current_score + eval_mol.internal_energy;
-                if (restrained_min) {
-                    f_corner += coefficient_restraint * calc_active_rmsd2(rmsd_ref, eval_mol);
+            if (1 + ii < nptmax && 1 + jj < nptmax) {
+                float f_plus_i = fvals[1 + ii];
+                float f_plus_j = fvals[1 + jj];
+                if (f_plus_i < 1.0e5f && f_plus_j < 1.0e5f) {
+                    float H_ij = (f_corner - f_plus_i - f_plus_j + fopt) / (rho_eff * rho_eff);
+                    if (fabs(H_ij) < 1.0e-12f) H_ij = 0.0f;
+                    H[ii][jj] = H_ij;
+                    H[jj][ii] = H_ij;
                 }
-                // f(xopt+rho*e_i) and f(xopt+rho*e_j) are in fvals at 1+i and 1+j
-                if (1 + i < nptmax && 1 + j < nptmax) {
-                    float f_plus_i = fvals[1 + i];
-                    float f_plus_j = fvals[1 + j];
-                    if (f_plus_i < 1.0e5f && f_plus_j < 1.0e5f) {
-                        float H_ij = (f_corner - f_plus_i - f_plus_j + fopt) / (rho_eff * rho_eff);
-                        if (fabs(H_ij) < 1.0e-12f) H_ij = 0.0f;
-                        H[i][j] = H_ij;
-                        H[j][i] = H_ij;
+            }
+        }
+    };
+    
+    if (hessian_mode == "block_diag") {
+        // Block-diagonal: iterate within each block separately
+        for (int b = 0; b < 3; b++) {
+            for (int i = block_start[b]; i < block_end[b] && n_pairs < pair_cap; i++) {
+                for (int j = i + 1; j < block_end[b] && n_pairs < pair_cap; j++) {
+                    if (Hdiag[i] < 1.0e-10f && Hdiag[j] < 1.0e-10f) continue;
+                    n_pairs++;
+                    eval_corner(i, j);
+                }
+            }
+        }
+        // Zero out cross-block entries (defensive)
+        for (int b1 = 0; b1 < 3; b1++) {
+            for (int b2 = b1 + 1; b2 < 3; b2++) {
+                for (int i = block_start[b1]; i < block_end[b1]; i++) {
+                    for (int j = block_start[b2]; j < block_end[b2]; j++) {
+                        H[i][j] = 0.0f;
+                        H[j][i] = 0.0f;
                     }
                 }
+            }
+        }
+    } else {
+        // Full Hessian: iterate all pairs (i,j)
+        for (int i = 0; i < n && n_pairs < pair_cap; i++) {
+            for (int j = i + 1; j < n && n_pairs < pair_cap; j++) {
+                if (Hdiag[i] < 1.0e-10f && Hdiag[j] < 1.0e-10f) continue;
+                n_pairs++;
+                eval_corner(i, j);
             }
         }
     }
@@ -1259,7 +1295,7 @@ BOBYQA_Minimizer::build_full_model(Base_Score & score, DOCKMol & ref_mol,
 
 /**********************************************************************/
 // Update full quadratic model using symmetric rank-1 (SR1) update
-// Called instead of the diagonal update when use_full_quadratic is true
+// Called instead of the diagonal update when hessian_mode != "default"
 /**********************************************************************/
 void
 BOBYQA_Minimizer::update_model_full(Base_Score & score, DOCKMol & ref_mol,
@@ -1299,6 +1335,22 @@ BOBYQA_Minimizer::update_model_full(Base_Score & score, DOCKMol & ref_mol,
         for (i = 0; i < n; i++) {
             for (j = 0; j < n; j++) {
                 H[i][j] += ymHs[i] * ymHs[j] * inv_denom;
+            }
+        }
+    }
+    
+    // Enforce block-diagonal structure after SR1 update
+    if (hessian_mode == "block_diag") {
+        int block_start[3] = {0, 3, 6};
+        int block_end[3]   = {3, 6, n};
+        for (int b1 = 0; b1 < 3; b1++) {
+            for (int b2 = b1 + 1; b2 < 3; b2++) {
+                for (int ii = block_start[b1]; ii < block_end[b1]; ii++) {
+                    for (int jj = block_start[b2]; jj < block_end[b2]; jj++) {
+                        H[ii][jj] = 0.0f;
+                        H[jj][ii] = 0.0f;
+                    }
+                }
             }
         }
     }
@@ -1412,7 +1464,7 @@ BOBYQA_Minimizer::rescue(Base_Score & score, DOCKMol & mol, DOCKMol & ref_mol,
     // Rebuild full Hessian if using full quadratic model.
     // The old off-diagonal elements are from the degenerate interpolation set
     // and would mislead the CG solver. Rebuild from fresh corner evaluations.
-    if (use_full_quadratic) {
+    if (hessian_mode != "default") {
         build_full_model(score, ref_mol, tmp_mol, rmsd_ref, best_mol,
                          trans_step_size, rot_step_size, tors_step_size);
     }
@@ -1515,14 +1567,14 @@ BOBYQA_Minimizer::perform_adaptive_restart(Base_Score & score, DOCKMol & mol,
     }
 
     // Clear off-diagonal Hessian before optional rebuild.
-    if (use_full_quadratic) {
+    if (hessian_mode != "default") {
         for (i = 0; i < n; i++) {
             std::fill(H[i].begin(), H[i].end(), 0.0f);
         }
     }
 
     // Rebuild full Hessian if using full quadratic model.
-    if (use_full_quadratic) {
+    if (hessian_mode != "default") {
         build_full_model(score, ref_mol, tmp_mol, rmsd_ref, best_mol,
                          trans_step_size, rot_step_size, tors_step_size);
     }
@@ -1543,7 +1595,7 @@ BOBYQA_Minimizer::estimate_hessian_eigenvalues(int k,
     if (n <= 0) return;
 
     // ---- Diagonal model: trivially Hdiag entries ----
-    if (!use_full_quadratic || n == 1) {
+    if (hessian_mode == "default" || n == 1) {
         float emin = Hdiag[0];
         float emax = Hdiag[0];
         for (int i = 1; i < n; i++) {
@@ -1952,7 +2004,7 @@ BOBYQA_Minimizer::multi_start_minimize(Base_Score & score, DOCKMol & mol,
 //     }
     
 //     // Rebuild full Hessian if enabled
-//     if (use_full_quadratic) {
+//     if (hessian_mode != "default") {
 //         build_full_model(score, ref_mol, tmp_mol, rmsd_ref, saved_best_mol,
 //                          trans_step_size, rot_step_size, tors_step_size);
 //     }

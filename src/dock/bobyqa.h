@@ -19,7 +19,7 @@ class           BOBYQA_Minimizer : public Minimizer {
 
     // Configurable advanced features
     bool            use_rescue;          // enable RESCUE for degenerate interpolation sets
-    bool            use_full_quadratic;  // enable full quadratic model (off-diagonal Hessian)
+    std::string     hessian_mode;      // "default" (diagonal), "block_diag", or "full_quad"
     bool            use_multi_start;     // enable multi-start with random restarts
     int             multi_start_restarts; // number of random restarts for multi-start
     bool            use_adaptive_restart; // enable adaptive restart on stagnation
@@ -51,7 +51,7 @@ class           BOBYQA_Minimizer : public Minimizer {
     float            fopt;        // function value at xopt
     FLOATVec         g;           // gradient of model at xopt
     std::vector<float>  Hdiag;    // diagonal of Hessian (approximation)
-    std::vector<std::vector<float>> H;  // full Hessian matrix (when use_full_quadratic=true)
+    std::vector<std::vector<float>> H;  // Hessian matrix (when hessian_mode != "default")
     float            delta;       // trust region radius
     int              kopt;        // index of best point in interpolation set
     int              nptmax;      // maximum number of interpolation points
@@ -87,7 +87,7 @@ class           BOBYQA_Minimizer : public Minimizer {
 
     // Lanczos eigenvalue estimation on the quadratic model Hessian
     // Runs k iterations (default min(5,n)) to estimate extreme eigenvalues.
-    // For the diagonal model (use_full_quadratic=false), eigenvalues are just Hdiag entries.
+    // For the diagonal model (hessian_mode=="default"), eigenvalues are just Hdiag entries.
     void            estimate_hessian_eigenvalues(int k = 0,
                                                   float *eig_min_out = nullptr,
                                                   float *eig_max_out = nullptr);
