@@ -66,8 +66,10 @@ class           BOBYQA_Minimizer : public Minimizer {
 
     // Global optimization: adaptive restart state
     int             restart_count;       // number of restarts performed
-    float           noise_level;         // estimated noise in objective function (placeholder)
-    float           noise_threshold;     // threshold for noise classification (placeholder)
+    int             stagnation_count;    // consecutive iterations without progress
+    int             noise_window;        // number of recent ratios for noise estimation
+    float           noise_level;         // estimated noise (std dev of ratio)
+    float           noise_threshold;     // threshold for noise classification
 
     // Convergence diagnostics (minimal for compilation)
     struct ConvergenceDiagnostics {
@@ -111,11 +113,8 @@ class           BOBYQA_Minimizer : public Minimizer {
         FLOATVec vertex;
         float score;
     };
-    // Global optimization helpers (commented out - TODO: implement properly)
-    // float           estimate_noise_level();
-    // void            perform_adaptive_restart(Base_Score &, DOCKMol &, DOCKMol &, DOCKMol &, DOCKMol &,
-    //                                           float, float, float);
-    // void            record_diagnostics(const std::string & reason);
+    // Noise estimation: standard deviation of recent ratio values
+    float           estimate_noise_level();
 };
 
 #endif  // BOBYQA_H

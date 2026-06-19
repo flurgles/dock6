@@ -147,6 +147,11 @@ BOBYQA_Minimizer::input_parameters(Parameter_Reader & parm,
                     cout << "ERROR:  bobyqa_restart_perturbation must be non-negative. Program will terminate." << endl;
                     exit(1);
                 }
+                noise_threshold = atof(parm.query_param("bobyqa_noise_threshold", "0.1").c_str());
+                if (noise_threshold < 0.0f) {
+                    cout << "ERROR:  bobyqa_noise_threshold must be non-negative. Program will terminate." << endl;
+                    exit(1);
+                }
                 restart_from_best = (parm.query_param("bobyqa_restart_from_best", "yes", "yes no") == "yes") ? true : false;
 
                 if (!use_min_flex_growth_ramp) {
@@ -490,10 +495,7 @@ BOBYQA_Minimizer::initialize()
     //cout << "Initializing BOBYQA" << endl;
     srand(random_seed);
     noise_level = 0.0f;
-    noise_threshold = 0.1f;
-    // noise_window = 10; (commented out - TODO: implement properly)
-    // stagnation_count = 0; (commented out - TODO: implement properly)
-    // restart_count = 0; (commented out - TODO: implement properly)
+    stagnation_count = 0;
     ratio_history.clear();
     fopt_history.clear();
     restart_count = 0;
@@ -940,6 +942,9 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
         if (eval_score(score, ref_mol, tmp_mol, x_trial,
                        trans_step_size, rot_step_size, tors_step_size)) {
             fnew = tmp_mol.current_score + tmp_mol.internal_energy;
+            cerr << "DEBUG: trial score grid=" << tmp_mol.current_score
+                 << " internal=" << tmp_mol.internal_energy
+                 << " total=" << fnew << endl;
             if (restrained_min) {
                 fnew += coefficient_restraint * calc_active_rmsd2(rmsd_ref, tmp_mol);
             }
@@ -984,6 +989,11 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
             avg_ratio += ratio_history[ri];
         avg_ratio /= (float)ratio_history.size();
 
+        // ---- Estimate noise level (std dev of ratios) ----
+        // High noise indicates the quadratic model does not match the true
+        // landscape. Used in section 2e to suppress contraction/expansion.
+        noise_level = estimate_noise_level();
+
         // ---- 2d) Accept / reject step ----
         if (ratio > 0.0f) {
             // cerr << "DEBUG: inside 2d accept" << endl;
@@ -997,51 +1007,64 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
             // cerr << "DEBUG: copy xopt" << endl;
             xopt = x_trial;
             // cerr << "DEBUG: done copy xopt" << endl;
+            cerr << "DEBUG: accept fopt=" << fopt << " -> " << fnew
+                 << " grid=" << tmp_mol.current_score
+                 << " internal=" << tmp_mol.internal_energy << endl;
             fopt = fnew;
             // cerr << "DEBUG: end accept" << endl;
         }
 
-        // cerr << "DEBUG: section 2e" << endl;
-        // ---- 2e) Update trust region radius (standard) ----
-        bool made_progress = false;
+        // ---- 2e) Update trust region radius (noise-aware) ----
+        // When the model is noisy (ratio variance high), poor ratios reflect
+        // model mismatch rather than proximity to a minimum. In that case we
+        // suppress contraction to keep exploring. Conversely, we suppress
+        // expansion when the model is unreliable to avoid over-extrapolation.
+        //
+        // Noise level = std dev of recent ratios (estimated in section 2d).
+        bool model_unreliable = (noise_level >= noise_threshold);
         if (ratio >= eta2) {
-            // Good step: expand aggressively
-            delta = min(delta * gamma_up, rho_beg_actual * 10.0f);
-            made_progress = true;
+            if (!model_unreliable) {
+                delta = min(delta * gamma_up, rho_beg_actual * 10.0f);
+            } // else: model noisy — maintain delta, don't extrapolate
         } else if (ratio >= eta1) {
-            // Acceptable step: expand moderately
-            delta = min(delta * 1.5f, rho_beg_actual * 10.0f);
-            made_progress = true;
+            if (!model_unreliable) {
+                delta = min(delta * 1.5f, rho_beg_actual * 10.0f);
+            } // else: maintain
         } else if (ratio > 0.0f) {
-            // Acceptable step but not enough to expand
-            made_progress = true;
+            // Acceptable but insufficient for expansion — no delta change
         } else if (ratio < eta1) {
-            // Poor step: contract
-            // If the model has been consistently poor (low avg_ratio over the
-            // sliding window), contract more aggressively to recover faster.
-            if (avg_ratio < 0.15f && (int)ratio_history.size() >= max_ratio_window) {
-                delta *= gamma_down * gamma_down;  // double contraction
-            } else {
-                delta *= gamma_down;
-            }
-            if (delta < rho_end_actual) delta = rho_end_actual;
+            // Poor step: contract only if model is reliable.
+            // When the model is noisy, the poor ratio is model mismatch,
+            // not convergence — so keep delta large to collect better data.
+            if (!model_unreliable) {
+                if (avg_ratio < 0.15f && (int)ratio_history.size() >= max_ratio_window) {
+                    delta *= gamma_down * gamma_down;  // double contraction
+                } else {
+                    delta *= gamma_down;
+                }
+                if (delta < rho_end_actual) delta = rho_end_actual;
+            } // else: maintain delta, model needs more exploration
         }
 
-        // cerr << "DEBUG: stagnation check, count=" << stagnation_count << endl; (commented out - TODO: implement properly)
-        // ---- Stagnation detection and adaptive restart ---- (commented out - TODO: implement properly)
-        // if (!made_progress) {
-        //     stagnation_count++;
-        // } else {
-        //     stagnation_count = 0;
-        // }
-        //
-        // // Trigger adaptive restart on stagnation
-        // if (use_adaptive_restart && stagnation_count >= 5 && restart_count < max_restarts) {
-        //     perform_adaptive_restart(score, mol, ref_mol, tmp_mol, rmsd_ref,
-        //                              trans_step_size, rot_step_size, tors_step_size);
-        //     // After restart, continue to next iteration with new state
-        //     continue;
-        // }
+        // ---- 2e.2) Track consecutive poor steps for adaptive restart ----
+        if (ratio < eta1) {
+            stagnation_count++;
+        } else {
+            stagnation_count = 0;
+        }
+
+        // If the model has been consistently poor, restart with a fresh
+        // interpolation set at larger trust radius. This gives the quadratic
+        // model a clean slate when it has clearly broken down.
+        if (use_adaptive_restart && stagnation_count >= 5 &&
+            restart_count < max_restarts && delta > rho_end_actual * 2.0f) {
+            perform_adaptive_restart(score, mol, ref_mol, tmp_mol, rmsd_ref, best_mol,
+                                     trans_step_size, rot_step_size, tors_step_size,
+                                     rho_beg_actual);
+            fopt_history.clear();
+            diagnostics.restarts = restart_count;
+            continue;
+        }
 
         cerr << "DEBUG: section 2f, np=" << np << " xpts.size=" << xpts.size() << endl;
         // ---- 2f) Update interpolation set (farthest-point replacement) ----
@@ -1087,6 +1110,7 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                 rescue(score, mol, ref_mol, tmp_mol, rmsd_ref, best_mol,
                        trans_step_size, rot_step_size, tors_step_size,
                        rho_beg_actual);
+                cerr << "DEBUG: after rescue fopt=" << fopt << endl;
             }
         }
 
@@ -1563,6 +1587,9 @@ BOBYQA_Minimizer::perform_adaptive_restart(Base_Score & score, DOCKMol & mol,
                    trans_step_size, rot_step_size, tors_step_size)) {
         copy_crds(best_mol, tmp_mol);
     }
+    cerr << "DEBUG: restart fopt=" << fopt
+         << " grid=" << tmp_mol.current_score
+         << " internal=" << tmp_mol.internal_energy << endl;
     xpts[0] = xopt;
     fvals[0] = fopt;
     kopt = 0;
@@ -1914,30 +1941,28 @@ BOBYQA_Minimizer::multi_start_minimize(Base_Score & score, DOCKMol & mol,
 
 /**********************************************************************/
 // Estimate noise level from ratio history
-// Returns standard deviation of ratio values
+// Returns standard deviation of recent ratio values.
+// High noise indicates model mismatch (unreliable quadratic model).
+// The ratio_history deque is bounded by max_ratio_window (set in header).
 /**********************************************************************/
-// float
-// BOBYQA_Minimizer::estimate_noise_level()
-// {
-//     if (ratio_history.size() < 3) return 0.0f;
-    
-//     float mean = 0.0f;
-//     for (float r : ratio_history) mean += r;
-//     mean /= ratio_history.size();
-    
-//     float var = 0.0f;
-//     for (float r : ratio_history) {
-//         float diff = r - mean;
-//         var += diff * diff;
-//     }
-    
-//     // Keep window bounded
-//     if (ratio_history.size() > noise_window) {
-//         ratio_history.erase(ratio_history.begin());
-//     }
-    
-//     return sqrt(var / ratio_history.size());
-// }
+float
+BOBYQA_Minimizer::estimate_noise_level()
+{
+    int n = (int)ratio_history.size();
+    if (n < 3) return 0.0f;
+
+    float mean = 0.0f;
+    for (float r : ratio_history) mean += r;
+    mean /= (float)n;
+
+    float var = 0.0f;
+    for (float r : ratio_history) {
+        float diff = r - mean;
+        var += diff * diff;
+    }
+
+    return sqrt(var / (float)n);
+}
 
 /**********************************************************************/
 // Perform adaptive restart when stagnation is detected
