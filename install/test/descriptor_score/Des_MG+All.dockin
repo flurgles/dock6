@@ -90,6 +90,7 @@ descriptor_weight_pharmacophore_score                        1
 descriptor_weight_fingerprint_tanimoto                       1
 descriptor_weight_hms_score                                  1
 descriptor_weight_volume_overlap_score                       1
+minimizer_type                                               simplex
 minimize_ligand                                              no
 simplex_final_min                                            no
 atom_model                                                   all

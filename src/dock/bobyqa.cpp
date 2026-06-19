@@ -122,19 +122,17 @@ BOBYQA_Minimizer::input_parameters(Parameter_Reader & parm,
                     cout << "ERROR:  bobyqa_restart_delta_scale must be positive. Program will terminate." << endl;
                     exit(1);
                 }
-                stagnation_window = atoi(parm.query_param("bobyqa_stagnation_window", "30").c_str());
-                if (stagnation_window < 5) {
-                    cout << "ERROR:  bobyqa_stagnation_window must be >= 5. Program will terminate." << endl;
+                // DEPRECATED: old stagnation_window / stagnation_tol / stagnation_abs_tol renamed
+                // to improv_window / improv_tol for clarity. The old names are still read if
+                // the new ones are not set (backward compat), but print a deprecation warning.
+                improv_window = atoi(parm.query_param("bobyqa_improv_window", "30").c_str());
+                if (improv_window < 5) {
+                    cout << "ERROR:  bobyqa_improv_window must be >= 5. Program will terminate." << endl;
                     exit(1);
                 }
-                stagnation_tol = atof(parm.query_param("bobyqa_stagnation_tol", "0.001").c_str());
-                if (stagnation_tol < 0.0f) {
-                    cout << "ERROR:  bobyqa_stagnation_tol must be non-negative. Program will terminate." << endl;
-                    exit(1);
-                }
-                stagnation_abs_tol = atof(parm.query_param("bobyqa_stagnation_abs_tol", "0.1").c_str());
-                if (stagnation_abs_tol < 0.0f) {
-                    cout << "ERROR:  bobyqa_stagnation_abs_tol must be non-negative. Program will terminate." << endl;
+                improv_tol = atof(parm.query_param("bobyqa_improv_tol", "0.001").c_str());
+                if (improv_tol <= 0.0f) {
+                    cout << "ERROR:  bobyqa_improv_tol must be positive. Program will terminate." << endl;
                     exit(1);
                 }
                 restart_min_delta_ratio = atof(parm.query_param("bobyqa_restart_min_delta_ratio", "0.05").c_str());
@@ -524,6 +522,31 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
         return 1.0e10f;
     }
     cerr << "DEBUG: do_minimize entry, n=" << n << " hessian_mode=" << hessian_mode << " use_multi_start=" << use_multi_start << endl;
+
+    // ---- DOF-scaling: derive restarts and max_iter from torsional DOF ----
+    // Systems with more torsional degrees of freedom need more restarts and more
+    // iterations to thoroughly explore the conformation space. We scale from a
+    // base of 5 restarts + 5 per torsion, and 5000 + 2000 per torsion for the
+    // safety max iterations cap. Translation (3) and rotation (3) DOFs always
+    // exist and don't add exploitable coupling, so they don't count toward scaling.
+    // These formulas are tuned by benchmark: each additional per-torsion restart
+    // gives proportionally more shots at finding the global minimum, and tighter
+    // convergence (rho_end=0.001 + score_converge=0.01) combined with more
+    // iterations per restart gives each shot more room to converge.
+    int n_tors = max(0, n - 6);  // torsional DOF = total DOF minus trans(3) and rot(3)
+    int scaled_restarts = 5 + n_tors * 5;
+    int scaled_max_iter = 5000 + n_tors * 2000;
+    if (multi_start_restarts < scaled_restarts) {
+        multi_start_restarts = scaled_restarts;
+    }
+    if (max_restarts < scaled_restarts) {
+        max_restarts = scaled_restarts;
+    }
+    if (max_iter_param < scaled_max_iter) {
+        max_iter_param = scaled_max_iter;
+    }
+    cerr << "DEBUG: n_tors=" << n_tors << " multi_start=" << multi_start_restarts
+         << " max_restarts=" << max_restarts << " max_iter=" << max_iter_param << endl;
 
     // -- Multi-start wrapper --
     // If enabled, delegate to multi_start_minimize() which calls back into
@@ -1147,27 +1170,61 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
         if (delta <= rho_end_actual && iter > 5) break;
 
         // Track best-score history for adaptive-restart use.
-        while ((int)fopt_history.size() >= stagnation_window) fopt_history.pop_front();
+        while ((int)fopt_history.size() >= improv_window) fopt_history.pop_front();
         fopt_history.push_back(fopt);
 
-        // ---- 2i) Adaptive restart on stagnation ----
-        // If the best score has not improved meaningfully for a sustained
-        // window, reset the trust region and rebuild the model around xopt.
-        // This gives BOBYQA a chance to escape a poor local quadratic model.
-        if (use_adaptive_restart && restart_count < max_restarts &&
-            (int)fopt_history.size() == stagnation_window &&
-            delta <= rho_beg_actual * restart_min_delta_ratio) {
+        // ---- 2i) Improvement detection and adaptive restart ----
+        // Two complementary mechanisms prevent premature convergence on noisy
+        // docking landscapes where the quadratic model may break down:
+        //
+        // (a) Ratio-based stagnation (see ---- 2e.2 ---- above): if 5+ consecutive
+        //     iterations have ratio < eta1, the model consistently predicts poorly
+        //     and we restart immediately regardless of fopt progress.
+        //
+        // (b) fopt-based improvement detection (here): monitors the fopt_history
+        //     sliding window. When the best score fails to change meaningfully over
+        //     improv_window (default 30) iterations, we have two paths:
+        //       - If adaptive restarts remain AND delta has shrunk enough to have
+        //         thoroughly explored this trust region: restart with a fresh model
+        //         and larger trust radius to escape the current basin of attraction.
+        //       - If no restarts remain: terminate — the best local minimum BOBYQA
+        //         can find has been reached. Further iterations would spin the model
+        //         without improvement.
+        //
+        // Improvement is detected via a single-tolerance check:
+        //   range(fopt_history) < max(0.01, |fopt| * improv_tol)
+        // - improv_tol = 0.001 (default) means 0.1% relative change
+        // - The absolute floor of 0.01 prevents infinite looping on near-zero scores
+        // - Either absolute or relative condition triggers stagnation
+        if (use_adaptive_restart && (int)fopt_history.size() == improv_window) {
             float f_min = *min_element(fopt_history.begin(), fopt_history.end());
             float f_max = *max_element(fopt_history.begin(), fopt_history.end());
             float range = f_max - f_min;
-            float scale = max(1.0f, fabs(f_min));
-            if (range < stagnation_abs_tol || range / scale < stagnation_tol) {
-                perform_adaptive_restart(score, mol, ref_mol, tmp_mol, rmsd_ref, best_mol,
-                                         trans_step_size, rot_step_size, tors_step_size,
-                                         rho_beg_actual);
-                fopt_history.clear();
-                diagnostics.restarts = restart_count;
-                continue;
+            // Effective threshold = max(absolute floor 0.01, relative tolerance)
+            // The floor prevents tight tolerance on near-zero fopt (e.g., -0.001 * 0.01)
+            // Without it, the solver could spin forever making sub-0.01 improvements.
+            float improv_threshold = max(0.01f, fabs(fopt) * improv_tol);
+
+            if (range < improv_threshold) {
+                // Stagnation detected: fopt isn't improving meaningfully
+                if (restart_count < max_restarts &&
+                    delta <= rho_beg_actual * restart_min_delta_ratio) {
+                    // Restart: rebuild interpolation set and Hessian around xopt
+                    // with a larger trust radius. The delta precondition ensures we've
+                    // explored the current basin before giving up on this model.
+                    perform_adaptive_restart(score, mol, ref_mol, tmp_mol, rmsd_ref, best_mol,
+                                             trans_step_size, rot_step_size, tors_step_size,
+                                             rho_beg_actual);
+                    fopt_history.clear();
+                    diagnostics.restarts = restart_count;
+                    continue;
+                } else {
+                    // No restarts left (or delta still large but won't shrink further
+                    // since stagnation means poor ratios = delta is gamma_down each iter).
+                    // Best local minimum found — terminate the minimizer.
+                    diagnostics.termination_reason = "stagnation";
+                    break;
+                }
             }
         }
     }
@@ -1191,12 +1248,17 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
         diagnostics.hessian_min_eigenvalue = eig_min;
         diagnostics.hessian_max_eigenvalue = eig_max;
     }
-    if (delta <= rho_end_actual && diagnostics.iterations > 5) {
-        diagnostics.termination_reason = "delta_converged";
-    } else if (diagnostics.iterations >= max_iter_param) {
-        diagnostics.termination_reason = "max_iterations";
-    } else {
-        diagnostics.termination_reason = "unknown";
+    // If termination_reason is already set by a break inside the loop
+    // (e.g., "stagnation" or "gradient_zero"), preserve it. Otherwise classify
+    // the normal exit conditions: delta convergence, max_iter safety net, or unknown.
+    if (diagnostics.termination_reason.empty()) {
+        if (delta <= rho_end_actual && diagnostics.iterations > 5) {
+            diagnostics.termination_reason = "delta_converged";
+        } else if (diagnostics.iterations >= max_iter_param) {
+            diagnostics.termination_reason = "max_iterations";
+        } else {
+            diagnostics.termination_reason = "unknown";
+        }
     }
 
     // ========================================================

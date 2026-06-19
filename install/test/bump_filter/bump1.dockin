@@ -30,6 +30,7 @@ bump_grid_prefix                                             ../grid_generation/
 max_bumps_anchor                                             10
 max_bumps_growth                                             10
 score_molecules                                              no
+minimizer_type                                               simplex
 atom_model                                                   all
 vdw_defn_file                                                ../../../parameters/vdw_AMBER_parm99.defn
 flex_defn_file                                               ../../../parameters/flex.defn

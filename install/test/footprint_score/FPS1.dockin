@@ -35,6 +35,7 @@ fps_score_dielectric                                         4.0
 fps_score_vdw_fp_scale                                       1
 fps_score_es_fp_scale                                        1
 fps_score_hb_fp_scale                                        0
+minimizer_type                                               simplex
 minimize_ligand                                              no
 simplex_final_min                                            no
 atom_model                                                   all

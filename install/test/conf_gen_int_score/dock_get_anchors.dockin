@@ -21,6 +21,7 @@ use_database_filter                                          no
 orient_ligand                                                no
 bump_filter                                                  no
 score_molecules                                              no
+minimizer_type                                               simplex
 atom_model                                                   all
 vdw_defn_file                                                ../../../parameters/vdw_AMBER_parm99.defn
 flex_defn_file                                               ../../../parameters/flex.defn

@@ -1,0 +1,1366 @@
+Starting installation of 
+DOCK v6.13
+at Sat 16 May 2026 21:23:57 PDT.
+
+/Library/Developer/CommandLineTools/usr/bin/make -C ../src  install
+/Library/Developer/CommandLineTools/usr/bin/make -C dock install
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o amber_typer.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov amber_typer.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o base_grid.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov base_grid.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o base_mpi.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov base_mpi.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o base_score.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov base_score.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o conf_gen_ag.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov conf_gen_ag.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o conf_gen_cg.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov conf_gen_cg.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o conf_gen_dn.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov conf_gen_dn.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o conf_gen_dn_ga.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov conf_gen_dn_ga.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o conf_gen_ga.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov conf_gen_ga.cpp
+conf_gen_ga.cpp: In member function 'void GA_Recomb::add_H(DOCKMol&, int, int, bool, Master_Score&, Simplex_Minimizer&, AMBER_TYPER&)':
+conf_gen_ga.cpp:9033:26: warning: ignoring return value of 'std::vector<_Tp, _Alloc>::size_type std::vector<_Tp, _Alloc>::size() const [with _Tp = int; _Alloc = std::allocator<int>; size_type = long unsigned int]', declared with attribute 'nodiscard' [-Wunused-result]
+ 9033 |           heavy_nbrs.size();
+      |           ~~~~~~~~~~~~~~~^~
+In file included from /opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/vector:68,
+                 from conf_gen_ga.h:9,
+                 from conf_gen_ga.cpp:1:
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/bits/stl_vector.h:1117:7: note: declared here
+ 1117 |       size() const _GLIBCXX_NOEXCEPT
+      |       ^~~~
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o conf_gen_hdb.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov conf_gen_hdb.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o dock.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov dock.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o dockmol.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov dockmol.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o filter.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov filter.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o fingerprint.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov fingerprint.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o fraggraph.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov fraggraph.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o fragment.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov fragment.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o gasteiger.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov gasteiger.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o grid.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov grid.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o hungarian.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov hungarian.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o library_file.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov library_file.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o limit_max_change.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov limit_max_change.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o master_conf.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov master_conf.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o master_score.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov master_score.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o orient.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov orient.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o sasa.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov sasa.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov score.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score_amber.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov score_amber.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score_chemgrid.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov score_chemgrid.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score_descriptor.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov score_descriptor.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score_footprint.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov score_footprint.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score_ph4.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov score_ph4.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score_volume.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov score_volume.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score_gist.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov score_gist.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score_hbond.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov score_hbond.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score_internal.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov score_internal.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score_multigrid.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov score_multigrid.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score_sasa.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov score_sasa.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score_solvent.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov score_solvent.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o simplex.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov simplex.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o sphere.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov sphere.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o trace.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov trace.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o utils.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov utils.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o iso_align.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov iso_align.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o mem_info.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov mem_info.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o rdtyper.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov rdtyper.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o rddrive.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov rddrive.cpp
+cd nab && make all
+gcc-15 -c -O3 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov molio.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o prm.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov prm.c
+make is_LEX_available
+flex -D_DARWIN_C_SOURCE -t mm_options.l | sed 's/yy/mmo/g' > lex.mm_options.c
+gcc-15 -c -O3 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DDOCK -Dflex -D_DARWIN_C_SOURCE -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov sff.c
+In file included from sff.c:1854:
+mm_options.l: In function 'mmo_mmoinput':
+mm_options.l:92:6: warning: old-style function definition [-Wold-style-definition]
+   92 | int  mmo_yyinput( buf, max_size )
+      |      ^~~~~~~~~~~~
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o traceback.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov traceback.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o select_atoms.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov select_atoms.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o memutil.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov memutil.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o reslib.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov reslib.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o jacobi.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov jacobi.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o molutil.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov molutil.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o chirvol.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov chirvol.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o regexp.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov regexp.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o binpos.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov binpos.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o time.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov time.c
+gcc-15 -c -O3 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov rand2.c
+gcc-15 -c -O3 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov conjgrad.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o database.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov database.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o tleap.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov tleap.c
+ar rv nab.a molio.o prm.o sff.o traceback.o select_atoms.o memutil.o reslib.o jacobi.o molutil.o chirvol.o regexp.o binpos.o time.o rand2.o conjgrad.o database.o tleap.o 
+ar: creating archive nab.a
+a - molio.o
+a - prm.o
+a - sff.o
+a - traceback.o
+a - select_atoms.o
+a - memutil.o
+a - reslib.o
+a - jacobi.o
+a - molutil.o
+a - chirvol.o
+a - regexp.o
+a - binpos.o
+a - time.o
+a - rand2.o
+a - conjgrad.o
+a - database.o
+a - tleap.o
+ranlib nab.a
+cd gzstream && make
+g++-15 -I. -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -c -o gzstream.o gzstream.C
+ar cr libgzstream.a gzstream.o
+g++-15 -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o dock6 amber_typer.o base_grid.o base_mpi.o base_score.o conf_gen_ag.o conf_gen_cg.o conf_gen_dn.o conf_gen_dn_ga.o conf_gen_ga.o conf_gen_hdb.o dock.o dockmol.o filter.o fingerprint.o fraggraph.o fragment.o gasteiger.o grid.o hungarian.o library_file.o limit_max_change.o master_conf.o master_score.o orient.o sasa.o score.o score_amber.o score_chemgrid.o score_descriptor.o score_footprint.o score_ph4.o score_volume.o score_gist.o score_hbond.o score_internal.o score_multigrid.o score_sasa.o score_solvent.o simplex.o sphere.o trace.o utils.o iso_align.o mem_info.o rdtyper.o rddrive.o nab/*.o gzstream/gzstream.o -lz \
+		-lm -lpthread -Wl,-ld_classic -flto -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+lto-wrapper: warning: using serial compilation of 95 LTRANS jobs
+lto-wrapper: note: see the '-flto' option documentation for more information
+dockmol.cpp: In member function 'allocate_arrays':
+dockmol.cpp:1606:37: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+ 1606 |     atom_data = new string[num_atoms];
+      |                                     ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+dockmol.cpp: In member function 'allocate_arrays.constprop':
+dockmol.cpp:1606:37: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+ 1606 |     atom_data = new string[num_atoms];
+      |                                     ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+fragment.cpp: In member function 'allocate_radial_dist_distri':
+fragment.cpp:276:79: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+  276 |     radial_dist_distri    = new      std::vector<float> [(*this).mol.num_atoms];
+      |                                                                               ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+hungarian.cpp: In member function 'calc_Hungarian_RMSD':
+hungarian.cpp:19:40: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+   19 |     unique_atom_types = new string [NUM];       // A list of unique atom types in mol
+      |                                        ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+hungarian.cpp: In member function 'calc_Hungarian_RMSD_dissimilar':
+hungarian.cpp:157:63: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+  157 |     string * unique_atom_types_mol = new string [mol.num_atoms];
+      |                                                               ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+hungarian.cpp:156:69: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+  156 |     string * unique_atom_types_refmol = new string [refmol.num_atoms];
+      |                                                                     ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+library_file.cpp: In member function 'read_hierarchy_db2':
+library_file.cpp:295:59: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+  295 |             db2_data.confs = new HDB_conformer [num_branch]; // num_branch is the number of lines and this is an upper bond on the accual number.
+      |                                                           ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+library_file.cpp:294:53: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+  294 |             db2_data.segs = new HDB_segment [num_seg];
+      |                                                     ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+library_file.cpp:293:59: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+  293 |             db2_data.rigid = new HDB_coordinate [num_rigid];
+      |                                                           ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+library_file.cpp:292:58: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+  292 |             db2_data.coords = new HDB_coordinate [num_xyz];
+      |                                                          ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+library_file.cpp:291:53: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+  291 |             db2_data.bonds = new HDB_bond [num_bonds];
+      |                                                     ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+library_file.cpp:290:53: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+  290 |             db2_data.atoms = new HDB_atom [num_atoms];
+      |                                                     ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+score_multigrid.cpp: In member function 'input_parameters_main':
+score_multigrid.cpp:138:46: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+  138 |         grid_file_names = new string[numgrids];
+      |                                              ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+score_multigrid.cpp: In member function 'initialize':
+score_multigrid.cpp:523:48: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+  523 |         energy_grids = new Energy_Grid[numgrids];
+      |                                                ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+score_solvent.cpp: In member function 'allocate_short_arrays':
+score_solvent.cpp:64:38: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+   64 |     atom_names = new string[num_atoms];
+      |                                      ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+score_solvent.cpp:67:38: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+   67 |     atom_types = new string[num_atoms];
+      |                                      ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+In function 'free_vector',
+    inlined from 'jacobi' at nab/jacobi.c:38:4:
+nab/memutil.c:132:9: warning: 'free' called on pointer 'z_181' with nonzero offset 8 [-Wfree-nonheap-object]
+  132 |         free( ( char * )( v + nl ) );
+      |         ^
+nab/jacobi.c: In function 'jacobi':
+nab/jacobi.c:15:13: note: returned from 'vector'
+   15 |         z = vector(1,n);
+      |             ^
+In function 'free_vector',
+    inlined from 'jacobi' at nab/jacobi.c:39:4:
+nab/memutil.c:132:9: warning: 'free' called on pointer 'b_179' with nonzero offset 8 [-Wfree-nonheap-object]
+  132 |         free( ( char * )( v + nl ) );
+      |         ^
+nab/jacobi.c: In function 'jacobi':
+nab/jacobi.c:14:13: note: returned from 'vector'
+   14 |         b = vector(1,n);
+      |             ^
+In function 'free_vector',
+    inlined from 'jacobi' at nab/jacobi.c:38:4:
+nab/memutil.c:132:9: warning: 'free' called on pointer 'z_181' with nonzero offset 8 [-Wfree-nonheap-object]
+  132 |         free( ( char * )( v + nl ) );
+      |         ^
+nab/jacobi.c: In function 'jacobi':
+nab/jacobi.c:15:13: note: returned from 'vector'
+   15 |         z = vector(1,n);
+      |             ^
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+mv dock6 ../../bin
+/Library/Developer/CommandLineTools/usr/bin/make -C accessories install
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o showbox.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov showbox.f
+gfortran-15 -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o showbox -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov showbox.o
+ld: warning: ignoring duplicate libraries: '-lgcov'
+ld: warning: ignoring duplicate libraries: '-lgcov'
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o showsphere.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov showsphere.f
+gfortran-15 -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o showsphere -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov showsphere.o
+ld: warning: ignoring duplicate libraries: '-lgcov'
+ld: warning: ignoring duplicate libraries: '-lgcov'
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o sphgen.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov sphgen.f
+gfortran-15 -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o sphgen -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov sphgen.o
+ld: warning: ignoring duplicate libraries: '-lgcov'
+ld: warning: ignoring duplicate libraries: '-lgcov'
+g++-15 -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam sphere_selector.cpp -lm -o sphere_selector -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+mv showbox showsphere sphgen sphere_selector ../../bin
+sed "s?DOCKHOME?/Users/user/dock6/dock6?g" prepare_amber.pl > ../../bin/prepare_amber.pl
+sed "s?DOCKHOME?/Users/user/dock6/dock6?g" prepare_rna_amber.pl > ../../bin/prepare_rna_amber.pl
+sed "s?DOCKHOME?/Users/user/dock6/dock6?g" amberize_ligand > ../../bin/amberize_ligand
+sed "s?DOCKHOME?/Users/user/dock6/dock6?g" amberize_complex > ../../bin/amberize_complex
+sed "s?DOCKHOME?/Users/user/dock6/dock6?g" amberize_receptor > ../../bin/amberize_receptor
+cd ../../bin && chmod +x amberize* prepare_amber.pl prepare_rna_amber.pl
+cp -p mol2.py ../../bin/mol2.py
+cp -p combine_torenv.py ../../bin/combine_torenv.py
+cp -p mol2bild.py ../../bin/mol2bild.py
+sed "s?DOCKHOME?/Users/user/dock6/dock6?g" multigrid_fp_gen.py > ../../bin/multigrid_fp_gen.py
+cd ../../bin && chmod +x multigrid_fp_gen.py
+/Library/Developer/CommandLineTools/usr/bin/make -C gbsa_grids  install
+/Library/Developer/CommandLineTools/usr/bin/make -C schemgrid_GB  install
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o nchemgrid.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov nchemgrid.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o dist.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov dist.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o nddist.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov nddist.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o ndconst.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov ndconst.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o ngrdout.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov ngrdout.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o nparmrec.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov nparmrec.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o npolariz.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov npolariz.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o second.o -fprofile-generate=/tmp/dock6_pgo_gcda -lgcov second.f
+gfortran-15 -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam nchemgrid.o dist.o nddist.o ndconst.o ngrdout.o nparmrec.o npolariz.o second.o -o nchemgrid_GB
+Undefined symbols for architecture arm64:
+  "___gcov_exit", referenced from:
+      __sub_D_65535_1 in nchemgrid.o
+      __sub_D_65535_1 in dist.o
+      __sub_D_65535_1 in nddist.o
+      __sub_D_65535_1 in ndconst.o
+      __sub_D_65535_1 in ngrdout.o
+      __sub_D_65535_1 in nparmrec.o
+      __sub_D_65535_1 in npolariz.o
+      ...
+  "___gcov_indirect_call", referenced from:
+      _main in nchemgrid.o
+      _indx1_ in dist.o
+      _dist2_ in dist.o
+      _ddist_ in nddist.o
+      _dconst_ in ndconst.o
+      _grdout_ in ngrdout.o
+      _ihash_ in nparmrec.o
+      ...
+  "___gcov_indirect_call_profiler_v4", referenced from:
+      _main in nchemgrid.o
+      _indx1_ in dist.o
+      _dist2_ in dist.o
+      _ddist_ in nddist.o
+      _dconst_ in ndconst.o
+      _grdout_ in ngrdout.o
+      _ihash_ in nparmrec.o
+      ...
+  "___gcov_init", referenced from:
+      __sub_I_65535_0 in nchemgrid.o
+      __sub_I_65535_0 in dist.o
+      __sub_I_65535_0 in nddist.o
+      __sub_I_65535_0 in ndconst.o
+      __sub_I_65535_0 in ngrdout.o
+      __sub_I_65535_0 in nparmrec.o
+      __sub_I_65535_0 in npolariz.o
+      ...
+  "___gcov_merge_add", referenced from:
+      ___gcov_.MAIN__ in nchemgrid.o
+      ___gcov_.dist2_ in dist.o
+      ltmp5 in nddist.o
+      ltmp5 in ndconst.o
+      ltmp5 in ngrdout.o
+      ___gcov_.enter_ in nparmrec.o
+      ltmp5 in npolariz.o
+      ...
+  "___gcov_merge_time_profile", referenced from:
+      ___gcov_.MAIN__ in nchemgrid.o
+      ___gcov_.dist2_ in dist.o
+      ltmp5 in nddist.o
+      ltmp5 in ndconst.o
+      ltmp5 in ngrdout.o
+      ___gcov_.enter_ in nparmrec.o
+      ltmp5 in npolariz.o
+      ...
+  "___gcov_time_profiler_counter", referenced from:
+      _MAIN__ in nchemgrid.o
+      _main in nchemgrid.o
+      _indx1_ in dist.o
+      _dist2_ in dist.o
+      _ddist_ in nddist.o
+      _dconst_ in ndconst.o
+      _grdout_ in ngrdout.o
+      ...
+ld: symbol(s) not found for architecture arm64
+collect2: error: ld returned 1 exit status
+make[3]: *** [nchemgrid_GB] Error 1
+make[2]: *** [install] Error 2
+make[1]: *** [utils] Error 2
+make: *** [install] Error 2
+Starting installation of 
+DOCK v6.13
+program dock at Sat 16 May 2026 21:30:52 PDT.
+
+/Library/Developer/CommandLineTools/usr/bin/make -C ../src/dock  install
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o amber_typer.o -fprofile-generate=/tmp/dock6_pgo_gcda amber_typer.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o base_grid.o -fprofile-generate=/tmp/dock6_pgo_gcda base_grid.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o base_mpi.o -fprofile-generate=/tmp/dock6_pgo_gcda base_mpi.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o base_score.o -fprofile-generate=/tmp/dock6_pgo_gcda base_score.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o conf_gen_ag.o -fprofile-generate=/tmp/dock6_pgo_gcda conf_gen_ag.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o conf_gen_cg.o -fprofile-generate=/tmp/dock6_pgo_gcda conf_gen_cg.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o conf_gen_dn.o -fprofile-generate=/tmp/dock6_pgo_gcda conf_gen_dn.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o conf_gen_dn_ga.o -fprofile-generate=/tmp/dock6_pgo_gcda conf_gen_dn_ga.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o conf_gen_ga.o -fprofile-generate=/tmp/dock6_pgo_gcda conf_gen_ga.cpp
+conf_gen_ga.cpp: In member function 'void GA_Recomb::add_H(DOCKMol&, int, int, bool, Master_Score&, Simplex_Minimizer&, AMBER_TYPER&)':
+conf_gen_ga.cpp:9033:26: warning: ignoring return value of 'std::vector<_Tp, _Alloc>::size_type std::vector<_Tp, _Alloc>::size() const [with _Tp = int; _Alloc = std::allocator<int>; size_type = long unsigned int]', declared with attribute 'nodiscard' [-Wunused-result]
+ 9033 |           heavy_nbrs.size();
+      |           ~~~~~~~~~~~~~~~^~
+In file included from /opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/vector:68,
+                 from conf_gen_ga.h:9,
+                 from conf_gen_ga.cpp:1:
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/bits/stl_vector.h:1117:7: note: declared here
+ 1117 |       size() const _GLIBCXX_NOEXCEPT
+      |       ^~~~
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o conf_gen_hdb.o -fprofile-generate=/tmp/dock6_pgo_gcda conf_gen_hdb.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o dock.o -fprofile-generate=/tmp/dock6_pgo_gcda dock.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o dockmol.o -fprofile-generate=/tmp/dock6_pgo_gcda dockmol.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o filter.o -fprofile-generate=/tmp/dock6_pgo_gcda filter.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o fingerprint.o -fprofile-generate=/tmp/dock6_pgo_gcda fingerprint.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o fraggraph.o -fprofile-generate=/tmp/dock6_pgo_gcda fraggraph.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o fragment.o -fprofile-generate=/tmp/dock6_pgo_gcda fragment.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o gasteiger.o -fprofile-generate=/tmp/dock6_pgo_gcda gasteiger.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o grid.o -fprofile-generate=/tmp/dock6_pgo_gcda grid.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o hungarian.o -fprofile-generate=/tmp/dock6_pgo_gcda hungarian.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o library_file.o -fprofile-generate=/tmp/dock6_pgo_gcda library_file.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o limit_max_change.o -fprofile-generate=/tmp/dock6_pgo_gcda limit_max_change.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o master_conf.o -fprofile-generate=/tmp/dock6_pgo_gcda master_conf.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o master_score.o -fprofile-generate=/tmp/dock6_pgo_gcda master_score.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o orient.o -fprofile-generate=/tmp/dock6_pgo_gcda orient.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o sasa.o -fprofile-generate=/tmp/dock6_pgo_gcda sasa.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score.o -fprofile-generate=/tmp/dock6_pgo_gcda score.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score_amber.o -fprofile-generate=/tmp/dock6_pgo_gcda score_amber.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score_chemgrid.o -fprofile-generate=/tmp/dock6_pgo_gcda score_chemgrid.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score_descriptor.o -fprofile-generate=/tmp/dock6_pgo_gcda score_descriptor.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score_footprint.o -fprofile-generate=/tmp/dock6_pgo_gcda score_footprint.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score_ph4.o -fprofile-generate=/tmp/dock6_pgo_gcda score_ph4.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score_volume.o -fprofile-generate=/tmp/dock6_pgo_gcda score_volume.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score_gist.o -fprofile-generate=/tmp/dock6_pgo_gcda score_gist.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score_hbond.o -fprofile-generate=/tmp/dock6_pgo_gcda score_hbond.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score_internal.o -fprofile-generate=/tmp/dock6_pgo_gcda score_internal.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score_multigrid.o -fprofile-generate=/tmp/dock6_pgo_gcda score_multigrid.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score_sasa.o -fprofile-generate=/tmp/dock6_pgo_gcda score_sasa.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score_solvent.o -fprofile-generate=/tmp/dock6_pgo_gcda score_solvent.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o simplex.o -fprofile-generate=/tmp/dock6_pgo_gcda simplex.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o sphere.o -fprofile-generate=/tmp/dock6_pgo_gcda sphere.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o trace.o -fprofile-generate=/tmp/dock6_pgo_gcda trace.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o utils.o -fprofile-generate=/tmp/dock6_pgo_gcda utils.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o iso_align.o -fprofile-generate=/tmp/dock6_pgo_gcda iso_align.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o mem_info.o -fprofile-generate=/tmp/dock6_pgo_gcda mem_info.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o rdtyper.o -fprofile-generate=/tmp/dock6_pgo_gcda rdtyper.cpp
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o rddrive.o -fprofile-generate=/tmp/dock6_pgo_gcda rddrive.cpp
+cd nab && make all
+gcc-15 -c -O3 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -fprofile-generate=/tmp/dock6_pgo_gcda molio.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o prm.o -fprofile-generate=/tmp/dock6_pgo_gcda prm.c
+make is_LEX_available
+flex -D_DARWIN_C_SOURCE -t mm_options.l | sed 's/yy/mmo/g' > lex.mm_options.c
+gcc-15 -c -O3 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DDOCK -Dflex -D_DARWIN_C_SOURCE -fprofile-generate=/tmp/dock6_pgo_gcda sff.c
+In file included from sff.c:1854:
+mm_options.l: In function 'mmo_mmoinput':
+mm_options.l:92:6: warning: old-style function definition [-Wold-style-definition]
+   92 | int  mmo_yyinput( buf, max_size )
+      |      ^~~~~~~~~~~~
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o traceback.o -fprofile-generate=/tmp/dock6_pgo_gcda traceback.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o select_atoms.o -fprofile-generate=/tmp/dock6_pgo_gcda select_atoms.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o memutil.o -fprofile-generate=/tmp/dock6_pgo_gcda memutil.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o reslib.o -fprofile-generate=/tmp/dock6_pgo_gcda reslib.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o jacobi.o -fprofile-generate=/tmp/dock6_pgo_gcda jacobi.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o molutil.o -fprofile-generate=/tmp/dock6_pgo_gcda molutil.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o chirvol.o -fprofile-generate=/tmp/dock6_pgo_gcda chirvol.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o regexp.o -fprofile-generate=/tmp/dock6_pgo_gcda regexp.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o binpos.o -fprofile-generate=/tmp/dock6_pgo_gcda binpos.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o time.o -fprofile-generate=/tmp/dock6_pgo_gcda time.c
+gcc-15 -c -O3 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -fprofile-generate=/tmp/dock6_pgo_gcda rand2.c
+gcc-15 -c -O3 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -fprofile-generate=/tmp/dock6_pgo_gcda conjgrad.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o database.o -fprofile-generate=/tmp/dock6_pgo_gcda database.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o tleap.o -fprofile-generate=/tmp/dock6_pgo_gcda tleap.c
+ar rv nab.a molio.o prm.o sff.o traceback.o select_atoms.o memutil.o reslib.o jacobi.o molutil.o chirvol.o regexp.o binpos.o time.o rand2.o conjgrad.o database.o tleap.o 
+ar: creating archive nab.a
+a - molio.o
+a - prm.o
+a - sff.o
+a - traceback.o
+a - select_atoms.o
+a - memutil.o
+a - reslib.o
+a - jacobi.o
+a - molutil.o
+a - chirvol.o
+a - regexp.o
+a - binpos.o
+a - time.o
+a - rand2.o
+a - conjgrad.o
+a - database.o
+a - tleap.o
+ranlib nab.a
+cd gzstream && make
+g++-15 -I. -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -c -o gzstream.o gzstream.C
+ar cr libgzstream.a gzstream.o
+g++-15 -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o dock6 amber_typer.o base_grid.o base_mpi.o base_score.o conf_gen_ag.o conf_gen_cg.o conf_gen_dn.o conf_gen_dn_ga.o conf_gen_ga.o conf_gen_hdb.o dock.o dockmol.o filter.o fingerprint.o fraggraph.o fragment.o gasteiger.o grid.o hungarian.o library_file.o limit_max_change.o master_conf.o master_score.o orient.o sasa.o score.o score_amber.o score_chemgrid.o score_descriptor.o score_footprint.o score_ph4.o score_volume.o score_gist.o score_hbond.o score_internal.o score_multigrid.o score_sasa.o score_solvent.o simplex.o sphere.o trace.o utils.o iso_align.o mem_info.o rdtyper.o rddrive.o nab/*.o gzstream/gzstream.o -lz \
+		-lm -lpthread -Wl,-ld_classic -flto -fprofile-generate=/tmp/dock6_pgo_gcda
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+lto-wrapper: warning: using serial compilation of 95 LTRANS jobs
+lto-wrapper: note: see the '-flto' option documentation for more information
+dockmol.cpp: In member function 'allocate_arrays':
+dockmol.cpp:1606:37: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+ 1606 |     atom_data = new string[num_atoms];
+      |                                     ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+dockmol.cpp: In member function 'allocate_arrays.constprop':
+dockmol.cpp:1606:37: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+ 1606 |     atom_data = new string[num_atoms];
+      |                                     ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+fragment.cpp: In member function 'allocate_radial_dist_distri':
+fragment.cpp:276:79: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+  276 |     radial_dist_distri    = new      std::vector<float> [(*this).mol.num_atoms];
+      |                                                                               ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+hungarian.cpp: In member function 'calc_Hungarian_RMSD':
+hungarian.cpp:19:40: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+   19 |     unique_atom_types = new string [NUM];       // A list of unique atom types in mol
+      |                                        ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+hungarian.cpp: In member function 'calc_Hungarian_RMSD_dissimilar':
+hungarian.cpp:157:63: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+  157 |     string * unique_atom_types_mol = new string [mol.num_atoms];
+      |                                                               ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+hungarian.cpp:156:69: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+  156 |     string * unique_atom_types_refmol = new string [refmol.num_atoms];
+      |                                                                     ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+library_file.cpp: In member function 'read_hierarchy_db2':
+library_file.cpp:295:59: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+  295 |             db2_data.confs = new HDB_conformer [num_branch]; // num_branch is the number of lines and this is an upper bond on the accual number.
+      |                                                           ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+library_file.cpp:294:53: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+  294 |             db2_data.segs = new HDB_segment [num_seg];
+      |                                                     ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+library_file.cpp:293:59: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+  293 |             db2_data.rigid = new HDB_coordinate [num_rigid];
+      |                                                           ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+library_file.cpp:292:58: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+  292 |             db2_data.coords = new HDB_coordinate [num_xyz];
+      |                                                          ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+library_file.cpp:291:53: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+  291 |             db2_data.bonds = new HDB_bond [num_bonds];
+      |                                                     ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+library_file.cpp:290:53: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+  290 |             db2_data.atoms = new HDB_atom [num_atoms];
+      |                                                     ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+score_multigrid.cpp: In member function 'input_parameters_main':
+score_multigrid.cpp:138:46: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+  138 |         grid_file_names = new string[numgrids];
+      |                                              ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+score_multigrid.cpp: In member function 'initialize':
+score_multigrid.cpp:523:48: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+  523 |         energy_grids = new Energy_Grid[numgrids];
+      |                                                ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+score_solvent.cpp: In member function 'allocate_short_arrays':
+score_solvent.cpp:64:38: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+   64 |     atom_names = new string[num_atoms];
+      |                                      ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+score_solvent.cpp:67:38: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+   67 |     atom_types = new string[num_atoms];
+      |                                      ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+In function 'free_vector',
+    inlined from 'jacobi' at nab/jacobi.c:38:4:
+nab/memutil.c:132:9: warning: 'free' called on pointer 'z_181' with nonzero offset 8 [-Wfree-nonheap-object]
+  132 |         free( ( char * )( v + nl ) );
+      |         ^
+nab/jacobi.c: In function 'jacobi':
+nab/jacobi.c:15:13: note: returned from 'vector'
+   15 |         z = vector(1,n);
+      |             ^
+In function 'free_vector',
+    inlined from 'jacobi' at nab/jacobi.c:39:4:
+nab/memutil.c:132:9: warning: 'free' called on pointer 'b_179' with nonzero offset 8 [-Wfree-nonheap-object]
+  132 |         free( ( char * )( v + nl ) );
+      |         ^
+nab/jacobi.c: In function 'jacobi':
+nab/jacobi.c:14:13: note: returned from 'vector'
+   14 |         b = vector(1,n);
+      |             ^
+In function 'free_vector',
+    inlined from 'jacobi' at nab/jacobi.c:38:4:
+nab/memutil.c:132:9: warning: 'free' called on pointer 'z_181' with nonzero offset 8 [-Wfree-nonheap-object]
+  132 |         free( ( char * )( v + nl ) );
+      |         ^
+nab/jacobi.c: In function 'jacobi':
+nab/jacobi.c:15:13: note: returned from 'vector'
+   15 |         z = vector(1,n);
+      |             ^
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+mv dock6 ../../bin
+
+Installation of 
+DOCK v6.13
+program dock is complete at Sat 16 May 2026 21:35:00 PDT.
+
+Starting installation of 
+DOCK v6.13
+utilities at Sat 16 May 2026 21:35:00 PDT.
+
+/Library/Developer/CommandLineTools/usr/bin/make -C ../src utils
+/Library/Developer/CommandLineTools/usr/bin/make -C accessories install
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o showbox.o  showbox.f
+gfortran-15 -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o showbox  showbox.o
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o showsphere.o  showsphere.f
+gfortran-15 -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o showsphere  showsphere.o
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o sphgen.o  sphgen.f
+gfortran-15 -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o sphgen  sphgen.o
+g++-15 -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam sphere_selector.cpp -lm -o sphere_selector 
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+mv showbox showsphere sphgen sphere_selector ../../bin
+sed "s?DOCKHOME?/Users/user/dock6/dock6?g" prepare_amber.pl > ../../bin/prepare_amber.pl
+sed "s?DOCKHOME?/Users/user/dock6/dock6?g" prepare_rna_amber.pl > ../../bin/prepare_rna_amber.pl
+sed "s?DOCKHOME?/Users/user/dock6/dock6?g" amberize_ligand > ../../bin/amberize_ligand
+sed "s?DOCKHOME?/Users/user/dock6/dock6?g" amberize_complex > ../../bin/amberize_complex
+sed "s?DOCKHOME?/Users/user/dock6/dock6?g" amberize_receptor > ../../bin/amberize_receptor
+cd ../../bin && chmod +x amberize* prepare_amber.pl prepare_rna_amber.pl
+cp -p mol2.py ../../bin/mol2.py
+cp -p combine_torenv.py ../../bin/combine_torenv.py
+cp -p mol2bild.py ../../bin/mol2bild.py
+sed "s?DOCKHOME?/Users/user/dock6/dock6?g" multigrid_fp_gen.py > ../../bin/multigrid_fp_gen.py
+cd ../../bin && chmod +x multigrid_fp_gen.py
+/Library/Developer/CommandLineTools/usr/bin/make -C gbsa_grids  install
+/Library/Developer/CommandLineTools/usr/bin/make -C schemgrid_GB  install
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o nchemgrid.o  nchemgrid.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o dist.o  dist.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o nddist.o  nddist.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o ndconst.o  ndconst.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o ngrdout.o  ngrdout.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o nparmrec.o  nparmrec.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o npolariz.o  npolariz.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o second.o  second.f
+gfortran-15 -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam nchemgrid.o dist.o nddist.o ndconst.o ngrdout.o nparmrec.o npolariz.o second.o -o nchemgrid_GB
+mv nchemgrid_GB ../../../bin
+/Library/Developer/CommandLineTools/usr/bin/make -C schemgrid_SA  install
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o nchemgrid.o  nchemgrid.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o dist.o  dist.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o nddist.o  nddist.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o ndconst.o  ndconst.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o ngrdout.o  ngrdout.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o nparmrec.o  nparmrec.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o npolariz.o  npolariz.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o nsas.o  nsas.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o nsphgrid.o  nsphgrid.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o second.o  second.f
+gfortran-15 -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam nchemgrid.o dist.o nddist.o ndconst.o ngrdout.o nparmrec.o npolariz.o nsas.o nsphgrid.o second.o -o nchemgrid_SA
+mv nchemgrid_SA ../../../bin
+/Library/Developer/CommandLineTools/usr/bin/make -C grid  install
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o grid.o  grid.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score.o  score.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o score_grid.o  score_grid.c
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o gridpoint.o  gridpoint.f
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o define.o  define.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o io.o  io.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o io_grid.o  io_grid.c
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o io_gridf.o  io_gridf.f
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o mol_prep.o  mol_prep.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o io_receptor.o  io_receptor.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o io_mol2.o  io_mol2.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o io_pdb.o  io_pdb.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o io_ptr.o  io_ptr.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o io_sph.o  io_sph.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o label.o  label.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o label_node.o  label_node.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o label_chem.o  label_chem.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o label_vdw.o  label_vdw.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o label_flex.o  label_flex.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o mol.o  mol.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o search.o  search.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o transform.o  transform.c
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o transformf.o  transformf.f
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o parm.o  parm.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o parm_grid.o  parm_grid.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o rotrans.o  rotrans.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o utility.o  utility.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o vector.o  vector.c
+gfortran-15  -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam grid.o score.o score_grid.o gridpoint.o define.o io.o io_grid.o io_gridf.o mol_prep.o io_receptor.o io_mol2.o io_pdb.o io_ptr.o io_sph.o label.o label_node.o label_chem.o label_vdw.o label_flex.o mol.o search.o transform.o transformf.o parm.o parm_grid.o rotrans.o utility.o vector.o -lm -lpthread -Wl,-ld_classic -flto -o grid \
+	    
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+io_grid.c:38:8: warning: type of 'readgrid_' does not match original declaration [-Wlto-type-mismatch]
+   38 |   void EXTERNAL_READGRID (char *, int *, float *, int [], float [],
+      |        ^
+io_gridf.f:10:31: note: return value type mismatch
+   10 |       integer function readgrid(grdfil, ngrd, grddiv, grdpts,
+      |                               ^
+io_gridf.f:10:31: note: type 'int' should match type 'void'
+io_gridf.f:10:31: note: 'readgrid' was previously declared here
+lto-wrapper: warning: using serial compilation of 4 LTRANS jobs
+lto-wrapper: note: see the '-flto' option documentation for more information
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+mv grid ../../bin
+/Library/Developer/CommandLineTools/usr/bin/make -C tleap  install
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV basics.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV sysdepend.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV stringExtra.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV varArray.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV getline.c
+getline.c: In function 'hist_save':
+getline.c:938:25: warning: 'malloc' argument 1 type is 'int' where 'long unsigned int' is expected in a call to built-in function declared without prototype [-Wbuiltin-declaration-mismatch]
+  938 |         if ((s = malloc(len)) != 0) {
+      |                         ^~~
+getline.c:43:17: note: built-in 'malloc' declared here
+   43 | extern void    *malloc();
+      |                 ^~~~~~
+getline.c:943:28: warning: 'malloc' argument 1 type is 'int' where 'long unsigned int' is expected in a call to built-in function declared without prototype [-Wbuiltin-declaration-mismatch]
+  943 |         if ((s = malloc(len+1)) != 0) {
+      |                         ~~~^~
+getline.c:43:17: note: built-in 'malloc' declared here
+   43 | extern void    *malloc();
+      |                 ^~~~~~
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV avl.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV pdb_format.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV pdb_read.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV pdb_sprntf.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV pdb_sscanf.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV pdb_write.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV vector.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV zMatrix.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV sort.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV bag.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV hash.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV dictionary.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV database.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV nVector.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV ring.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV matrix.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV fortran.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV displayer.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV assoc.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV atom.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV byteArray.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV collection.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV container.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV internal.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV list.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV loop.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV molecule.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV oDouble.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV oInteger.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV oString.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV objekt.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV parmSet.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV residue.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV unit.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV unitio.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV graphUtil.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV select.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV amber.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV build.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV elements.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV library.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV chirality.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV minimizer.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV model.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV parmLib.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV pdbFile.c
+pdbFile.c: In function 'zPdbAddAtom':
+pdbFile.c:1245:5: warning: 'zPdbDeconvoluteAtomName' accessing 1069 bytes in a region of size 5 [-Wstringop-overflow=]
+ 1245 |     zPdbDeconvoluteAtomName( prRec.pdb.atom.name, sName, &iElement );
+      |     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+pdbFile.c:1245:5: note: referencing argument 1 of type 'char[1069]'
+pdbFile.c:1245:5: note: referencing argument 2 of type 'char[1069]'
+pdbFile.c:607:1: note: in a call to function 'zPdbDeconvoluteAtomName'
+  607 | zPdbDeconvoluteAtomName( STRING sConvoluted, STRING sName, int *iPElement )
+      | ^~~~~~~~~~~~~~~~~~~~~~~
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV tools.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV variables.c
+/opt/homebrew/opt/bison/bin/bison --yacc parser.y
+parser.y: warning: 6 shift/reduce conflicts [-Wconflicts-sr]
+parser.y: note: rerun with option '-Wcounterexamples' to generate conflict counterexamples
+(The warning 'conflicts: 6 shift/reduce' is normal)
+rm -f parser.c
+mv y.tab.c parser.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV parser.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV help.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV utilMakeHelp.c
+gcc-15 -o utilMakeHelp basics.o sysdepend.o stringExtra.o varArray.o  getline.o avl.o pdb_format.o pdb_read.o pdb_sprntf.o pdb_sscanf.o pdb_write.o vector.o zMatrix.o sort.o bag.o hash.o dictionary.o database.o nVector.o ring.o matrix.o fortran.o displayer.o utilMakeHelp.o -lm
+lto-wrapper: warning: using serial compilation of 2 LTRANS jobs
+lto-wrapper: note: see the '-flto' option documentation for more information
+./utilMakeHelp helptext.text helptext.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV helptext.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV octree.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV commands.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV mathop.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV block.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV restraint.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV hybrid.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV tripos.c
+gcc-15 -c -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -DSYSV tLeap.c
+gcc-15 -o teLeap basics.o sysdepend.o stringExtra.o varArray.o  getline.o avl.o pdb_format.o pdb_read.o pdb_sprntf.o pdb_sscanf.o pdb_write.o vector.o zMatrix.o sort.o bag.o hash.o dictionary.o database.o nVector.o ring.o matrix.o fortran.o displayer.o assoc.o atom.o byteArray.o collection.o container.o internal.o list.o loop.o molecule.o oDouble.o oInteger.o oString.o objekt.o parmSet.o residue.o unit.o unitio.o graphUtil.o select.o amber.o build.o elements.o library.o chirality.o minimizer.o model.o parmLib.o pdbFile.o tools.o variables.o parser.o help.o helptext.o octree.o commands.o mathop.o block.o restraint.o hybrid.o tripos.o tLeap.o -lm
+lto-wrapper: warning: using serial compilation of 12 LTRANS jobs
+lto-wrapper: note: see the '-flto' option documentation for more information
+mv teLeap ../../bin
+cd ../..; DOCKHOME=`pwd`;
+sed "s?DOCKHOME?/Users/user/dock6/dock6?" tleap > ../../bin/tleap
+chmod +x ../../bin/tleap
+/Library/Developer/CommandLineTools/usr/bin/make -C antechamber  install
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o am1bcc.o  am1bcc.c
+gcc-15 -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam am1bcc.o -lm -o am1bcc  
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o antechamber.o  antechamber.c
+gcc-15 -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam antechamber.o -lm -o antechamber  
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+lto-wrapper: warning: using serial compilation of 2 LTRANS jobs
+lto-wrapper: note: see the '-flto' option documentation for more information
+mol2.c: In function 'wmol2':
+mol2.c:204:41: warning: '__builtin___memcpy_chk' writing 28 bytes into a region of size 10 overflows the destination [-Wstringop-overflow=]
+  204 |         if(strlen(cinfo.chargetype)<=1) strcpy(cinfo.chargetype, "No Charge or Current Charge");
+      |                                         ^
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o atomtype.o  atomtype.c
+gcc-15 -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam atomtype.o -lm -o atomtype  
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+lto-wrapper: warning: using serial compilation of 2 LTRANS jobs
+lto-wrapper: note: see the '-flto' option documentation for more information
+mol2.c: In function 'wmol2':
+mol2.c:204:41: warning: '__builtin___memcpy_chk' writing 28 bytes into a region of size 10 overflows the destination [-Wstringop-overflow=]
+  204 |         if(strlen(cinfo.chargetype)<=1) strcpy(cinfo.chargetype, "No Charge or Current Charge");
+      |                                         ^
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+g++-15 -c -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o bondtype.o bondtype.C
+g++-15 -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam bondtype.o -lm -o bondtype  
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+bondtype.C: In function 'main':
+bondtype.C:1316:70: warning: argument 1 value '18446744073709551615' exceeds maximum object size 9223372036854775807 [-Walloc-size-larger-than=]
+ 1316 |         vector < Point > *penalties = new vector < Point >[maxaps + 1];
+      |                                                                      ^
+/opt/homebrew/Cellar/gcc/15.2.0_1/include/c++/15/new:140:26: note: in a call to allocation function 'operator new []' declared here
+  140 | _GLIBCXX_NODISCARD void* operator new[](std::size_t)
+      |                          ^
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o espgen.o  espgen.c
+gcc-15 -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam espgen.o -o espgen
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o parmcal.o  parmcal.c
+gcc-15 -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam parmcal.o -lm -o parmcal
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o parmchk.o  parmchk.c
+gcc-15 -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam parmchk.o -lm -o parmchk
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+lto-wrapper: warning: using serial compilation of 2 LTRANS jobs
+lto-wrapper: note: see the '-flto' option documentation for more information
+mol2.c: In function 'wmol2':
+mol2.c:204:41: warning: '__builtin___memcpy_chk' writing 28 bytes into a region of size 10 overflows the destination [-Wstringop-overflow=]
+  204 |         if(strlen(cinfo.chargetype)<=1) strcpy(cinfo.chargetype, "No Charge or Current Charge");
+      |                                         ^
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o prepgen.o  prepgen.c
+gcc-15 -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam prepgen.o -lm -o prepgen
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o respgen.o  respgen.c
+gcc-15 -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam respgen.o -lm -o respgen
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+cp -p mopac.sh ../../bin
+mv am1bcc antechamber atomtype bondtype espgen parmcal parmchk prepgen respgen ../../bin
+/Library/Developer/CommandLineTools/usr/bin/make -C mopac6/src  install
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o aababc.o  aababc.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o readmo.o  readmo.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o writmo.o  writmo.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o mopac.o  mopac.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o analyt.o  analyt.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o anavib.o  anavib.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o axis.o  axis.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o block.o  block.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o bonds.o  bonds.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o brlzon.o  brlzon.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o calpar.o  calpar.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o capcor.o  capcor.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o cdiag.o  cdiag.f
+cdiag.f:388:72:
+
+  388 |    50    CALL ME08B (A(K,K),Q(K),A(I,K),N-K+1,IA*2)
+      |                                                                        1
+Warning: Type mismatch in argument 'a' at (1); passed COMPLEX(4) to REAL(4)
+cdiag.f:388:72:
+
+  388 |    50    CALL ME08B (A(K,K),Q(K),A(I,K),N-K+1,IA*2)
+      |                                                                        1
+Warning: Type mismatch in argument 'q' at (1); passed COMPLEX(4) to REAL(4)
+cdiag.f:388:72:
+
+  388 |    50    CALL ME08B (A(K,K),Q(K),A(I,K),N-K+1,IA*2)
+      |                                                                        1
+Warning: Type mismatch in argument 'b' at (1); passed COMPLEX(4) to REAL(4)
+cdiag.f:15:72:
+
+   15 |       CALL EC08C(W,W(N+1),VALUE,VEC,N,IV,W(2*N+1))
+      |                                                                        1
+Warning: Type mismatch in argument 'vec' at (1); passed COMPLEX(4) to REAL(4)
+cdiag.f:15:72:
+
+   15 |       CALL EC08C(W,W(N+1),VALUE,VEC,N,IV,W(2*N+1))
+      |                                                                        1
+Warning: Type mismatch in argument 'w' at (1); passed COMPLEX(4) to REAL(4)
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o chrge.o  chrge.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o cnvg.o  cnvg.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o compfg.o  compfg.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o datin.o  datin.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o dcart.o  dcart.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o delmol.o  delmol.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o delri.o  delri.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o denrot.o  denrot.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o densit.o  densit.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o depvar.o  depvar.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o deri0.o  deri0.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o deri1.o  deri1.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o deri2.o  deri2.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o deri21.o  deri21.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o deri22.o  deri22.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o deri23.o  deri23.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o deritr.o  deritr.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o deriv.o  deriv.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o dernvo.o  dernvo.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o ders.o  ders.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o dfock2.o  dfock2.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o dfpsav.o  dfpsav.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o diag.o  diag.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o diat.o  diat.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o diat2.o  diat2.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o diis.o  diis.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o dijkl1.o  dijkl1.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o dijkl2.o  dijkl2.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o dipind.o  dipind.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o dipole.o  dipole.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o dofs.o  dofs.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o dot.o  dot.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o drc.o  drc.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o drcout.o  drcout.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o ef.o  ef.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o enpart.o  enpart.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o exchng.o  exchng.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o ffhpol.o  ffhpol.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o flepo.o  flepo.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o fmat.o  fmat.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o fock1.o  fock1.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o fock2.o  fock2.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o force.o  force.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o formxy.o  formxy.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o forsav.o  forsav.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o frame.o  frame.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o freqcy.o  freqcy.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o geout.o  geout.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o geoutg.o  geoutg.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o getgeg.o  getgeg.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o getgeo.o  getgeo.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o getsym.o  getsym.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o gettxt.o  gettxt.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o gmetry.o  gmetry.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o gover.o  gover.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o grid.o  grid.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o h1elec.o  h1elec.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o haddon.o  haddon.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o hcore.o  hcore.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o helect.o  helect.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o hqrii.o  hqrii.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o ijkl.o  ijkl.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o interp.o  interp.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o iter.o  iter.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o jcarin.o  jcarin.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o linmin.o  linmin.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o local.o  local.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o locmin.o  locmin.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o mamult.o  mamult.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o matout.o  matout.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o matpak.o  matpak.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o meci.o  meci.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o mecid.o  mecid.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o mecih.o  mecih.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o mecip.o  mecip.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o moldat.o  moldat.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o molval.o  molval.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o mullik.o  mullik.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o mult.o  mult.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o nllsq.o  nllsq.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o nuchar.o  nuchar.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o parsav.o  parsav.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o partxy.o  partxy.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o pathk.o  pathk.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o paths.o  paths.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o perm.o  perm.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o polar.o  polar.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o powsav.o  powsav.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o powsq.o  powsq.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o prtdrc.o  prtdrc.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o quadr.o  quadr.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o react1.o  react1.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o reada.o  reada.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o refer.o  refer.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o repp.o  repp.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o rotat.o  rotat.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o rotate.o  rotate.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o rsp.o  rsp.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o search.o  search.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o second.o  second.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o setupg.o  setupg.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o solrot.o  solrot.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o swap.o  swap.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o symtry.o  symtry.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o thermo.o  thermo.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o timer.o  timer.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o update.o  update.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o vecprt.o  vecprt.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o wrtkey.o  wrtkey.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o wrttxt.o  wrttxt.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o xyzint.o  xyzint.f
+gfortran-15  aababc.o  readmo.o writmo.o mopac.o analyt.o anavib.o  axis.o  block.o  bonds.o  brlzon.o  calpar.o capcor.o  cdiag.o  chrge.o  cnvg.o  compfg.o  datin.o dcart.o  delmol.o  delri.o  denrot.o  densit.o  depvar.o deri0.o  deri1.o  deri2.o  deri21.o  deri22.o  deri23.o deritr.o  deriv.o  dernvo.o  ders.o  dfock2.o  dfpsav.o diag.o  diat.o  diat2.o  diis.o  dijkl1.o  dijkl2.o dipind.o  dipole.o  dofs.o  dot.o  drc.o  drcout.o ef.o  enpart.o  exchng.o  ffhpol.o  flepo.o  fmat.o fock1.o  fock2.o  force.o  formxy.o  forsav.o  frame.o freqcy.o  geout.o  geoutg.o  getgeg.o  getgeo.o  getsym.o gettxt.o  gmetry.o  gover.o  grid.o  h1elec.o  haddon.o hcore.o  helect.o  hqrii.o  ijkl.o  interp.o  iter.o jcarin.o  linmin.o  local.o  locmin.o  mamult.o  matout.o matpak.o  meci.o  mecid.o  mecih.o  mecip.o  moldat.o molval.o  mullik.o  mult.o  nllsq.o  nuchar.o  parsav.o partxy.o  pathk.o  paths.o  perm.o  polar.o  powsav.o powsq.o  prtdrc.o  quadr.o  react1.o  reada.o  refer.o repp.o  rotat.o  rotate.o  rsp.o  search.o  second.o setupg.o  solrot.o  swap.o  symtry.o  thermo.o  timer.o update.o  vecprt.o  wrtkey.o  wrttxt.o  xyzint.o  -lm -lpthread -Wl,-ld_classic -flto -o mopac
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+parsav.f:25:21: warning: type of 'nllco2' does not match original declaration [-Wlto-type-mismatch]
+   25 |       COMMON /NLLCO2/ DDDUM(6),EFSLST(MAXPAR),XLAST(MAXPAR),IIIUM(7)
+      |                     ^
+nllsq.f:50:21: note: 'nllco2' was previously declared here
+   50 |       COMMON /NLLCO2/ DDDUM(6),EFSLST(MAXPAR),XLAST(MAXPAR),IIIUM(7)
+      |                     ^
+nllsq.f:50:21: note: code may be misoptimized unless '-fno-strict-aliasing' is used
+fmat.f:34:21: warning: type of 'coord' does not match original declaration [-Wlto-type-mismatch]
+   34 |       COMMON /COORD / COORD(3,NUMATM)
+      |                     ^
+ffhpol.f:21:21: note: 'coord' was previously declared here
+   21 |       COMMON /COORD / COORD(3,NUMATM)
+      |                     ^
+ffhpol.f:21:21: note: code may be misoptimized unless '-fno-strict-aliasing' is used
+polar.f:155:17: warning: type of 'ffhpol' does not match original declaration [-Wlto-type-mismatch]
+  155 |       CALL FFHPOL (HEAT0,ATPOL,DIPVEC)
+      |                 ^
+ffhpol.f:1:7: note: type mismatch in parameter 3
+    1 |       SUBROUTINE FFHPOL (HEAT0,ATPOL)
+      |       ^
+ffhpol.f:1:7: note: 'ffhpol' was previously declared here
+fmat.f:35:21: warning: type of 'nllcom' does not match original declaration [-Wlto-type-mismatch]
+   35 |       COMMON /NLLCOM/ EVECS(MAXPAR*MAXPAR),BMAT(MAXPAR,MAXPAR*2)
+      |                     ^
+freqcy.f:18:21: warning: type of 'nllcom' does not match original declaration [-Wlto-type-mismatch]
+   18 |       COMMON /NLLCOM/ FMAT2D(2*MAXPAR**2), VEC(MAXPAR**2)
+      |                     ^
+nllsq.f:49:21: warning: type of 'nllcom' does not match original declaration [-Wlto-type-mismatch]
+   49 |       COMMON /NLLCOM/ Q(MAXPAR,MAXPAR),R(MAXPAR,MAXPAR*2)
+      |                     ^
+powsq.f:45:21: warning: type of 'nllcom' does not match original declaration [-Wlto-type-mismatch]
+   45 |       COMMON /NLLCOM/ HESS(MAXPAR,MAXPAR),BMAT(MAXPAR,MAXPAR),
+      |                     ^
+ef.f:1121:21: note: 'nllcom' was previously declared here
+ 1121 |       COMMON /NLLCOM/ HESS(MAXPAR,MAXPAR*3)
+      |                     ^
+ef.f:1121:21: note: code may be misoptimized unless '-fno-strict-aliasing' is used
+ef.f:749:21: warning: type of 'fmatrx' does not match original declaration [-Wlto-type-mismatch]
+  749 |       COMMON /FMATRX/OLDF(MAXPAR),D(MAXPAR),VMODE(MAXPAR),
+      |                     ^
+prtdrc.f:30:21: warning: type of 'fmatrx' does not match original declaration [-Wlto-type-mismatch]
+   30 |       COMMON /FMATRX/ ALLXYZ(3,MAXPAR),ALLVEL(3,MAXPAR),PARREF(MAXPAR),
+      |                     ^
+dfpsav.f:42:21: note: 'fmatrx' was previously declared here
+   42 |       COMMON /FMATRX/ HESINV(MAXPAR**2+MAXPAR*3+1), IDUMY2(4)
+      |                     ^
+dfpsav.f:42:21: note: code may be misoptimized unless '-fno-strict-aliasing' is used
+iter.f:75:20: warning: type of 'work3' does not match original declaration [-Wlto-type-mismatch]
+   75 |       COMMON /WORK3/POLD,POLD2,PBOLD,PBOLD2
+      |                    ^
+deri2.f:73:21: note: 'work3' was previously declared here
+   73 |      1       /WORK3 / DIJKL(MPACK*4)
+      |                     ^
+deri2.f:73:21: note: code may be misoptimized unless '-fno-strict-aliasing' is used
+meci.f:46:21: warning: type of 'work2' does not match original declaration [-Wlto-type-mismatch]
+   46 |       COMMON /WORK2 / CIMAT(NMECI**4), EIG(NMECI**2), DIAG(2*NMECI**3)
+      |                     ^
+deri2.f:79:21: note: 'work2' was previously declared here
+   79 |       COMMON /WORK2 / BAB(MMCI,MMCI),
+      |                     ^
+deri2.f:79:21: note: code may be misoptimized unless '-fno-strict-aliasing' is used
+deri2.f:75:21: warning: type of 'civect' does not match original declaration [-Wlto-type-mismatch]
+   75 |      3       /CIVECT/ VECTCI(NMECI**2),BABINV(NMECI**3),
+      |                     ^
+meci.f:49:21: warning: type of 'civect' does not match original declaration [-Wlto-type-mismatch]
+   49 |       COMMON /CIVECT/ VECTCI(NMECI**2),CONF(NMECI**4+1)
+      |                     ^
+deri1.f:39:21: note: 'civect' was previously declared here
+   39 |      3       /CIVECT/ CONF(NMECI**4+NMECI**2+1)
+      |                     ^
+deri1.f:39:21: note: code may be misoptimized unless '-fno-strict-aliasing' is used
+deritr.f:29:21: warning: type of 'ucell' does not match original declaration [-Wlto-type-mismatch]
+   29 |       COMMON /UCELL / L1L,L2L,L3L,L1U,L2U,L3U
+      |                     ^
+dcart.f:21:21: note: 'ucell' was previously declared here
+   21 |       COMMON /UCELL / L1L,L2L,L3L,L1U,L2U,L3U
+      |                     ^
+dcart.f:21:21: note: code may be misoptimized unless '-fno-strict-aliasing' is used
+delri.f:11:22: warning: type of 'multip' does not match original declaration [-Wlto-type-mismatch]
+   11 |       COMMON  /MULTIP/  DD(107),QQ(107),BDD(107,3)
+      |                      ^
+repp.f:43:21: warning: type of 'multip' does not match original declaration [-Wlto-type-mismatch]
+   43 |       COMMON /MULTIP/ DD(107),QQ(107),ADD(107,3)
+      |                     ^
+block.f:11:21: note: 'multip' was previously declared here
+   11 |      2       /MULTIP/ DD(107),QQ(107),AM(107),AD(107),AQ(107)
+      |                     ^
+block.f:11:21: note: code may be misoptimized unless '-fno-strict-aliasing' is used
+moldat.f:26:19: warning: type of 'refs' does not match original declaration [-Wlto-type-mismatch]
+   26 |      1       /REFS/ ALLREF(107,6)
+      |                   ^
+block.f:53:19: note: 'refs' was previously declared here
+   53 |      5       /REFS/ REFMN(107), REFM3(107), REFAM(107), REFPM3(107),
+      |                   ^
+block.f:53:19: note: code may be misoptimized unless '-fno-strict-aliasing' is used
+delmol.f:5:20: warning: type of 'extra' does not match original declaration [-Wlto-type-mismatch]
+    5 |       COMMON /EXTRA/  G(22),TX(3),TY(3),TZ(3)
+      |                    ^
+analyt.f:31:20: note: 'extra' was previously declared here
+   31 |       COMMON /EXTRA/  G(22), TXYZ(9)
+      |                    ^
+analyt.f:31:20: note: code may be misoptimized unless '-fno-strict-aliasing' is used
+compfg.f:23:21: warning: type of 'scftyp' does not match original declaration [-Wlto-type-mismatch]
+   23 |       COMMON /SCFTYP/ EMIN, LIMSCF
+      |                     ^
+mopac.f:17:21: note: 'scftyp' was previously declared here
+   17 |       COMMON /SCFTYP/ EMIN, LIMSCF
+      |                     ^
+mopac.f:17:21: note: code may be misoptimized unless '-fno-strict-aliasing' is used
+writmo.f:340:23: warning: type of 'brlzon' does not match original declaration [-Wlto-type-mismatch]
+  340 |             CALL BRLZON(F, FMAT2D, NORBS, SEC, VEC, ALBAND,MONO3,STEP,2)
+      |                       ^
+freqcy.f:61:20: warning: type of 'brlzon' does not match original declaration [-Wlto-type-mismatch]
+   61 |          CALL BRLZON(FMATRX, FMAT2D, N3, SEC, VEC, ALBAND, MONO3, STEP,1
+      |                    ^
+brlzon.f:1:7: note: 'brlzon' was previously declared here
+    1 |       SUBROUTINE BRLZON(FMATRX,FMAT2D,N3,SEC,VEC, B, MONO3, STEP,MODE)
+      |       ^
+brlzon.f:1:7: note: code may be misoptimized unless '-fno-strict-aliasing' is used
+analyt.f:22:21: warning: type of 'wmatrx' does not match original declaration [-Wlto-type-mismatch]
+   22 |       COMMON /WMATRX/ W(N2ELEC*2)
+      |                     ^
+deri1.f:229:21: warning: type of 'wmatrx' does not match original declaration [-Wlto-type-mismatch]
+  229 |      5       /WMATRX/ WDUMMY(N2ELEC*2)
+      |                     ^
+partxy.f:8:21: warning: type of 'wmatrx' does not match original declaration [-Wlto-type-mismatch]
+    8 |       COMMON /WMATRX/ WJ(N2ELEC), WK(N2ELEC)
+      |                     ^
+writmo.f:25:21: note: 'wmatrx' was previously declared here
+   25 |       COMMON /WMATRX/ WJ(N2ELEC), WK(N2ELEC)
+      |                     ^
+writmo.f:25:21: note: code may be misoptimized unless '-fno-strict-aliasing' is used
+deri22.f:47:21: warning: type of 'work1' does not match original declaration [-Wlto-type-mismatch]
+   47 |       COMMON /WORK1 / FDUMY2(15*NPULAY), DP(6*NPULAY)
+      |                     ^
+dernvo.f:57:21: warning: type of 'work1' does not match original declaration [-Wlto-type-mismatch]
+   57 |       COMMON /WORK1 / FMOOFF(NPULAY*4), FMOON(NPULAY*4),
+      |                     ^
+iter.f:76:20: warning: type of 'work1' does not match original declaration [-Wlto-type-mismatch]
+   76 |       COMMON /WORK1/ AR1,AR2,AR3,AR4,BR1,BR2,BR3,BR4
+      |                    ^
+writmo.f:20:21: note: 'work1' was previously declared here
+   20 |       COMMON /WORK1 /  FMAT2D(NPULAY*4), SEC(NPULAY*2), VEC(NPULAY*2),
+      |                     ^
+writmo.f:20:21: note: code may be misoptimized unless '-fno-strict-aliasing' is used
+anavib.f:11:21: warning: type of 'fokmat' does not match original declaration [-Wlto-type-mismatch]
+   11 |       COMMON /FOKMAT/ F(MPACK*2)
+      |                     ^
+writmo.f:12:21: note: 'fokmat' was previously declared here
+   12 |       COMMON /FOKMAT/ F(MPACK), FB(MPACK)
+      |                     ^
+writmo.f:12:21: note: code may be misoptimized unless '-fno-strict-aliasing' is used
+deri22.f:44:21: warning: type of 'densty' does not match original declaration [-Wlto-type-mismatch]
+   44 |       COMMON /DENSTY/ PDUMY(MPACK*2), DPA(MPACK)
+      |                     ^
+fmat.f:26:21: warning: type of 'densty' does not match original declaration [-Wlto-type-mismatch]
+   26 |       COMMON /DENSTY/ P(MPACK),PDUMY(2,MPACK)
+      |                     ^
+writmo.f:14:21: note: 'densty' was previously declared here
+   14 |       COMMON /DENSTY/ P(MPACK),PA(MPACK),PB(MPACK)
+      |                     ^
+writmo.f:14:21: note: code may be misoptimized unless '-fno-strict-aliasing' is used
+bonds.f:9:21: warning: type of 'scrach' does not match original declaration [-Wlto-type-mismatch]
+    9 |       COMMON /SCRACH/ B(MAXORB,MAXORB), BONDAB(NATMS2)
+      |                     ^
+diag.f:44:21: warning: type of 'scrach' does not match original declaration [-Wlto-type-mismatch]
+   44 |       COMMON /SCRACH/ FMO(MORB2), XDUMY(MAXPAR**2-MORB2)
+      |                     ^
+ef.f:159:21: warning: type of 'scrach' does not match original declaration [-Wlto-type-mismatch]
+  159 |       COMMON /SCRACH/ PVEC
+      |                     ^
+enpart.f:48:21: warning: type of 'scrach' does not match original declaration [-Wlto-type-mismatch]
+   48 |       COMMON /SCRACH/ EA(NUMATM,2),EAT(NUMATM), E(NATMS2,4),
+      |                     ^
+force.f:28:21: warning: type of 'scrach' does not match original declaration [-Wlto-type-mismatch]
+   28 |       COMMON /SCRACH/ STORE(MAXPAR**2)
+      |                     ^
+freqcy.f:21:21: warning: type of 'scrach' does not match original declaration [-Wlto-type-mismatch]
+   21 |       COMMON /SCRACH/ OLDF(MAXPAR**2)
+      |                     ^
+local.f:28:21: warning: type of 'scrach' does not match original declaration [-Wlto-type-mismatch]
+   28 |       COMMON /SCRACH/ COLD(MAXORB,MAXORB),XDUMY(MAXPAR**2-MAXORB*MAXORB)
+      |                     ^
+writmo.f:29:21: note: 'scrach' was previously declared here
+   29 |       COMMON /SCRACH/ RXYZ(MPACK), XDUMY(MAXPAR**2-MPACK)
+      |                     ^
+writmo.f:29:21: note: code may be misoptimized unless '-fno-strict-aliasing' is used
+force.f:13:21: warning: type of 'vector' does not match original declaration [-Wlto-type-mismatch]
+   13 |       COMMON /VECTOR/ CNORML(MAXPAR*MAXPAR),FREQ(MAXPAR),DUMMY(IPADD)
+      |                     ^
+ijkl.f:29:21: warning: type of 'vector' does not match original declaration [-Wlto-type-mismatch]
+   29 |       COMMON /VECTOR/ DUMY1(MORB2+MAXORB), CIJ(10*MAXORB),
+      |                     ^
+writmo.f:13:21: note: 'vector' was previously declared here
+   13 |       COMMON /VECTOR/ C(MORB2),EIGS(MAXORB),CBETA(MORB2),EIGB(MAXORB)
+      |                     ^
+writmo.f:13:21: note: code may be misoptimized unless '-fno-strict-aliasing' is used
+force.f:11:21: warning: type of 'gradnt' does not match original declaration [-Wlto-type-mismatch]
+   11 |       COMMON /GRADNT/ GRAD(MAXPAR),GNORM
+      |                     ^
+writmo.f:36:21: note: 'gradnt' was previously declared here
+   36 |       COMMON /GRADNT/ GRAD(MAXPAR), GNORM
+      |                     ^
+writmo.f:36:21: note: code may be misoptimized unless '-fno-strict-aliasing' is used
+deri23.f:27:21: warning: type of 'molkst' does not match original declaration [-Wlto-type-mismatch]
+   27 |      1       /MOLKST/ NDUMY(4*NUMATM+8),FRACT
+      |                     ^
+meci.f:37:21: warning: type of 'molkst' does not match original declaration [-Wlto-type-mismatch]
+   37 |       COMMON /MOLKST/ NUMAT,NAT(NUMATM),NFIRST(NUMATM),NMIDLE(NUMATM),
+      |                     ^
+writmo.f:657:22: note: 'molkst' was previously declared here
+  657 |       COMMON / MOLKST/ NUMAT,NAT(NUMATM),NFIRST(NUMATM),NMIDLE(NUMATM),
+      |                      ^
+writmo.f:657:22: note: code may be misoptimized unless '-fno-strict-aliasing' is used
+deritr.f:28:21: warning: type of 'geosym' does not match original declaration [-Wlto-type-mismatch]
+   28 |       COMMON /GEOSYM/ NDEP, IDUMYS(MAXPAR,3)
+      |                     ^
+readmo.f:67:21: note: 'geosym' was previously declared here
+   67 |       COMMON /GEOSYM/ NDEP, LOCPAR(MAXPAR), IDEPFN(MAXPAR),
+      |                     ^
+readmo.f:67:21: note: code may be misoptimized unless '-fno-strict-aliasing' is used
+getgeo.f:25:21: warning: type of 'path' does not match original declaration [-Wlto-type-mismatch]
+   25 |       COMMON /PATH  / IDUM(2),REACT(3,66), DUMM1,DUMM2
+      |                     ^
+readmo.f:58:21: note: 'path' was previously declared here
+   58 |       COMMON /PATH  / LATOM,LPARAM,REACT(200)
+      |                     ^
+readmo.f:58:21: note: code may be misoptimized unless '-fno-strict-aliasing' is used
+writmo.f:6:21: warning: type of 'keywrd' does not match original declaration [-Wlto-type-mismatch]
+    6 |       COMMON /KEYWRD/ KEYWRD
+      |                     ^
+force.f:10:21: warning: type of 'keywrd' does not match original declaration [-Wlto-type-mismatch]
+   10 |       COMMON /KEYWRD/ KEYWRD
+      |                     ^
+locmin.f:5:21: warning: type of 'keywrd' does not match original declaration [-Wlto-type-mismatch]
+    5 |       COMMON /KEYWRD/ CONTRL
+      |                     ^
+readmo.f:55:21: note: 'keywrd' was previously declared here
+   55 |       COMMON /KEYWRD/ KEYWRD
+      |                     ^
+readmo.f:55:21: note: code may be misoptimized unless '-fno-strict-aliasing' is used
+lto-wrapper: warning: using serial compilation of 13 LTRANS jobs
+lto-wrapper: note: see the '-flto' option documentation for more information
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+mv mopac ../../../bin
+/Library/Developer/CommandLineTools/usr/bin/make -C resp  install
+gfortran-15 -c  -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o amopen.o  amopen.F
+gfortran-15 -c  -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o lapack.o  lapack.F
+gfortran-15 -c  -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o mexit.o  mexit.F
+gfortran-15 -c  -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o resp.o  resp.F
+gfortran-15  amopen.o lapack.o mexit.o resp.o   -lm -lpthread -Wl,-ld_classic -flto -o resp 
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+mv resp  ../../bin
+/Library/Developer/CommandLineTools/usr/bin/make -C docktools  install
+/Library/Developer/CommandLineTools/usr/bin/make -C chemgrids      install
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o chemgrid.o  chemgrid.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o dist.o  dist.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o ddist.o  ddist.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o dconst.o  dconst.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o grdout.o  grdout.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o parmrec.o  parmrec.f
+gfortran-15 -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam chemgrid.o dist.o ddist.o dconst.o grdout.o parmrec.o  -o chemgrid
+mv chemgrid  ../../../bin
+/Library/Developer/CommandLineTools/usr/bin/make -C solvgrids      install
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o chemgrid.o  chemgrid.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o dist.o  dist.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o ddist.o  ddist.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o dconst.o  dconst.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o grdout.o  grdout.f
+gfortran-15 -c -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o parmrec.o  parmrec.f
+gfortran-15 -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam chemgrid.o dist.o ddist.o dconst.o grdout.o parmrec.o  -o solvgrid
+gfortran-15 -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam   solvmap.f   -o solvmap
+mv solvgrid solvmap ../../../bin
+/Library/Developer/CommandLineTools/usr/bin/make -C solvgrids_sev  install
+gfortran-15 -c -O3 -DLINUX -fcray-pointer -fdefault-integer-8 -fdefault-real-8 -o sas.o  sas.f
+gcc-15 -c  -O3 -g -DLINUX  -o memalloc.o  memalloc.c
+gfortran-15 -c -O3 -DLINUX -fcray-pointer -fdefault-integer-8 -fdefault-real-8 -o cube.o  cube.f
+gfortran-15 -c -O3 -DLINUX -fcray-pointer -fdefault-integer-8 -fdefault-real-8 -o solvmap.o  solvmap.f
+gfortran-15 -O3 -DLINUX -fcray-pointer -fdefault-integer-8 -fdefault-real-8  sas.o cube.o memalloc.o solvmap.o -o sevsolv
+mv sevsolv ../../../bin
+/Library/Developer/CommandLineTools/usr/bin/make -C convgrids      install
+make -f gridconv.mk install
+/bin/rm -f grid.o io_grid.o io_gridf.o label.o label_node.o label_chem.o label_vdw.o parm.o parm_grid.o utility.o 
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o grid.o  grid.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o io_grid.o  io_grid.c
+gfortran-15 -c  -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o io_gridf.o  io_gridf.F
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o label.o  label.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o label_node.o  label_node.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o label_chem.o  label_chem.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o label_vdw.o  label_vdw.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o parm.o  parm.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o parm_grid.o  parm_grid.c
+gcc-15 -c  -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o utility.o  utility.c
+gfortran-15  -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam grid.o io_grid.o io_gridf.o label.o label_node.o label_chem.o label_vdw.o parm.o parm_grid.o utility.o  -lm -lpthread -Wl,-ld_classic -flto -o grid-convert \
+	    
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+io_grid.c:45:8: warning: type of 'readgrid_' does not match original declaration [-Wlto-type-mismatch]
+   45 |   void readgrid_ (char *, int *, int *, int *, float *, int [], float [], int *,
+      |        ^
+io_gridf.F:16:31: note: return value type mismatch
+   16 |       integer function readgrid(grdfil, iflag37, iflagqnifft, ngrd,
+      |                               ^
+io_gridf.F:16:31: note: type 'int' should match type 'void'
+io_gridf.F:16:31: note: 'readgrid' was previously declared here
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+mv grid-convert ../../../bin
+make -f gridrdsl.mk install
+/bin/rm -f grid.o io_grid.o io_gridf.o label.o label_node.o label_chem.o label_vdw.o parm.o parm_grid.o utility.o 
+gcc-15 -c -DBUILD_FOR_RDSOL -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o grid.o  grid.c
+gcc-15 -c -DBUILD_FOR_RDSOL -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o io_grid.o  io_grid.c
+gfortran-15 -c -DBUILD_FOR_RDSOL -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o io_gridf.o  io_gridf.F
+gcc-15 -c -DBUILD_FOR_RDSOL -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o label.o  label.c
+gcc-15 -c -DBUILD_FOR_RDSOL -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o label_node.o  label_node.c
+gcc-15 -c -DBUILD_FOR_RDSOL -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o label_chem.o  label_chem.c
+gcc-15 -c -DBUILD_FOR_RDSOL -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o label_vdw.o  label_vdw.c
+gcc-15 -c -DBUILD_FOR_RDSOL -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o parm.o  parm.c
+gcc-15 -c -DBUILD_FOR_RDSOL -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o parm_grid.o  parm_grid.c
+gcc-15 -c -DBUILD_FOR_RDSOL -O3 -Wl,-ld_classic -std=gnu17 -D_DARWIN_C_SOURCE -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam -o utility.o  utility.c
+gfortran-15  -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -fno-math-errno -fno-trapping-math -flto -pipe -fweb -fira-loop-pressure -fgcse-after-reload -fsplit-paths -floop-nest-optimize -fpeel-loops -fsplit-loops -floop-unroll-and-jam grid.o io_grid.o io_gridf.o label.o label_node.o label_chem.o label_vdw.o parm.o parm_grid.o utility.o  -lm -lpthread -Wl,-ld_classic -flto -o grid-convrds \
+	    
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+io_grid.c:41:8: warning: type of 'readgrid_' does not match original declaration [-Wlto-type-mismatch]
+   41 |   void readgrid_ (char *, int *, int *, int *, float *, int [], float [], int *,
+      |        ^
+io_gridf.F:11:31: note: return value type mismatch
+   11 |       integer function readgrid(grdfil, iflag37, iflagqnifft, ngrd,
+      |                               ^
+io_gridf.F:11:31: note: type 'int' should match type 'void'
+io_gridf.F:11:31: note: 'readgrid' was previously declared here
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+mv grid-convrds ../../../bin
+cp -p make_phimap  ../../bin/
+
+Installation of 
+DOCK v6.13
+utilities is complete at Sat 16 May 2026 21:37:07 PDT.
+

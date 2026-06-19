@@ -1,0 +1,147 @@
+# Project Build Log — DOCK 6.13.1 on macOS
+
+## Initial State (Sat 16 May 2026)
+
+### System
+- macOS 26.4.1 (darwin25)
+- Apple Silicon (arm64)
+- Xcode CLT with Apple Clang 21.0.0
+- Homebrew GCC 11.5.0 and 15.2.0_1
+
+### Problem
+`./configure homebrew` and initial `make` failed. The generated `config.h` had:
+- `CC=gcc`, `CXX=g++` → Apple Clang (not GCC!)
+- `FC=gfortran-11` → GCC 11 (targets MacOSX14.sdk, no longer available)
+- `LOAD=g++-11` → GCC 11 (ABI mismatch with Clang objects)
+- Missing `-D_DARWIN_C_SOURCE` in CFLAGS/CXXFLAGS (partial fix from libgphoto2#552)
+- Missing `YACC` definition (tleap needs it for parser.y)
+
+## Fix Applied (Sat 16 May 2026 12:31)
+
+Edited `install/config.h`:
+- `gcc-11` → `gcc-15` (CC, was Apple Clang alias in previous attempt)
+- `g++-11` → `g++-15` (CXX)
+- `gfortran-11` → `gfortran-15` (FC) — avoids SDK mismatch (MacOSX14.sdk not found)
+- `g++-11` → `g++-15` (LOAD) — consistent linker
+- Added `-D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600` to CFLAGS and CXXFLAGS
+- Added `YACC= yacc` for tleap parser generation
+
+### Build Attempt 1 — NAB strdup error
+`sff.c:1615` strdup implicit declaration. Root cause: `OCFLAGS=-O3 -D_ANSI_SOURCE` suppresses POSIX functions even though `-D$(LEX)` adds `-D_DARWIN_C_SOURCE`.
+Fix: Replaced `-D_ANSI_SOURCE` with `-D_DARWIN_C_SOURCE` in OCFLAGS.
+
+### Build Attempt 2 — NAB C function prototype errors
+`reslib.c:289` and many more: GCC 15 defaults to `-std=gnu23` where empty `()` in C declarations means `(void)`, breaking K&R-style NAB code.
+Fix: Added `-std=gnu17` to CFLAGS.
+
+### Build Attempt 3 — SUCCESS for dock6
+`dock6` built successfully (2.5M) at `bin/dock6`.
+
+### Utils Build Attempt 1 — tleap yacc failure
+`/usr/bin/yacc` requires Xcode.app but only CLT installed.
+Fix: installed Homebrew bison (`brew install bison`), set `YACC=/opt/homebrew/opt/bison/bin/bison --yacc`.
+
+### Utils Build Attempt 2 — bison output filename
+Homebrew bison 3.8.2 outputs `parser.tab.c` not `y.tab.c`.
+Fix: added `--yacc` flag to bison invocation for yacc-compatible output.
+
+### Final Build — COMPLETE SUCCESS (Sat 16 May 2026 12:38)
+All executables built and installed in `bin/`:
+- dock6 (2.5M) — main executable
+- accessories: showbox, showsphere, sphgen, sphere_selector
+- gbsa_grids: nchemgrid_GB, nchemgrid_SA
+- grid
+- tleap: teLeap
+- antechamber: antechamber, atomtype, bondtype, am1bcc, espgen, parmcal, parmchk, prepgen, respgen
+- mopac6: mopac
+- resp
+- docktools: chemgrid, solvgrid, solvmap, sevsolv, grid-convert, grid-convrds, make_phimap
+
+## Optimization Pass (Sat 16 May 2026 12:49)
+
+### Removed -D_XOPEN_SOURCE=600
+Verified: `-D_XOPEN_SOURCE=600` is redundant when `-D_DARWIN_C_SOURCE` is present on macOS. Both enable POSIX extensions (including `strdup`), and `_DARWIN_C_SOURCE` is the superset. Compiled `sff.c` without it as a quick test, then full clean rebuild — zero errors.
+
+### Added Optimization Flags
+Changed from `-O2` to full optimization:
+- `-O3` — max safe optimization level
+- `-march=native` — tune for Apple Silicon M-series
+- `-ffast-math` — relax IEEE FP compliance for speed (user confirmed used historically)
+- `-flto` — link-time optimization across translation units
+- `-pipe` — faster compilation (pipes instead of temp files)
+
+Applied to CFLAGS, CXXFLAGS, OCFLAGS (minus pipe for FFLAGS). Added `-flto` to LIBS for linker.
+
+Full clean rebuild (`make -i distclean → make all`): **37/37 executables built, zero errors.**
+
+## Test Suite (Sat 16 May 2026 12:54)
+
+### Issue: Non-executable scripts
+Several scripts in `bin/` and `test/` lacked execute permissions after build:
+- `bin/mopac.sh` — blocked amber scoring tests
+- `bin/prepare_amber.pl`, `bin/prepare_rna_amber.pl`
+- `bin/combine_torenv.py`, `bin/mol2.py`, `bin/mol2bild.py`, `bin/multigrid_fp_gen.py`
+- `test/dockdif` — blocked all test comparisons
+
+Fix: `chmod +x` on all script files.
+
+### Test Results
+Test suite (`make test`) exits 0. All scoring results (mol2 files) PASS — docking calculations are numerically identical. Dockout diffs are only "Virtual memory" / "Physical memory" format lines (cosmetic).
+
+Minor differences from `-ffast-math` in utility outputs:
+- Sphere coordinates: ~0.01 Angstrom (floating-point truncation)
+- `sphgen` clustering: 21 vs 20 clusters (algorithmic sensitivity at cluster boundary)
+
+If bitwise reproducibility is required, remove `-ffast-math` from CFLAGS/CXXFLAGS/OCFLAGS and rebuild.
+
+## Compiler Optimization Pass (Sat 16 May 2026)
+
+### Replace `-ffast-math` with Safer Flags
+`-ffast-math` suspected of slightly lowering runtime success rates. Removed from all 4 flag variables (CFLAGS, CXXFLAGS, FFLAGS, OCFLAGS). Replaced with IEEE-result-preserving safe subset:
+- `-fno-math-errno` — math functions won't set errno (safe inlines)
+- `-fno-trapping-math` — no FP exception handlers (safe)
+- Removed dangerous sub-flags: `-ffinite-math-only`, `-funsafe-math-optimizations`, `-fassociative-math`, `-freciprocal-math`
+
+### Added Register Allocation & CSE Optimizations
+- `-fweb` — splits register lifetimes for better allocation
+- `-fira-loop-pressure` — loop-aware register allocation
+- `-fgcse-after-reload` — catches CSE opportunities after register allocation
+- `-fsplit-paths` — optimizes if-then-else chains
+
+### Added Loop Nest & Graphite Optimizations
+- `-floop-nest-optimize` — polyhedral loop nest optimization
+- `-fpeel-loops` — peels loop prologue/epilogue
+- `-fsplit-loops` — splits loops with multiple exits
+- `-floop-unroll-and-jam` — outer loop unrolling + inner loop jamming
+
+Applied identically to CFLAGS, CXXFLAGS, FFLAGS, and OCFLAGS.
+
+### Created PGO Build Script (`install/pgo_build.sh`)
+Three-phase profile-guided optimization process using the test suite as training workload:
+- **Phase 1** (`-fprofile-generate=/tmp/dock6_pgo_gcda` via DOCKBUILDFLAGS): Builds instrumented binaries
+- **Phase 2** (`make test`): Runs test suite as training workload, collecting profile data
+- **Phase 3** (`-fprofile-use -fprofile-correction`): Deletes .o files, rebuilds optimized binaries using profile data
+
+### PGO Build Attempt — Fortran linking issue
+Phase 1 instrumentation build failed at `nchemgrid_GB` link step: `gfortran-15` didn't auto-link `libgcov` (undefined `___gcov_exit`, etc.). Root cause: several Fortran utility Makefiles (`gbsa_grids/schemgrid_GB/SA/Makefile`, etc.) use `$(FC) $(FFLAGS) $(OBJS) -o $@` for linking but omit `$(DOCKBUILDFLAGS)`. The `-lgcov` library was never linked despite being in DOCKBUILDFLAGS.
+
+### Revised Approach — dock6-only PGO
+Switched to building only the dock6 binary with PGO instrumentation. Utilities are built normally (without PGO) in the same phase 1 build. This avoids the Fortran Makefile issue entirely.
+
+Usage:
+```bash
+cd install && ./pgo_build.sh      # PGO build (dock6 only)
+cd install && ./pgo_build.sh clean  # Remove PGO artifacts
+```
+
+### PGO Build Execution (Sat 16 May 2026 21:23–21:39)
+
+**Phase 1 — Instrumentation build** (21:23:57): Built dock6 with `-fprofile-generate=/tmp/dock6_pgo_gcda` via DOCKBUILDFLAGS in `pgo_build_phase1.log`. Utilities built normally (no PGO flags). Zero errors.
+
+**Phase 2 — Training run** (21:37:08): Ran `make test` as the training workload. Log in `pgo_build_phase2.log`. Collected 57 `.gcda` profile data files in `/tmp/dock6_pgo_gcda/`.
+
+**Phase 3 — Optimized rebuild** (21:38:34–21:39:58): Deleted dock6 `.o` files, rebuilt with `-fprofile-use=/tmp/dock6_pgo_gcda -fprofile-correction`. Log in `pgo_build_phase3.log`. Zero errors (warnings only: nodiscard in `conf_gen_ga.cpp:9033`, old-style `mmo_yyinput`, deprecated `-ld_classic`, and existing NAB `free_vector` warnings).
+
+**Result:** PGO-optimized `bin/dock6` = **1.8 MB** (was 2.5 MB with `-O3 -flto` alone). Size reduction from better inlining decisions driven by profile data.
+
+**Verification:** `make test` exits 0. Scoring results all PASS. Only cosmetic diff: `selected_cluster.pdb` (cluster numbering variation in `showsphere`, same as non-PGO run). The amber scoring test had `mopac.sh: Permission denied` (scripts lose +x on `make utils`), fixed by `chmod +x` on `bin/mopac.sh`, `bin/combine_torenv.py`, `bin/mol2.py`, `bin/mol2bild.py`.

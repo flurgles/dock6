@@ -34,6 +34,7 @@ amber_score_gb_model                                         5
 amber_score_nonbonded_cutoff                                 18.0
 amber_score_temperature                                      300.0
 amber_score_abort_on_unprepped_ligand                        yes
+minimizer_type                                               simplex
 ligand_outfile_prefix                                        move_everything
 write_mol_solvation                                          no
 write_orientations                                           no

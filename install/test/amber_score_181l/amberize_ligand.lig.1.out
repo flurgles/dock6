@@ -1,0 +1,45 @@
+Using ligand file prefix: lig.1
+Using antechamber options: -nc 0 -c bcc
+Executing antechamber to generate the mol2 file with GAFF and charges.
+
+
+Total number of electrons: 100; net charge: 0
+
+Running: $DOCK_HOME/bin/mopac.sh
+sh: /Users/user/dock6/dock6/bin/mopac.sh: Permission denied
+Error: cannot run "$DOCK_HOME/bin/mopac.sh" of bcc() in charge.c properly, exit
+Running: /Users/user/dock6/dock6/bin/bondtype -i ANTECHAMBER_BOND_TYPE.AC0 -o ANTECHAMBER_BOND_TYPE.AC -f ac -j full
+
+Running: /Users/user/dock6/dock6/bin/atomtype -i ANTECHAMBER_AC.AC0 -o ANTECHAMBER_AC.AC -p gaff
+Executing parmchk to generate the force field parameters.
+Cannot open file lig.1.gaff.mol2, exit
+grep: lig.1.frcmod: No such file or directory
+Executing LEaP to generate the Amber input files.
+-I: Adding /Users/user/dock6/dock6/parameters/leap/prep to search path.
+-I: Adding /Users/user/dock6/dock6/parameters/leap/lib to search path.
+-I: Adding /Users/user/dock6/dock6/parameters/leap/parm to search path.
+-I: Adding /Users/user/dock6/dock6/parameters/leap/cmd to search path.
+-s: Ignoring startup file: leaprc
+-f: Source /tmp/_Users_user_dock6_dock6_bin_amberize_ligand.leapin.61085.
+
+Welcome to LEaP!
+Sourcing: /tmp/_Users_user_dock6_dock6_bin_amberize_ligand.leapin.61085
+Log file: ./leap.log
+----- Source: /Users/user/dock6/dock6/parameters/leap/cmd/leaprc.gaff
+----- Source of /Users/user/dock6/dock6/parameters/leap/cmd/leaprc.gaff done
+Log file: ./leap.log
+Loading parameters: /Users/user/dock6/dock6/parameters/leap/parm/gaff.dat
+Reading title:
+AMBER General Force Field for organic mol., add. info. at the end (June, 2003)
+Could not open file lig.1.frcmod: not found
+----- Source: /Users/user/dock6/dock6/parameters/leap/cmd/leaprc.dock.user
+----- Source of /Users/user/dock6/dock6/parameters/leap/cmd/leaprc.dock.user done
+Could not open file lig.1.gaff.mol2: not found
+check: Argument #1 is type String must be of type: [unit molecule residue atom]
+usage:  check <unit> [parmset]
+savePdb: Argument #1 is type String must be of type: [unit]
+usage:  savePdb <object> <filename>
+saveAmberParm: Argument #1 is type String must be of type: [unit]
+usage:  saveAmberParm <unit> <topologyfile> <coordfile> 
+	Quit
+Error: the output file, lig.1.prmtop, is not complete !

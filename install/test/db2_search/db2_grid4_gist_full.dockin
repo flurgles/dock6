@@ -27,6 +27,7 @@ gist_score_rep_exp                                           12
 gist_score_gist_scale                                        -1
 gist_score_gist_type                                         displace
 gist_score_grid_file                                         ../gist_score/gist-EswPlus2Eww_ref.dx
+minimizer_type                                               simplex
 minimize_ligand                                              yes
 simplex_max_iterations                                       1000
 simplex_tors_premin_iterations                               0

@@ -11,6 +11,7 @@ use_database_filter                                          no
 orient_ligand                                                no
 bump_filter                                                  no
 score_molecules                                              no
+minimizer_type                                               simplex
 ligand_outfile_prefix                                        output
 write_mol_solvation                                          no
 write_orientations                                           no

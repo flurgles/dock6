@@ -1,0 +1,1252 @@
+/Library/Developer/CommandLineTools/usr/bin/make -C  test  test
+Starting validation of 
+DOCK v6.13
+at Sat 16 May 2026 21:37:08 PDT.
+
+make utils; make dock
+cd sphere_generation && make test
+# Construct sphere set in active site
+../../../bin/sphgen
+../dockdif OUTSPH.save OUTSPH
+diffing OUTSPH.save with OUTSPH
+PASSED
+==============================================================
+# Select spheres within 3.0 Ang of ligand 
+../../../bin/sphere_selector struct.sph lig.mol2 3.0
+../dockdif -t 3 selected_spheres.sph.save selected_spheres.sph
+diffing selected_spheres.sph.save with selected_spheres.sph
+PASSED
+==============================================================
+# Convert selected spheres into pdb format for viewing
+../../../bin/showsphere < select.in > /dev/null
+../dockdif selected_cluster.pdb.save selected_cluster.pdb
+diffing selected_cluster.pdb.save with selected_cluster.pdb
+possible FAILURE:  check selected_cluster.pdb.dif
+==============================================================
+cd grid_generation && make test
+# Construct box to enclose spheres
+../../../bin/showbox < box.in > /dev/null
+../dockdif box.pdb.save box.pdb
+diffing box.pdb.save with box.pdb
+PASSED
+==============================================================
+# Compute scoring grids
+../../../bin/grid -i grid.in -o grid.out
+../dockdif grid.out.save grid.out
+diffing grid.out.save with grid.out
+PASSED
+==============================================================
+cd gbsa_grid_generation && make test
+Calculating es grid for Hawkins GB/SA and vdw grid
+# Compute scoring grids
+../../../bin/grid -i grid.in -o grid.out
+../dockdif grid.out.save grid.out
+diffing grid.out.save with grid.out
+PASSED
+==============================================================
+cd nchemgrid_GB_grid_generation && make test
+# Calculate GB grid for Zou GB/SA score
+../../../bin/nchemgrid_GB > /dev/null
+../dockdif -w -t 4 OUTCHEM.save OUTCHEM
+diffing OUTCHEM.save with OUTCHEM
+PASSED
+==============================================================
+../dockdif OUTPARM.save OUTPARM
+diffing OUTPARM.save with OUTPARM
+PASSED
+==============================================================
+cd nchemgrid_SA_grid_generation && make test
+# Calculate SA grid for Zou GB/SA score
+../../../bin/nchemgrid_SA
+../dockdif -w -t 1 OUTCHEM.save OUTCHEM
+diffing OUTCHEM.save with OUTCHEM
+PASSED
+==============================================================
+../dockdif OUTPARM.save OUTPARM
+diffing OUTPARM.save with OUTPARM
+PASSED
+==============================================================
+cd solvgrid_generation && make test
+
+An executable to produce grids was not found.
+    DELPHI_PATH = 
+    QNIFFT_PATH = 
+    Define DELPHI_PATH or QNIFFT_PATH to its full path.
+    Skipping this test.
+
+cd chemgrid_generation && make test
+
+An executable to produce grids was not found.
+    DELPHI_PATH = 
+    QNIFFT_PATH = 
+    Define DELPHI_PATH or QNIFFT_PATH to its full path.
+    Skipping this test.
+
+cd anchor_and_grow && make -e test
+make -e DOCK_VERBOSE='-v' flex1.dockout flex2.dockout flex3.dockout flex4.dockout flex5.dockout fad6_growthtree.dockout flex7.dockout
+
+Processing dock6 test flex1
+../../../bin/dock6 -v -i flex1.dockin -o flex1.dockout
+../dockdif -t 8 flex1.dockout.save flex1.dockout
+diffing flex1.dockout.save with flex1.dockout
+possible FAILURE:  check flex1.dockout.dif
+==============================================================
+diffing flex1_scored.mol2.save with flex1_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test flex2
+../../../bin/dock6 -v -i flex2.dockin -o flex2.dockout
+../dockdif -t 8 flex2.dockout.save flex2.dockout
+diffing flex2.dockout.save with flex2.dockout
+possible FAILURE:  check flex2.dockout.dif
+==============================================================
+diffing flex2_scored.mol2.save with flex2_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test flex3
+../../../bin/dock6 -v -i flex3.dockin -o flex3.dockout
+../dockdif -t 8 flex3.dockout.save flex3.dockout
+diffing flex3.dockout.save with flex3.dockout
+possible FAILURE:  check flex3.dockout.dif
+==============================================================
+diffing flex3_scored.mol2.save with flex3_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test flex4
+../../../bin/dock6 -v -i flex4.dockin -o flex4.dockout
+../dockdif -t 8 flex4.dockout.save flex4.dockout
+diffing flex4.dockout.save with flex4.dockout
+possible FAILURE:  check flex4.dockout.dif
+==============================================================
+diffing flex4_scored.mol2.save with flex4_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test flex5
+../../../bin/dock6 -v -i flex5.dockin -o flex5.dockout
+../dockdif -t 8 flex5.dockout.save flex5.dockout
+diffing flex5.dockout.save with flex5.dockout
+possible FAILURE:  check flex5.dockout.dif
+==============================================================
+diffing flex5_scored.mol2.save with flex5_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test fad6_growthtree
+../../../bin/dock6 -v -i fad6_growthtree.dockin -o fad6_growthtree.dockout
+../dockdif -t 8 fad6_growthtree.dockout.save fad6_growthtree.dockout
+diffing fad6_growthtree.dockout.save with fad6_growthtree.dockout
+possible FAILURE:  check fad6_growthtree.dockout.dif
+==============================================================
+diffing LIG1_anchor1_branch1.mol2.save with LIG1_anchor1_branch1.mol2
+PASSED
+==============================================================
+diffing LIG1_anchor1_branch2.mol2.save with LIG1_anchor1_branch2.mol2
+PASSED
+==============================================================
+diffing LIG1_anchor1_branch3.mol2.save with LIG1_anchor1_branch3.mol2
+PASSED
+==============================================================
+diffing LIG1_anchor1_branch4.mol2.save with LIG1_anchor1_branch4.mol2
+PASSED
+==============================================================
+diffing LIG1_anchor1_branch5.mol2.save with LIG1_anchor1_branch5.mol2
+PASSED
+==============================================================
+diffing fad6_growthtree_scored.mol2.save with fad6_growthtree_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test flex7
+../../../bin/dock6 -v -i flex7.dockin -o flex7.dockout
+../dockdif -t 8 flex7.dockout.save flex7.dockout
+diffing flex7.dockout.save with flex7.dockout
+possible FAILURE:  check flex7.dockout.dif
+==============================================================
+diffing LIG1_anchor1_branch1.mol2.save with LIG1_anchor1_branch1.mol2
+PASSED
+==============================================================
+diffing LIG1_anchor1_branch2.mol2.save with LIG1_anchor1_branch2.mol2
+PASSED
+==============================================================
+diffing LIG1_anchor1_branch3.mol2.save with LIG1_anchor1_branch3.mol2
+PASSED
+==============================================================
+diffing LIG1_anchor1_branch4.mol2.save with LIG1_anchor1_branch4.mol2
+PASSED
+==============================================================
+diffing LIG1_anchor1_branch5.mol2.save with LIG1_anchor1_branch5.mol2
+PASSED
+==============================================================
+diffing flex7_scored.mol2.save with flex7_scored.mol2
+PASSED
+==============================================================
+cd bump_filter && make -e test
+cd ../grid_generation && make test
+# Construct box to enclose spheres
+../../../bin/showbox < box.in > /dev/null
+../dockdif box.pdb.save box.pdb
+diffing box.pdb.save with box.pdb
+PASSED
+==============================================================
+# Compute scoring grids
+../../../bin/grid -i grid.in -o grid.out
+../dockdif grid.out.save grid.out
+diffing grid.out.save with grid.out
+PASSED
+==============================================================
+
+Processing dock6 test bump1
+../../../bin/dock6  -i bump1.dockin -o bump1.dockout
+../dockdif -t 8 bump1.dockout.save bump1.dockout
+diffing bump1.dockout.save with bump1.dockout
+possible FAILURE:  check bump1.dockout.dif
+==============================================================
+diffing bump1_scored.mol2.save with bump1_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test bump2
+../../../bin/dock6  -i bump2.dockin -o bump2.dockout
+../dockdif -t 8 bump2.dockout.save bump2.dockout
+diffing bump2.dockout.save with bump2.dockout
+possible FAILURE:  check bump2.dockout.dif
+==============================================================
+diffing bump2_scored.mol2.save with bump2_scored.mol2
+PASSED
+==============================================================
+cd internal_energy && make -e test
+
+Processing dock6 test cutoff0
+../../../bin/dock6  -i cutoff0.dockin -o cutoff0.dockout
+../dockdif -t 8 cutoff0.dockout.save cutoff0.dockout
+diffing cutoff0.dockout.save with cutoff0.dockout
+possible FAILURE:  check cutoff0.dockout.dif
+==============================================================
+
+Processing dock6 test orient
+../../../bin/dock6  -i orient.dockin -o orient.dockout
+../dockdif -t 8 orient.dockout.save orient.dockout
+diffing orient.dockout.save with orient.dockout
+possible FAILURE:  check orient.dockout.dif
+==============================================================
+diffing orient_scored.mol2.save with orient_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test orientflex
+../../../bin/dock6  -i orientflex.dockin -o orientflex.dockout
+../dockdif -t 8 orientflex.dockout.save orientflex.dockout
+diffing orientflex.dockout.save with orientflex.dockout
+possible FAILURE:  check orientflex.dockout.dif
+==============================================================
+diffing orientflex_scored.mol2.save with orientflex_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test orientscore
+../../../bin/dock6  -i orientscore.dockin -o orientscore.dockout
+../dockdif -t 8 orientscore.dockout.save orientscore.dockout
+diffing orientscore.dockout.save with orientscore.dockout
+possible FAILURE:  check orientscore.dockout.dif
+==============================================================
+diffing orientscore_scored.mol2.save with orientscore_scored.mol2
+PASSED
+==============================================================
+cd conf_gen_int_score && make -e test
+make -e DOCK_VERBOSE='-v' dock_confgen_anchor1.dockout  dock_get_anchors.dockout 
+
+Processing dock6 test dock_confgen_anchor1
+../../../bin/dock6 -v -i dock_confgen_anchor1.dockin -o dock_confgen_anchor1.dockout
+../dockdif -t 8 dock_confgen_anchor1.dockout.save dock_confgen_anchor1.dockout
+diffing dock_confgen_anchor1.dockout.save with dock_confgen_anchor1.dockout
+possible FAILURE:  check dock_confgen_anchor1.dockout.dif
+==============================================================
+
+Processing dock6 test dock_get_anchors
+../../../bin/dock6 -v -i dock_get_anchors.dockin -o dock_get_anchors.dockout
+../dockdif -t 8 dock_get_anchors.dockout.save dock_get_anchors.dockout
+diffing dock_get_anchors.dockout.save with dock_get_anchors.dockout
+possible FAILURE:  check dock_get_anchors.dockout.dif
+==============================================================
+cd ligand_io && make -e test
+
+Processing dock6 test io1
+../../../bin/dock6  -i io1.dockin -o io1.dockout
+../dockdif -t 8 io1.dockout.save io1.dockout
+diffing io1.dockout.save with io1.dockout
+possible FAILURE:  check io1.dockout.dif
+==============================================================
+diffing io1_orients.mol2.save with io1_orients.mol2
+PASSED
+==============================================================
+diffing io1_scored.mol2.save with io1_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test io2
+../../../bin/dock6  -i io2.dockin -o io2.dockout
+../dockdif -t 8 io2.dockout.save io2.dockout
+diffing io2.dockout.save with io2.dockout
+possible FAILURE:  check io2.dockout.dif
+==============================================================
+diffing io2_orients.mol2.save with io2_orients.mol2
+PASSED
+==============================================================
+diffing io2_ranked.mol2.save with io2_ranked.mol2
+PASSED
+==============================================================
+
+Processing dock6 test io3
+../../../bin/dock6  -i io3.dockin -o io3.dockout
+../dockdif -t 8 io3.dockout.save io3.dockout
+diffing io3.dockout.save with io3.dockout
+possible FAILURE:  check io3.dockout.dif
+==============================================================
+diffing io3_orients.mol2.save with io3_orients.mol2
+PASSED
+==============================================================
+diffing io3_scored.mol2.save with io3_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test io4
+../../../bin/dock6  -i io4.dockin -o io4.dockout
+../dockdif -t 8 io4.dockout.save io4.dockout
+diffing io4.dockout.save with io4.dockout
+possible FAILURE:  check io4.dockout.dif
+==============================================================
+diffing io4_orients.mol2.save with io4_orients.mol2
+PASSED
+==============================================================
+diffing io4_scored.mol2.save with io4_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test normsdreference
+../../../bin/dock6  -i normsdreference.dockin -o normsdreference.dockout
+../dockdif -t 8 normsdreference.dockout.save normsdreference.dockout
+diffing normsdreference.dockout.save with normsdreference.dockout
+possible FAILURE:  check normsdreference.dockout.dif
+==============================================================
+diffing normsdreference_scored.mol2.save with normsdreference_scored.mol2
+PASSED
+==============================================================
+cd ligand_orienting && make -e test
+
+Processing dock6 test orient1
+../../../bin/dock6  -i orient1.dockin -o orient1.dockout
+../dockdif -t 8 orient1.dockout.save orient1.dockout
+diffing orient1.dockout.save with orient1.dockout
+possible FAILURE:  check orient1.dockout.dif
+==============================================================
+diffing orient1_scored.mol2.save with orient1_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test orient2
+../../../bin/dock6  -i orient2.dockin -o orient2.dockout
+../dockdif -t 8 orient2.dockout.save orient2.dockout
+diffing orient2.dockout.save with orient2.dockout
+possible FAILURE:  check orient2.dockout.dif
+==============================================================
+diffing orient2_scored.mol2.save with orient2_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test orient3
+../../../bin/dock6  -i orient3.dockin -o orient3.dockout
+../dockdif -t 8 orient3.dockout.save orient3.dockout
+diffing orient3.dockout.save with orient3.dockout
+possible FAILURE:  check orient3.dockout.dif
+==============================================================
+diffing orient3_scored.mol2.save with orient3_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test orient4
+../../../bin/dock6  -i orient4.dockin -o orient4.dockout
+../dockdif -t 8 orient4.dockout.save orient4.dockout
+diffing orient4.dockout.save with orient4.dockout
+possible FAILURE:  check orient4.dockout.dif
+==============================================================
+diffing orient4_scored.mol2.save with orient4_scored.mol2
+PASSED
+==============================================================
+cd db2_search && make -e test
+make -e DOCK_VERBOSE='-v' db2_grid1.dockout db2_grid2.dockout db2_grid3_gist.dockout db2_grid4_gist_full.dockout
+
+Processing dock6 test db2_grid1
+../../../bin/dock6 -v -i db2_grid1.dockin -o db2_grid1.dockout
+../dockdif -t 8 db2_grid1.dockout.save db2_grid1.dockout
+diffing db2_grid1.dockout.save with db2_grid1.dockout
+possible FAILURE:  check db2_grid1.dockout.dif
+==============================================================
+diffing db2_grid1_scored.mol2.save with db2_grid1_scored.mol2
+possible FAILURE:  check db2_grid1_scored.mol2.dif
+==============================================================
+
+Processing dock6 test db2_grid2
+../../../bin/dock6 -v -i db2_grid2.dockin -o db2_grid2.dockout
+../dockdif -t 8 db2_grid2.dockout.save db2_grid2.dockout
+diffing db2_grid2.dockout.save with db2_grid2.dockout
+possible FAILURE:  check db2_grid2.dockout.dif
+==============================================================
+diffing db2_grid2_scored.mol2.save with db2_grid2_scored.mol2
+possible FAILURE:  check db2_grid2_scored.mol2.dif
+==============================================================
+
+Processing dock6 test db2_grid3_gist
+../../../bin/dock6 -v -i db2_grid3_gist.dockin -o db2_grid3_gist.dockout
+../dockdif -t 8 db2_grid3_gist.dockout.save db2_grid3_gist.dockout
+diffing db2_grid3_gist.dockout.save with db2_grid3_gist.dockout
+possible FAILURE:  check db2_grid3_gist.dockout.dif
+==============================================================
+
+Processing dock6 test db2_grid4_gist_full
+../../../bin/dock6 -v -i db2_grid4_gist_full.dockin -o db2_grid4_gist_full.dockout
+../dockdif -t 8 db2_grid4_gist_full.dockout.save db2_grid4_gist_full.dockout
+diffing db2_grid4_gist_full.dockout.save with db2_grid4_gist_full.dockout
+PASSED
+==============================================================
+cd covalent_attach_and_grow && make -e test
+make -e DOCK_VERBOSE='-v' covalent.dockout covalent_trans_rot.dockout
+
+Processing dock6 test covalent
+../../../bin/dock6 -v -i covalent.dockin -o covalent.dockout
+../dockdif -t 8 covalent.dockout.save covalent.dockout
+diffing covalent.dockout.save with covalent.dockout
+possible FAILURE:  check covalent.dockout.dif
+==============================================================
+
+Processing dock6 test covalent_trans_rot
+../../../bin/dock6 -v -i covalent_trans_rot.dockin -o covalent_trans_rot.dockout
+../dockdif -t 8 covalent_trans_rot.dockout.save covalent_trans_rot.dockout
+diffing covalent_trans_rot.dockout.save with covalent_trans_rot.dockout
+possible FAILURE:  check covalent_trans_rot.dockout.dif
+==============================================================
+cd minimization && make -e test
+cd ../grid_generation && make test
+# Construct box to enclose spheres
+../../../bin/showbox < box.in > /dev/null
+../dockdif box.pdb.save box.pdb
+diffing box.pdb.save with box.pdb
+PASSED
+==============================================================
+# Compute scoring grids
+../../../bin/grid -i grid.in -o grid.out
+../dockdif grid.out.save grid.out
+diffing grid.out.save with grid.out
+PASSED
+==============================================================
+
+Processing dock6 test minimize1
+../../../bin/dock6  -i minimize1.dockin -o minimize1.dockout
+../dockdif -t 8 minimize1.dockout.save minimize1.dockout
+diffing minimize1.dockout.save with minimize1.dockout
+possible FAILURE:  check minimize1.dockout.dif
+==============================================================
+diffing minimize1_scored.mol2.save with minimize1_scored.mol2
+possible FAILURE:  check minimize1_scored.mol2.dif
+==============================================================
+
+Processing dock6 test minimize1_restraint
+../../../bin/dock6  -i minimize1_restraint.dockin -o minimize1_restraint.dockout
+../dockdif -t 8 minimize1_restraint.dockout.save minimize1_restraint.dockout
+diffing minimize1_restraint.dockout.save with minimize1_restraint.dockout
+possible FAILURE:  check minimize1_restraint.dockout.dif
+==============================================================
+diffing minimize1_restraint_scored.mol2.save with minimize1_restraint_scored.mol2
+possible FAILURE:  check minimize1_restraint_scored.mol2.dif
+==============================================================
+
+Processing dock6 test minimize2
+../../../bin/dock6  -i minimize2.dockin -o minimize2.dockout
+../dockdif -t 8 minimize2.dockout.save minimize2.dockout
+diffing minimize2.dockout.save with minimize2.dockout
+possible FAILURE:  check minimize2.dockout.dif
+==============================================================
+diffing minimize2_scored.mol2.save with minimize2_scored.mol2
+possible FAILURE:  check minimize2_scored.mol2.dif
+==============================================================
+
+Processing dock6 test minimize3
+../../../bin/dock6  -i minimize3.dockin -o minimize3.dockout
+../dockdif -t 8 minimize3.dockout.save minimize3.dockout
+diffing minimize3.dockout.save with minimize3.dockout
+possible FAILURE:  check minimize3.dockout.dif
+==============================================================
+diffing minimize3_scored.mol2.save with minimize3_scored.mol2
+possible FAILURE:  check minimize3_scored.mol2.dif
+==============================================================
+
+Processing dock6 test minimize4
+../../../bin/dock6  -i minimize4.dockin -o minimize4.dockout
+../dockdif -t 8 minimize4.dockout.save minimize4.dockout
+diffing minimize4.dockout.save with minimize4.dockout
+possible FAILURE:  check minimize4.dockout.dif
+==============================================================
+diffing minimize4_scored.mol2.save with minimize4_scored.mol2
+possible FAILURE:  check minimize4_scored.mol2.dif
+==============================================================
+
+Processing dock6 test minimize5
+../../../bin/dock6  -i minimize5.dockin -o minimize5.dockout
+../dockdif -t 8 minimize5.dockout.save minimize5.dockout
+diffing minimize5.dockout.save with minimize5.dockout
+possible FAILURE:  check minimize5.dockout.dif
+==============================================================
+diffing minimize5_scored.mol2.save with minimize5_scored.mol2
+possible FAILURE:  check minimize5_scored.mol2.dif
+==============================================================
+
+Processing dock6 test minimize6
+../../../bin/dock6  -i minimize6.dockin -o minimize6.dockout
+../dockdif -t 8 minimize6.dockout.save minimize6.dockout
+diffing minimize6.dockout.save with minimize6.dockout
+possible FAILURE:  check minimize6.dockout.dif
+==============================================================
+diffing minimize6_scored.mol2.save with minimize6_scored.mol2
+possible FAILURE:  check minimize6_scored.mol2.dif
+==============================================================
+
+Processing dock6 test minimize6_restraint
+../../../bin/dock6  -i minimize6_restraint.dockin -o minimize6_restraint.dockout
+../dockdif -t 8 minimize6_restraint.dockout.save minimize6_restraint.dockout
+diffing minimize6_restraint.dockout.save with minimize6_restraint.dockout
+possible FAILURE:  check minimize6_restraint.dockout.dif
+==============================================================
+diffing minimize6_restraint_scored.mol2.save with minimize6_restraint_scored.mol2
+possible FAILURE:  check minimize6_restraint_scored.mol2.dif
+==============================================================
+
+Processing dock6 test minimize1_premin
+../../../bin/dock6  -i minimize1_premin.dockin -o minimize1_premin.dockout
+../dockdif -t 8 minimize1_premin.dockout.save minimize1_premin.dockout
+diffing minimize1_premin.dockout.save with minimize1_premin.dockout
+possible FAILURE:  check minimize1_premin.dockout.dif
+==============================================================
+diffing minimize1_premin_scored.mol2.save with minimize1_premin_scored.mol2
+possible FAILURE:  check minimize1_premin_scored.mol2.dif
+==============================================================
+
+Processing dock6 test minimize5_premin
+../../../bin/dock6  -i minimize5_premin.dockin -o minimize5_premin.dockout
+../dockdif -t 8 minimize5_premin.dockout.save minimize5_premin.dockout
+diffing minimize5_premin.dockout.save with minimize5_premin.dockout
+possible FAILURE:  check minimize5_premin.dockout.dif
+==============================================================
+diffing minimize5_premin_scored.mol2.save with minimize5_premin_scored.mol2
+possible FAILURE:  check minimize5_premin_scored.mol2.dif
+==============================================================
+
+Processing dock6 test minimize5_restraint
+../../../bin/dock6  -i minimize5_restraint.dockin -o minimize5_restraint.dockout
+../dockdif -t 8 minimize5_restraint.dockout.save minimize5_restraint.dockout
+diffing minimize5_restraint.dockout.save with minimize5_restraint.dockout
+possible FAILURE:  check minimize5_restraint.dockout.dif
+==============================================================
+diffing minimize5_restraint_scored.mol2.save with minimize5_restraint_scored.mol2
+possible FAILURE:  check minimize5_restraint_scored.mol2.dif
+==============================================================
+
+Processing dock6 test minimize5_restraint_premin
+../../../bin/dock6  -i minimize5_restraint_premin.dockin -o minimize5_restraint_premin.dockout
+../dockdif -t 8 minimize5_restraint_premin.dockout.save minimize5_restraint_premin.dockout
+diffing minimize5_restraint_premin.dockout.save with minimize5_restraint_premin.dockout
+possible FAILURE:  check minimize5_restraint_premin.dockout.dif
+==============================================================
+diffing minimize5_restraint_premin_scored.mol2.save with minimize5_restraint_premin_scored.mol2
+PASSED
+==============================================================
+cd contact_score && make -e test
+cd ../grid_generation && make test
+# Construct box to enclose spheres
+../../../bin/showbox < box.in > /dev/null
+../dockdif box.pdb.save box.pdb
+diffing box.pdb.save with box.pdb
+PASSED
+==============================================================
+# Compute scoring grids
+../../../bin/grid -i grid.in -o grid.out
+../dockdif grid.out.save grid.out
+diffing grid.out.save with grid.out
+PASSED
+==============================================================
+
+Processing dock6 test contact1
+../../../bin/dock6  -i contact1.dockin -o contact1.dockout
+../dockdif -t 8 contact1.dockout.save contact1.dockout
+diffing contact1.dockout.save with contact1.dockout
+possible FAILURE:  check contact1.dockout.dif
+==============================================================
+diffing contact1_scored.mol2.save with contact1_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test contact2
+../../../bin/dock6  -i contact2.dockin -o contact2.dockout
+../dockdif -t 8 contact2.dockout.save contact2.dockout
+diffing contact2.dockout.save with contact2.dockout
+possible FAILURE:  check contact2.dockout.dif
+==============================================================
+diffing contact2_scored.mol2.save with contact2_scored.mol2
+PASSED
+==============================================================
+cd continuous_score && make -e test
+
+Processing dock6 test continuous1
+../../../bin/dock6  -i continuous1.dockin -o continuous1.dockout
+../dockdif -t 8 continuous1.dockout.save continuous1.dockout
+diffing continuous1.dockout.save with continuous1.dockout
+possible FAILURE:  check continuous1.dockout.dif
+==============================================================
+diffing continuous1_scored.mol2.save with continuous1_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test continuous2
+../../../bin/dock6  -i continuous2.dockin -o continuous2.dockout
+../dockdif -t 8 continuous2.dockout.save continuous2.dockout
+diffing continuous2.dockout.save with continuous2.dockout
+possible FAILURE:  check continuous2.dockout.dif
+==============================================================
+diffing continuous2_scored.mol2.save with continuous2_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test orientflexiblemulti
+../../../bin/dock6  -i orientflexiblemulti.dockin -o orientflexiblemulti.dockout
+../dockdif -t 8 orientflexiblemulti.dockout.save orientflexiblemulti.dockout
+diffing orientflexiblemulti.dockout.save with orientflexiblemulti.dockout
+possible FAILURE:  check orientflexiblemulti.dockout.dif
+==============================================================
+diffing orientflexiblemulti_scored.mol2.save with orientflexiblemulti_scored.mol2
+PASSED
+==============================================================
+cd grid_score && make -e test
+cd ../grid_generation && make test
+# Construct box to enclose spheres
+../../../bin/showbox < box.in > /dev/null
+../dockdif box.pdb.save box.pdb
+diffing box.pdb.save with box.pdb
+PASSED
+==============================================================
+# Compute scoring grids
+../../../bin/grid -i grid.in -o grid.out
+../dockdif grid.out.save grid.out
+diffing grid.out.save with grid.out
+PASSED
+==============================================================
+
+Processing dock6 test grid1
+../../../bin/dock6  -i grid1.dockin -o grid1.dockout
+../dockdif -t 8 grid1.dockout.save grid1.dockout
+diffing grid1.dockout.save with grid1.dockout
+possible FAILURE:  check grid1.dockout.dif
+==============================================================
+diffing grid1_scored.mol2.save with grid1_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test orientflexiblemulti
+../../../bin/dock6  -i orientflexiblemulti.dockin -o orientflexiblemulti.dockout
+../dockdif -t 8 orientflexiblemulti.dockout.save orientflexiblemulti.dockout
+diffing orientflexiblemulti.dockout.save with orientflexiblemulti.dockout
+possible FAILURE:  check orientflexiblemulti.dockout.dif
+==============================================================
+diffing orientflexiblemulti_scored.mol2.save with orientflexiblemulti_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test orientrigidmulti
+../../../bin/dock6  -i orientrigidmulti.dockin -o orientrigidmulti.dockout
+../dockdif -t 8 orientrigidmulti.dockout.save orientrigidmulti.dockout
+diffing orientrigidmulti.dockout.save with orientrigidmulti.dockout
+possible FAILURE:  check orientrigidmulti.dockout.dif
+==============================================================
+
+Processing dock6 test grid3
+../../../bin/dock6  -i grid3.dockin -o grid3.dockout
+../dockdif -t 8 grid3.dockout.save grid3.dockout
+diffing grid3.dockout.save with grid3.dockout
+possible FAILURE:  check grid3.dockout.dif
+==============================================================
+diffing grid3_scored.mol2.save with grid3_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test grid4_lig_eff
+../../../bin/dock6  -i grid4_lig_eff.dockin -o grid4_lig_eff.dockout
+../dockdif -t 8 grid4_lig_eff.dockout.save grid4_lig_eff.dockout
+diffing grid4_lig_eff.dockout.save with grid4_lig_eff.dockout
+possible FAILURE:  check grid4_lig_eff.dockout.dif
+==============================================================
+diffing grid4_lig_eff_scored.mol2.save with grid4_lig_eff_scored.mol2
+PASSED
+==============================================================
+cd gist_score && make -e test
+make -e DOCK_VERBOSE='-v' blurry_gist_trilinear.dockout  blurry_gist_trilinear_flex.dockout  descriptor_score_bgist_flex.dockout  descriptor_score_grid_bgist_flex.dockout  full_gist_displacement.dockout full_gist_displacement_united.dockout full_gist_displacement_blurry.dockout 
+
+Processing dock6 test blurry_gist_trilinear
+../../../bin/dock6 -v -i blurry_gist_trilinear.dockin -o blurry_gist_trilinear.dockout
+../dockdif -t 8 blurry_gist_trilinear.dockout.save blurry_gist_trilinear.dockout
+diffing blurry_gist_trilinear.dockout.save with blurry_gist_trilinear.dockout
+possible FAILURE:  check blurry_gist_trilinear.dockout.dif
+==============================================================
+
+Processing dock6 test blurry_gist_trilinear_flex
+../../../bin/dock6 -v -i blurry_gist_trilinear_flex.dockin -o blurry_gist_trilinear_flex.dockout
+../dockdif -t 8 blurry_gist_trilinear_flex.dockout.save blurry_gist_trilinear_flex.dockout
+diffing blurry_gist_trilinear_flex.dockout.save with blurry_gist_trilinear_flex.dockout
+possible FAILURE:  check blurry_gist_trilinear_flex.dockout.dif
+==============================================================
+
+Processing dock6 test descriptor_score_bgist_flex
+../../../bin/dock6 -v -i descriptor_score_bgist_flex.dockin -o descriptor_score_bgist_flex.dockout
+../dockdif -t 8 descriptor_score_bgist_flex.dockout.save descriptor_score_bgist_flex.dockout
+diffing descriptor_score_bgist_flex.dockout.save with descriptor_score_bgist_flex.dockout
+possible FAILURE:  check descriptor_score_bgist_flex.dockout.dif
+==============================================================
+
+Processing dock6 test descriptor_score_grid_bgist_flex
+../../../bin/dock6 -v -i descriptor_score_grid_bgist_flex.dockin -o descriptor_score_grid_bgist_flex.dockout
+../dockdif -t 8 descriptor_score_grid_bgist_flex.dockout.save descriptor_score_grid_bgist_flex.dockout
+diffing descriptor_score_grid_bgist_flex.dockout.save with descriptor_score_grid_bgist_flex.dockout
+possible FAILURE:  check descriptor_score_grid_bgist_flex.dockout.dif
+==============================================================
+
+Processing dock6 test full_gist_displacement
+../../../bin/dock6 -v -i full_gist_displacement.dockin -o full_gist_displacement.dockout
+../dockdif -t 8 full_gist_displacement.dockout.save full_gist_displacement.dockout
+diffing full_gist_displacement.dockout.save with full_gist_displacement.dockout
+possible FAILURE:  check full_gist_displacement.dockout.dif
+==============================================================
+
+Processing dock6 test full_gist_displacement_united
+../../../bin/dock6 -v -i full_gist_displacement_united.dockin -o full_gist_displacement_united.dockout
+../dockdif -t 8 full_gist_displacement_united.dockout.save full_gist_displacement_united.dockout
+diffing full_gist_displacement_united.dockout.save with full_gist_displacement_united.dockout
+PASSED
+==============================================================
+
+Processing dock6 test full_gist_displacement_blurry
+../../../bin/dock6 -v -i full_gist_displacement_blurry.dockin -o full_gist_displacement_blurry.dockout
+../dockdif -t 8 full_gist_displacement_blurry.dockout.save full_gist_displacement_blurry.dockout
+diffing full_gist_displacement_blurry.dockout.save with full_gist_displacement_blurry.dockout
+possible FAILURE:  check full_gist_displacement_blurry.dockout.dif
+==============================================================
+cd hawkins_gbsa_score && make -e test
+
+Processing dock6 test hawkins_gbsa1
+../../../bin/dock6  -i hawkins_gbsa1.dockin -o hawkins_gbsa1.dockout
+../dockdif -t 8 hawkins_gbsa1.dockout.save hawkins_gbsa1.dockout
+diffing hawkins_gbsa1.dockout.save with hawkins_gbsa1.dockout
+possible FAILURE:  check hawkins_gbsa1.dockout.dif
+==============================================================
+diffing hawkins_gbsa1_scored.mol2.save with hawkins_gbsa1_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test sasa1
+../../../bin/dock6  -i sasa1.dockin -o sasa1.dockout
+../dockdif -t 8 sasa1.dockout.save sasa1.dockout
+diffing sasa1.dockout.save with sasa1.dockout
+possible FAILURE:  check sasa1.dockout.dif
+==============================================================
+diffing sasa1_scored.mol2.save with sasa1_scored.mol2
+PASSED
+==============================================================
+cd ../gbsa_grid_generation && make test
+Calculating es grid for Hawkins GB/SA and vdw grid
+# Compute scoring grids
+../../../bin/grid -i grid.in -o grid.out
+../dockdif grid.out.save grid.out
+diffing grid.out.save with grid.out
+PASSED
+==============================================================
+
+Processing dock6 test hawkins_gbsa2
+../../../bin/dock6  -i hawkins_gbsa2.dockin -o hawkins_gbsa2.dockout
+../dockdif -t 8 hawkins_gbsa2.dockout.save hawkins_gbsa2.dockout
+diffing hawkins_gbsa2.dockout.save with hawkins_gbsa2.dockout
+possible FAILURE:  check hawkins_gbsa2.dockout.dif
+==============================================================
+diffing hawkins_gbsa2_scored.mol2.save with hawkins_gbsa2_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test sasa2
+../../../bin/dock6  -i sasa2.dockin -o sasa2.dockout
+../dockdif -t 8 sasa2.dockout.save sasa2.dockout
+diffing sasa2.dockout.save with sasa2.dockout
+possible FAILURE:  check sasa2.dockout.dif
+==============================================================
+diffing sasa2_scored.mol2.save with sasa2_scored.mol2
+PASSED
+==============================================================
+cd sasa_score && make -e test
+
+Processing dock6 test sasa1
+../../../bin/dock6  -i sasa1.dockin -o sasa1.dockout
+../dockdif -t 8 sasa1.dockout.save sasa1.dockout
+diffing sasa1.dockout.save with sasa1.dockout
+possible FAILURE:  check sasa1.dockout.dif
+==============================================================
+diffing sasa1_scored.mol2.save with sasa1_scored.mol2
+PASSED
+==============================================================
+cd ../gbsa_grid_generation && make test
+Calculating es grid for Hawkins GB/SA and vdw grid
+# Compute scoring grids
+../../../bin/grid -i grid.in -o grid.out
+../dockdif grid.out.save grid.out
+diffing grid.out.save with grid.out
+PASSED
+==============================================================
+
+Processing dock6 test sasa2
+../../../bin/dock6  -i sasa2.dockin -o sasa2.dockout
+../dockdif -t 8 sasa2.dockout.save sasa2.dockout
+diffing sasa2.dockout.save with sasa2.dockout
+possible FAILURE:  check sasa2.dockout.dif
+==============================================================
+diffing sasa2_scored.mol2.save with sasa2_scored.mol2
+PASSED
+==============================================================
+cd zou_gbsa_score && make -e test
+cd ../gbsa_grid_generation && make test
+Calculating es grid for Hawkins GB/SA and vdw grid
+# Compute scoring grids
+../../../bin/grid -i grid.in -o grid.out
+../dockdif grid.out.save grid.out
+diffing grid.out.save with grid.out
+PASSED
+==============================================================
+cd ../nchemgrid_GB_grid_generation && make test
+# Calculate GB grid for Zou GB/SA score
+../../../bin/nchemgrid_GB > /dev/null
+../dockdif -w -t 4 OUTCHEM.save OUTCHEM
+diffing OUTCHEM.save with OUTCHEM
+PASSED
+==============================================================
+../dockdif OUTPARM.save OUTPARM
+diffing OUTPARM.save with OUTPARM
+PASSED
+==============================================================
+cd ../nchemgrid_SA_grid_generation && make test
+# Calculate SA grid for Zou GB/SA score
+../../../bin/nchemgrid_SA
+../dockdif -w -t 1 OUTCHEM.save OUTCHEM
+diffing OUTCHEM.save with OUTCHEM
+PASSED
+==============================================================
+../dockdif OUTPARM.save OUTPARM
+diffing OUTPARM.save with OUTPARM
+PASSED
+==============================================================
+
+Processing dock6 test zou_gbsaprimary
+../../../bin/dock6  -i zou_gbsaprimary.dockin -o zou_gbsaprimary.dockout
+../dockdif -t 8 zou_gbsaprimary.dockout.save zou_gbsaprimary.dockout
+diffing zou_gbsaprimary.dockout.save with zou_gbsaprimary.dockout
+possible FAILURE:  check zou_gbsaprimary.dockout.dif
+==============================================================
+diffing zou_gbsaprimary_scored.mol2.save with zou_gbsaprimary_scored.mol2
+PASSED
+==============================================================
+
+Processing zou_gbsa dock6 test verbosezou_gbsaprimary in directory zou_gbsa_score
+../../../bin/dock6 -i verbosezou_gbsaprimary.dockin -o verbosezou_gbsaprimary.dockout -v
+../dockdif -t 4 verbosezou_gbsaprimary.dockout.save verbosezou_gbsaprimary.dockout
+diffing verbosezou_gbsaprimary.dockout.save with verbosezou_gbsaprimary.dockout
+possible FAILURE:  check verbosezou_gbsaprimary.dockout.dif
+==============================================================
+
+Processing dock6 test orientflexiblezou_gbsaprimary
+../../../bin/dock6  -i orientflexiblezou_gbsaprimary.dockin -o orientflexiblezou_gbsaprimary.dockout
+../dockdif -t 8 orientflexiblezou_gbsaprimary.dockout.save orientflexiblezou_gbsaprimary.dockout
+diffing orientflexiblezou_gbsaprimary.dockout.save with orientflexiblezou_gbsaprimary.dockout
+possible FAILURE:  check orientflexiblezou_gbsaprimary.dockout.dif
+==============================================================
+diffing orientflexiblezou_gbsaprimary_scored.mol2.save with orientflexiblezou_gbsaprimary_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test orientrigidcontactprimaryzou_gbsasecondarymulti
+../../../bin/dock6  -i orientrigidcontactprimaryzou_gbsasecondarymulti.dockin -o orientrigidcontactprimaryzou_gbsasecondarymulti.dockout
+../dockdif -t 8 orientrigidcontactprimaryzou_gbsasecondarymulti.dockout.save orientrigidcontactprimaryzou_gbsasecondarymulti.dockout
+diffing orientrigidcontactprimaryzou_gbsasecondarymulti.dockout.save with orientrigidcontactprimaryzou_gbsasecondarymulti.dockout
+possible FAILURE:  check orientrigidcontactprimaryzou_gbsasecondarymulti.dockout.dif
+==============================================================
+diffing orientrigidcontactprimaryzou_gbsasecondarymulti_scored.mol2.save with orientrigidcontactprimaryzou_gbsasecondarymulti_scored.mol2
+PASSED
+==============================================================
+cd footprint_score && make -e test
+
+Processing dock6 test FPS1
+../../../bin/dock6  -i FPS1.dockin -o FPS1.dockout
+../dockdif -t 8 FPS1.dockout.save FPS1.dockout
+diffing FPS1.dockout.save with FPS1.dockout
+possible FAILURE:  check FPS1.dockout.dif
+==============================================================
+diffing FPS1_scored.mol2.save with FPS1_scored.mol2
+PASSED
+==============================================================
+diffing FPS1_footprint_scored.txt.save with FPS1_footprint_scored.txt
+PASSED
+==============================================================
+diffing FPS1_hbond_scored.txt.save with FPS1_hbond_scored.txt
+PASSED
+==============================================================
+
+Processing dock6 test FPS2
+../../../bin/dock6  -i FPS2.dockin -o FPS2.dockout
+../dockdif -t 8 FPS2.dockout.save FPS2.dockout
+diffing FPS2.dockout.save with FPS2.dockout
+possible FAILURE:  check FPS2.dockout.dif
+==============================================================
+diffing FPS2_scored.mol2.save with FPS2_scored.mol2
+PASSED
+==============================================================
+diffing FPS2_footprint_scored.txt.save with FPS2_footprint_scored.txt
+PASSED
+==============================================================
+diffing FPS2_hbond_scored.txt.save with FPS2_hbond_scored.txt
+PASSED
+==============================================================
+cd fp_multigrid_generation && make -e test
+
+Processing dock6 test important_residues
+../../../bin/dock6  -i important_residues.dockin -o important_residues.dockout
+../dockdif -t 8 important_residues.dockout.save important_residues.dockout
+diffing important_residues.dockout.save with important_residues.dockout
+possible FAILURE:  check important_residues.dockout.dif
+==============================================================
+diffing important_residues_scored.mol2.save with important_residues_scored.mol2
+PASSED
+==============================================================
+# Compute grids for important residues and the one grid for the remainder residues.
+# getrange_mkgrides
+../../../bin/multigrid_fp_gen.py rec.mol2 resid grid.in \
+	    `grep -A 1 range_union important_residues.dockout | sed -e'/range_union/d' -e'/--/d' -e's/ //g' | tr ',' '\n' | sort -nu`
+4 5
+5 13
+6 20
+7 22
+8 48
+9 49
+10 50
+11 51
+12 52
+13 53
+14 54
+15 55
+16 71
+17 78
+create grid for resid_005.mol2
+create grid for resid_013.mol2
+create grid for resid_020.mol2
+create grid for resid_022.mol2
+create grid for resid_048.mol2
+create grid for resid_049.mol2
+create grid for resid_050.mol2
+create grid for resid_051.mol2
+create grid for resid_052.mol2
+create grid for resid_053.mol2
+create grid for resid_054.mol2
+create grid for resid_055.mol2
+create grid for resid_071.mol2
+create grid for resid_078.mol2
+create grid for resid_remaining.mol2
+../dockdif resid_005.out.save           resid_005.out
+diffing resid_005.out.save with resid_005.out
+PASSED
+==============================================================
+../dockdif resid_013.out.save           resid_013.out
+diffing resid_013.out.save with resid_013.out
+PASSED
+==============================================================
+../dockdif resid_020.out.save           resid_020.out
+diffing resid_020.out.save with resid_020.out
+PASSED
+==============================================================
+../dockdif resid_022.out.save           resid_022.out
+diffing resid_022.out.save with resid_022.out
+PASSED
+==============================================================
+../dockdif resid_048.out.save           resid_048.out
+diffing resid_048.out.save with resid_048.out
+PASSED
+==============================================================
+../dockdif resid_049.out.save           resid_049.out
+diffing resid_049.out.save with resid_049.out
+PASSED
+==============================================================
+../dockdif resid_050.out.save           resid_050.out
+diffing resid_050.out.save with resid_050.out
+PASSED
+==============================================================
+../dockdif resid_051.out.save           resid_051.out
+diffing resid_051.out.save with resid_051.out
+PASSED
+==============================================================
+../dockdif resid_052.out.save           resid_052.out
+diffing resid_052.out.save with resid_052.out
+PASSED
+==============================================================
+../dockdif resid_053.out.save           resid_053.out
+diffing resid_053.out.save with resid_053.out
+PASSED
+==============================================================
+../dockdif resid_054.out.save           resid_054.out
+diffing resid_054.out.save with resid_054.out
+PASSED
+==============================================================
+../dockdif resid_055.out.save           resid_055.out
+diffing resid_055.out.save with resid_055.out
+PASSED
+==============================================================
+../dockdif resid_071.out.save           resid_071.out
+diffing resid_071.out.save with resid_071.out
+PASSED
+==============================================================
+../dockdif resid_078.out.save           resid_078.out
+diffing resid_078.out.save with resid_078.out
+PASSED
+==============================================================
+../dockdif resid_remaining.out.save     resid_remaining.out
+diffing resid_remaining.out.save with resid_remaining.out
+PASSED
+==============================================================
+cd fps_multigrid_score && make -e test
+
+Processing dock6 test fpsgrid
+../../../bin/dock6  -i fpsgrid.dockin -o fpsgrid.dockout
+../dockdif -t 8 fpsgrid.dockout.save fpsgrid.dockout
+diffing fpsgrid.dockout.save with fpsgrid.dockout
+possible FAILURE:  check fpsgrid.dockout.dif
+==============================================================
+diffing fpsgrid_scored.mol2.save with fpsgrid_scored.mol2
+PASSED
+==============================================================
+cd descriptor_score && make -e test
+
+Processing dock6 test Des_SGE
+../../../bin/dock6  -i Des_SGE.dockin -o Des_SGE.dockout
+../dockdif -t 8 Des_SGE.dockout.save Des_SGE.dockout
+diffing Des_SGE.dockout.save with Des_SGE.dockout
+possible FAILURE:  check Des_SGE.dockout.dif
+==============================================================
+diffing Des_SGE_scored.mol2.save with Des_SGE_scored.mol2
+possible FAILURE:  check Des_SGE_scored.mol2.dif
+==============================================================
+
+Processing dock6 test Des_SGE+All
+../../../bin/dock6  -i Des_SGE+All.dockin -o Des_SGE+All.dockout
+../dockdif -t 8 Des_SGE+All.dockout.save Des_SGE+All.dockout
+diffing Des_SGE+All.dockout.save with Des_SGE+All.dockout
+possible FAILURE:  check Des_SGE+All.dockout.dif
+==============================================================
+diffing Des_SGE+All_scored.mol2.save with Des_SGE+All_scored.mol2
+possible FAILURE:  check Des_SGE+All_scored.mol2.dif
+==============================================================
+
+Processing dock6 test Des_DCE+FPS+All
+../../../bin/dock6  -i Des_DCE+FPS+All.dockin -o Des_DCE+FPS+All.dockout
+../dockdif -t 8 Des_DCE+FPS+All.dockout.save Des_DCE+FPS+All.dockout
+diffing Des_DCE+FPS+All.dockout.save with Des_DCE+FPS+All.dockout
+possible FAILURE:  check Des_DCE+FPS+All.dockout.dif
+==============================================================
+diffing Des_DCE+FPS+All_scored.mol2.save with Des_DCE+FPS+All_scored.mol2
+PASSED
+==============================================================
+diffing Des_DCE+FPS+All_footprint_scored.txt.save with Des_DCE+FPS+All_footprint_scored.txt
+PASSED
+==============================================================
+diffing Des_DCE+FPS+All_hbond_scored.txt.save with Des_DCE+FPS+All_hbond_scored.txt
+PASSED
+==============================================================
+
+Processing dock6 test Des_FPS
+../../../bin/dock6  -i Des_FPS.dockin -o Des_FPS.dockout
+../dockdif -t 8 Des_FPS.dockout.save Des_FPS.dockout
+diffing Des_FPS.dockout.save with Des_FPS.dockout
+possible FAILURE:  check Des_FPS.dockout.dif
+==============================================================
+diffing Des_FPS_scored.mol2.save with Des_FPS_scored.mol2
+PASSED
+==============================================================
+diffing Des_FPS_footprint_scored.txt.save with Des_FPS_footprint_scored.txt
+PASSED
+==============================================================
+diffing Des_FPS_hbond_scored.txt.save with Des_FPS_hbond_scored.txt
+PASSED
+==============================================================
+
+Processing dock6 test Des_FPS+DCE
+../../../bin/dock6  -i Des_FPS+DCE.dockin -o Des_FPS+DCE.dockout
+../dockdif -t 8 Des_FPS+DCE.dockout.save Des_FPS+DCE.dockout
+diffing Des_FPS+DCE.dockout.save with Des_FPS+DCE.dockout
+possible FAILURE:  check Des_FPS+DCE.dockout.dif
+==============================================================
+diffing Des_FPS+DCE_scored.mol2.save with Des_FPS+DCE_scored.mol2
+PASSED
+==============================================================
+diffing Des_FPS+DCE_footprint_scored.txt.save with Des_FPS+DCE_footprint_scored.txt
+PASSED
+==============================================================
+diffing Des_FPS+DCE_hbond_scored.txt.save with Des_FPS+DCE_hbond_scored.txt
+PASSED
+==============================================================
+
+Processing dock6 test Des_FMS
+../../../bin/dock6  -i Des_FMS.dockin -o Des_FMS.dockout
+../dockdif -t 8 Des_FMS.dockout.save Des_FMS.dockout
+diffing Des_FMS.dockout.save with Des_FMS.dockout
+possible FAILURE:  check Des_FMS.dockout.dif
+==============================================================
+diffing Des_FMS_scored.mol2.save with Des_FMS_scored.mol2
+possible FAILURE:  check Des_FMS_scored.mol2.dif
+==============================================================
+
+Processing dock6 test Des_FMS+SGE
+../../../bin/dock6  -i Des_FMS+SGE.dockin -o Des_FMS+SGE.dockout
+../dockdif -t 8 Des_FMS+SGE.dockout.save Des_FMS+SGE.dockout
+diffing Des_FMS+SGE.dockout.save with Des_FMS+SGE.dockout
+possible FAILURE:  check Des_FMS+SGE.dockout.dif
+==============================================================
+diffing Des_FMS+SGE_scored.mol2.save with Des_FMS+SGE_scored.mol2
+possible FAILURE:  check Des_FMS+SGE_scored.mol2.dif
+==============================================================
+
+Processing dock6 test Des_FMS_txt
+../../../bin/dock6  -i Des_FMS_txt.dockin -o Des_FMS_txt.dockout
+../dockdif -t 8 Des_FMS_txt.dockout.save Des_FMS_txt.dockout
+diffing Des_FMS_txt.dockout.save with Des_FMS_txt.dockout
+possible FAILURE:  check Des_FMS_txt.dockout.dif
+==============================================================
+diffing Des_FMS_txt_scored.mol2.save with Des_FMS_txt_scored.mol2
+possible FAILURE:  check Des_FMS_txt_scored.mol2.dif
+==============================================================
+
+Processing dock6 test Des_Tan+SGE
+../../../bin/dock6  -i Des_Tan+SGE.dockin -o Des_Tan+SGE.dockout
+../dockdif -t 8 Des_Tan+SGE.dockout.save Des_Tan+SGE.dockout
+diffing Des_Tan+SGE.dockout.save with Des_Tan+SGE.dockout
+possible FAILURE:  check Des_Tan+SGE.dockout.dif
+==============================================================
+diffing Des_Tan+SGE_scored.mol2.save with Des_Tan+SGE_scored.mol2
+possible FAILURE:  check Des_Tan+SGE_scored.mol2.dif
+==============================================================
+
+Processing dock6 test Des_Hun+SGE
+../../../bin/dock6  -i Des_Hun+SGE.dockin -o Des_Hun+SGE.dockout
+../dockdif -t 8 Des_Hun+SGE.dockout.save Des_Hun+SGE.dockout
+diffing Des_Hun+SGE.dockout.save with Des_Hun+SGE.dockout
+possible FAILURE:  check Des_Hun+SGE.dockout.dif
+==============================================================
+diffing Des_Hun+SGE_scored.mol2.save with Des_Hun+SGE_scored.mol2
+possible FAILURE:  check Des_Hun+SGE_scored.mol2.dif
+==============================================================
+
+Processing dock6 test Des_LES
+../../../bin/dock6  -i Des_LES.dockin -o Des_LES.dockout
+../dockdif -t 8 Des_LES.dockout.save Des_LES.dockout
+diffing Des_LES.dockout.save with Des_LES.dockout
+possible FAILURE:  check Des_LES.dockout.dif
+==============================================================
+diffing Des_LES_scored.mol2.save with Des_LES_scored.mol2
+possible FAILURE:  check Des_LES_scored.mol2.dif
+==============================================================
+
+Processing dock6 test Des_VOS
+../../../bin/dock6  -i Des_VOS.dockin -o Des_VOS.dockout
+../dockdif -t 8 Des_VOS.dockout.save Des_VOS.dockout
+diffing Des_VOS.dockout.save with Des_VOS.dockout
+possible FAILURE:  check Des_VOS.dockout.dif
+==============================================================
+diffing Des_VOS_scored.mol2.save with Des_VOS_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test Des_VOS+SGE
+../../../bin/dock6  -i Des_VOS+SGE.dockin -o Des_VOS+SGE.dockout
+../dockdif -t 8 Des_VOS+SGE.dockout.save Des_VOS+SGE.dockout
+diffing Des_VOS+SGE.dockout.save with Des_VOS+SGE.dockout
+possible FAILURE:  check Des_VOS+SGE.dockout.dif
+==============================================================
+diffing Des_VOS+SGE_scored.mol2.save with Des_VOS+SGE_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test Des_MG
+../../../bin/dock6  -i Des_MG.dockin -o Des_MG.dockout
+../dockdif -t 8 Des_MG.dockout.save Des_MG.dockout
+diffing Des_MG.dockout.save with Des_MG.dockout
+possible FAILURE:  check Des_MG.dockout.dif
+==============================================================
+diffing Des_MG_scored.mol2.save with Des_MG_scored.mol2
+PASSED
+==============================================================
+
+Processing dock6 test Des_MG+All
+../../../bin/dock6  -i Des_MG+All.dockin -o Des_MG+All.dockout
+../dockdif -t 8 Des_MG+All.dockout.save Des_MG+All.dockout
+diffing Des_MG+All.dockout.save with Des_MG+All.dockout
+possible FAILURE:  check Des_MG+All.dockout.dif
+==============================================================
+diffing Des_MG+All_scored.mol2.save with Des_MG+All_scored.mol2
+PASSED
+==============================================================
+cd pharmacophore_score && make -e test
+
+Processing dock6 test FMS1
+../../../bin/dock6  -i FMS1.dockin -o FMS1.dockout
+../dockdif -t 8 FMS1.dockout.save FMS1.dockout
+diffing FMS1.dockout.save with FMS1.dockout
+possible FAILURE:  check FMS1.dockout.dif
+==============================================================
+
+Processing dock6 test FMS2
+../../../bin/dock6  -i FMS2.dockin -o FMS2.dockout
+../dockdif -t 8 FMS2.dockout.save FMS2.dockout
+diffing FMS2.dockout.save with FMS2.dockout
+possible FAILURE:  check FMS2.dockout.dif
+==============================================================
+
+Processing dock6 test FMS3
+../../../bin/dock6  -i FMS3.dockin -o FMS3.dockout
+../dockdif -t 8 FMS3.dockout.save FMS3.dockout
+diffing FMS3.dockout.save with FMS3.dockout
+possible FAILURE:  check FMS3.dockout.dif
+==============================================================
+
+Processing dock6 test FMS4
+../../../bin/dock6  -i FMS4.dockin -o FMS4.dockout
+../dockdif -t 8 FMS4.dockout.save FMS4.dockout
+diffing FMS4.dockout.save with FMS4.dockout
+possible FAILURE:  check FMS4.dockout.dif
+==============================================================
+cd amber_score_181l && make -e test
+../../../bin/prepare_amber.pl lig.mol2 181l.pdb
+Coordinate and parameter files for the Receptor 181l generated.
+The AMBER score tagged mol2 file lig.amber_score.mol2 generated.
+Splitting the multiple Ligand mol2 file into single mol2 files.
+The single mol2 files will have the prefix: lig 
+The number of single Ligand mol2 files generated is 1.
+Generating coordinate and parameter files for Ligands and Complexes.
+Generating AM1-BCC charges.  This may be time consuming.
+Ligand lig.1 has total charge 0
+
+
+Error from amberize_ligand; the name of the ligand is
+    ASL
+    Examine amberize_ligand.lig.1.out
+make[3]: *** [amberize] Error 7
+make[2]: *** [amberdock] Error 2
+make[1]: *** [timed_test] Error 2
+make: *** [test] Error 2

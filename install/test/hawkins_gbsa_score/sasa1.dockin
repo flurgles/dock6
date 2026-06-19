@@ -24,6 +24,7 @@ gbsa_zou_score_primary                                       no
 gbsa_hawkins_score_primary                                   no
 SASA_score_primary                                           yes
 SASA_score_rec_filename                                      rec.mol2
+minimizer_type                                               simplex
 minimize_ligand                                              no
 simplex_final_min                                            no
 atom_model                                                   all

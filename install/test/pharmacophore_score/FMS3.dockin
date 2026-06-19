@@ -51,6 +51,7 @@ fms_score_match_rate_weight                                  5.0
 fms_score_match_dist_cutoff                                  1.0
 fms_score_match_proj_cutoff                                  0.7071
 fms_score_max_score                                          20
+minimizer_type                                               simplex
 minimize_ligand                                              no
 simplex_final_min                                            no
 atom_model                                                   all

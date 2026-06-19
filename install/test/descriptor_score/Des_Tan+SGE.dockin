@@ -57,6 +57,7 @@ descriptor_grid_score_grid_prefix                            grid
 descriptor_fingerprint_ref_filename                          ligand.mol2
 descriptor_weight_grid_score                                 1
 descriptor_weight_fingerprint_tanimoto                       -50
+minimizer_type                                               simplex
 minimize_ligand                                              yes
 minimize_anchor                                              yes
 minimize_flexible_growth                                     yes

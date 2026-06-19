@@ -30,6 +30,7 @@ grid_score_vdw_scale                                         1
 grid_score_es_scale                                          1
 grid_lig_efficiency                                          no
 grid_score_grid_prefix                                       ../grid_generation/grid
+minimizer_type                                               simplex
 minimize_ligand                                              yes
 minimize_anchor                                              yes
 minimize_flexible_growth                                     yes

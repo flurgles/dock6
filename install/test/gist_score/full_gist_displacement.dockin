@@ -19,6 +19,7 @@ gist_score_rep_exp                                           12
 gist_score_gist_scale                                        -1
 gist_score_gist_type                                         displace
 gist_score_grid_file                                         gist-EswPlusEww_ref2.dx
+minimizer_type                                               simplex
 minimize_ligand                                              no
 simplex_final_min                                            no
 atom_model                                                   united

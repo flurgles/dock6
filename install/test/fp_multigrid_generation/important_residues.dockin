@@ -61,6 +61,7 @@ descriptor_fps_score_es_fp_scale                             0
 descriptor_fps_score_hb_fp_scale                             0
 descriptor_weight_cont_score                                 1
 descriptor_weight_fps_score                                  0
+minimizer_type                                               simplex
 minimize_ligand                                              no
 simplex_final_min                                            no
 atom_model                                                   all

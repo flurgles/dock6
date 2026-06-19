@@ -31,6 +31,7 @@ pharmacophore_score_primary                                  no
 hbond_score_primary                                          no
 internal_energy_score_primary                                yes
 internal_energy_score_rep_exp                                12
+minimizer_type                                               simplex
 minimize_ligand                                              yes
 minimize_anchor                                              no
 minimize_flexible_growth                                     yes

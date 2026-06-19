@@ -25,9 +25,12 @@ class           BOBYQA_Minimizer : public Minimizer {
     bool            use_adaptive_restart; // enable adaptive restart on stagnation
     int             max_restarts;         // maximum number of adaptive restarts
     float           restart_delta_scale;  // factor to scale rho_beg on restart
-    int             stagnation_window;    // iterations without fopt improvement to trigger restart
-    float           stagnation_tol;       // relative tolerance for stagnation (default 0.001)
-    float           stagnation_abs_tol;   // absolute tolerance for stagnation (default 0.1)
+    int             improv_window;        // sliding window of fopt values for improvement detection
+                                          // When the range of fopt over this window is below the threshold
+                                          // (improv_tol, with 0.01 absolute floor), the minimizer has stalled.
+    float           improv_tol;           // improvement detection tolerance (default 0.001 = 0.1% relative)
+                                          // Effective threshold = max(0.01, |fopt| * improv_tol)
+                                          // Dual relative+absolute check in a single param.
     float           restart_min_delta_ratio; // only restart once delta/rho_beg <= this (default 0.05)
     float           restart_perturbation; // random perturbation scale for restart center (default 0.05)
     bool            restart_from_best;    // restart from best point seen (yes) or current xopt (no)
@@ -66,7 +69,7 @@ class           BOBYQA_Minimizer : public Minimizer {
 
     // Global optimization: adaptive restart state
     int             restart_count;       // number of restarts performed
-    int             stagnation_count;    // consecutive iterations without progress
+    int             stagnation_count;    // consecutive iterations with ratio < eta1 (triggers early restart)
     int             noise_window;        // number of recent ratios for noise estimation
     float           noise_level;         // estimated noise (std dev of ratio)
     float           noise_threshold;     // threshold for noise classification

@@ -20,6 +20,7 @@ contact_score_cutoff_distance                                4.5
 contact_score_clash_overlap                                  0.75
 contact_score_clash_penalty                                  50
 contact_score_grid_prefix                                    ../gbsa_grid_generation/grid
+minimizer_type                                               simplex
 minimize_ligand                                              no
 simplex_final_min                                            no
 atom_model                                                   all

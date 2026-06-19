@@ -14,6 +14,7 @@ contact_score_cutoff_distance                                4.5
 contact_score_clash_overlap                                  0.75
 contact_score_clash_penalty                                  50
 contact_score_grid_prefix                                    ../grid_generation/grid
+minimizer_type                                               simplex
 minimize_ligand                                              yes
 simplex_max_iterations                                       1000
 simplex_tors_premin_iterations                               0

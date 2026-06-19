@@ -34,6 +34,7 @@ grid_score_vdw_scale                                         1
 grid_score_es_scale                                          1
 grid_lig_efficiency                                          no
 grid_score_grid_prefix                                       ../grid_generation/grid
+minimizer_type                                               simplex
 minimize_ligand                                              no
 simplex_final_min                                            no
 atom_model                                                   all

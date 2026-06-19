@@ -59,6 +59,7 @@ descriptor_hms_score_matching_coeff                          -5
 descriptor_hms_score_rmsd_coeff                              1
 descriptor_weight_grid_score                                 1
 descriptor_weight_hms_score                                  1
+minimizer_type                                               simplex
 minimize_ligand                                              yes
 minimize_anchor                                              yes
 minimize_flexible_growth                                     yes

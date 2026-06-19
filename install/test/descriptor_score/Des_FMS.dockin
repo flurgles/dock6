@@ -65,6 +65,7 @@ descriptor_fms_score_match_dist_cutoff                       1
 descriptor_fms_score_match_proj_cutoff                       0.7071
 descriptor_fms_score_max_score                               20
 descriptor_weight_pharmacophore_score                        1
+minimizer_type                                               simplex
 minimize_ligand                                              yes
 minimize_anchor                                              yes
 minimize_flexible_growth                                     yes

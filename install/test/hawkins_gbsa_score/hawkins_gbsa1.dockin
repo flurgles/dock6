@@ -30,6 +30,7 @@ gbsa_hawkins_score_cont_vdw_and_es                           yes
 gbsa_hawkins_score_vdw_att_exp                               6
 gbsa_hawkins_score_vdw_rep_exp                               12
 grid_score_rep_rad_scale                                     1
+minimizer_type                                               simplex
 minimize_ligand                                              no
 simplex_final_min                                            no
 atom_model                                                   all

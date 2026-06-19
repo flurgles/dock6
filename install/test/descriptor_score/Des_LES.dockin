@@ -56,6 +56,7 @@ descriptor_grid_score_es_scale                               1
 descriptor_grid_score_grid_prefix                            grid
 descriptor_weight_grid_score                                 1
 descriptor_weight_grid_lig_eff                               15
+minimizer_type                                               simplex
 minimize_ligand                                              yes
 minimize_anchor                                              yes
 minimize_flexible_growth                                     yes

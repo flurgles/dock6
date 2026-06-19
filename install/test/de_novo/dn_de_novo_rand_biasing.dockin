@@ -114,6 +114,7 @@ descriptor_multigrid_score_normalize_foot                    no
 descriptor_multigrid_score_vdw_euc_scale                     1.0
 descriptor_multigrid_score_es_euc_scale                      1.0
 descriptor_weight_multigrid_score                            1
+minimizer_type                                               simplex
 minimize_ligand                                              yes
 minimize_anchor                                              yes
 minimize_flexible_growth                                     yes

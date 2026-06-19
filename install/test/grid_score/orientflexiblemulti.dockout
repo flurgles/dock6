@@ -1,0 +1,306 @@
+
+
+
+--------------------------------------
+DOCK v6.13
+
+Released July 2025
+Copyright UCSF
+--------------------------------------
+
+
+Conformational Sampling Parameters
+------------------------------------------------------------------------------------------
+conformer_search_type                                        flex
+write_fragment_libraries                                     no
+
+Anchor & Grow Parameters
+------------------------------------------------------------------------------------------
+user_specified_anchor                                        no
+limit_max_anchors                                            no
+min_anchor_size                                              40
+pruning_use_clustering                                       yes
+pruning_max_orients                                          10
+pruning_clustering_cutoff                                    100
+pruning_orient_score_cutoff                                  1000.0
+pruning_conformer_score_cutoff                               100.0
+pruning_conformer_score_scaling_factor                       1.0
+use_clash_overlap                                            no
+write_growth_tree                                            no
+
+Internal Energy Parameters
+------------------------------------------------------------------------------------------
+use_internal_energy                                          no
+
+Molecule Library Input Parameters
+------------------------------------------------------------------------------------------
+ligand_atom_file                                             multi_lig.mol2
+limit_max_ligands                                            no
+skip_molecule                                                no
+read_mol_solvation                                           no
+calculate_rmsd                                               no
+
+Database Filter Parameters
+------------------------------------------------------------------------------------------
+use_database_filter                                          no
+
+Orient Ligand Parameters
+------------------------------------------------------------------------------------------
+orient_ligand                                                yes
+automated_matching                                           yes
+receptor_site_file                                           struct.sph
+max_orientations                                             100
+critical_points                                              no
+chemical_matching                                            no
+use_ligand_spheres                                           no
+
+Bump Filter Parameters
+------------------------------------------------------------------------------------------
+bump_filter                                                  no
+
+Master Score Parameters
+------------------------------------------------------------------------------------------
+score_molecules                                              yes
+
+Contact Score Parameters
+------------------------------------------------------------------------------------------
+contact_score_primary                                        no
+
+Grid Score Parameters
+------------------------------------------------------------------------------------------
+grid_score_primary                                           yes
+grid_score_rep_rad_scale                                     1
+grid_score_vdw_scale                                         1
+grid_score_es_scale                                          1
+grid_lig_efficiency                                          no
+grid_score_grid_prefix                                       ../grid_generation/grid
+
+GIST Score Parameters
+------------------------------------------------------------------------------------------
+
+MultiGrid Score Parameters
+------------------------------------------------------------------------------------------
+
+Dock3.5 Score Parameters
+------------------------------------------------------------------------------------------
+
+Continuous Energy Score Parameters
+------------------------------------------------------------------------------------------
+
+Footprint Similarity Score Parameters
+------------------------------------------------------------------------------------------
+
+Pharmacophore Similarity Score Parameters
+------------------------------------------------------------------------------------------
+
+Hbond Energy Score Parameters
+------------------------------------------------------------------------------------------
+
+Internal Energy Score Parameters
+------------------------------------------------------------------------------------------
+
+Descriptor Score Parameters
+------------------------------------------------------------------------------------------
+
+Zou GB/SA Score Parameters
+------------------------------------------------------------------------------------------
+
+Hawkins GB/SA Score Parameters
+------------------------------------------------------------------------------------------
+
+SASA Score Parameters
+------------------------------------------------------------------------------------------
+
+Amber Score Parameters
+------------------------------------------------------------------------------------------
+minimizer_type                                               simplex
+
+Simplex Minimization Parameters
+------------------------------------------------------------------------------------------
+minimize_ligand                                              no
+simplex_final_min                                            no
+
+Atom Typing Parameters
+------------------------------------------------------------------------------------------
+atom_model                                                   all
+vdw_defn_file                                                ../../../parameters/vdw_AMBER_parm99.defn
+flex_defn_file                                               ../../../parameters/flex.defn
+flex_drive_file                                              ../../../parameters/flex_drive.tbl
+
+Molecule Library Output Parameters
+------------------------------------------------------------------------------------------
+ligand_outfile_prefix                                        orientflexiblemulti
+write_mol_solvation                                          no
+write_orientations                                           no
+num_final_scored_poses                                       1
+num_preclustered_conformers                                  1
+score_threshold                                              100.0
+rank_ligands                                                 no
+------------------------------------------------------------------------------------------
+
+Initializing Conformer Generator Routines...
+Initializing Library File Routines...
+
+Initializing Orienting Routines...
+Initializing Grid Score Routines...
+ Reading the energy grid from ../grid_generation/grid.nrg
+ Done reading the energy grid.
+ Reading the grid box quantifiers from ../grid_generation/grid.bmp
+ Done reading the grid box quantifiers.
+
+-----------------------------------
+Molecule: ZINC00158442
+
+ Elapsed time for docking:	0.013 seconds
+
+ Anchors:		1
+ Orientations:		100
+ Conformations:		4
+
+                          Grid_Score:           -0.554075
+                     Grid_vdw_energy:           -1.959551
+                      Grid_es_energy:            1.405475
+
+-----------------------------------
+Molecule: ZINC00158751
+
+ Elapsed time for docking:	0.006 seconds
+
+ Anchors:		1
+ Orientations:		100
+ Conformations:		17
+
+                          Grid_Score:          -13.890110
+                     Grid_vdw_energy:          -12.362978
+                      Grid_es_energy:           -1.527132
+
+-----------------------------------
+Molecule: ZINC00013564
+
+ Elapsed time for docking:	0.004 seconds
+
+ Anchors:		1
+ Orientations:		100
+ Conformations:		10
+
+                          Grid_Score:          -15.287384
+                     Grid_vdw_energy:          -17.370552
+                      Grid_es_energy:            2.083168
+
+-----------------------------------
+Molecule: ZINC01555236
+
+ Elapsed time:	0.047 seconds
+
+ ERROR:  Could not complete growth.
+         Confirm that the grid box is large enough to contain the ligand,
+         and try increasing max_orientations.
+
+-----------------------------------
+Molecule: ZINC00150863
+
+ Elapsed time for docking:	0.003 seconds
+
+ Anchors:		1
+ Orientations:		100
+ Conformations:		10
+
+                          Grid_Score:          -13.396926
+                     Grid_vdw_energy:          -13.679747
+                      Grid_es_energy:            0.282820
+
+-----------------------------------
+Molecule: ZINC00152265
+
+ Elapsed time for docking:	0.005 seconds
+
+ Anchors:		1
+ Orientations:		100
+ Conformations:		19
+
+                          Grid_Score:          -15.236701
+                     Grid_vdw_energy:          -13.851337
+                      Grid_es_energy:           -1.385364
+
+-----------------------------------
+Molecule: ZINC00152280
+
+ Elapsed time for docking:	0.033 seconds
+
+ Anchors:		1
+ Orientations:		100
+ Conformations:		64
+
+                          Grid_Score:          -17.706255
+                     Grid_vdw_energy:          -16.459993
+                      Grid_es_energy:           -1.246262
+
+-----------------------------------
+Molecule: ZINC00157111
+
+ Elapsed time for docking:	0.033 seconds
+
+ Anchors:		1
+ Orientations:		100
+ Conformations:		19
+
+                          Grid_Score:          -14.073265
+                     Grid_vdw_energy:          -12.575704
+                      Grid_es_energy:           -1.497562
+
+-----------------------------------
+Molecule: ZINC00157152
+
+ Elapsed time for docking:	0.005 seconds
+
+ Anchors:		1
+ Orientations:		100
+ Conformations:		19
+
+                          Grid_Score:          -15.555818
+                     Grid_vdw_energy:          -15.114188
+                      Grid_es_energy:           -0.441630
+
+-----------------------------------
+Molecule: ZINC00157402
+
+ Elapsed time for docking:	0.006 seconds
+
+ Anchors:		1
+ Orientations:		100
+ Conformations:		5
+
+                          Grid_Score:          -15.105307
+                     Grid_vdw_energy:          -13.295810
+                      Grid_es_energy:           -1.809496
+
+-----------------------------------
+Molecule: ZINC00157467
+
+ Elapsed time for docking:	0.038 seconds
+
+ Anchors:		1
+ Orientations:		100
+ Conformations:		31
+
+                          Grid_Score:          -14.412553
+                     Grid_vdw_energy:          -13.521490
+                      Grid_es_energy:           -0.891063
+
+-----------------------------------
+Molecule: ZINC00157960
+
+ Elapsed time for docking:	0.007 seconds
+
+ Anchors:		1
+ Orientations:		100
+ Conformations:		6
+
+                          Grid_Score:          -17.022034
+                     Grid_vdw_energy:          -16.388054
+                      Grid_es_energy:           -0.633979
+
+
+12 Molecules Processed
+Total elapsed time:	0.207 seconds
+Number of molecules per second:	57.996
