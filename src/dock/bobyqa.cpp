@@ -144,7 +144,7 @@ BOBYQA_Minimizer::input_parameters(Parameter_Reader & parm,
                             << endl;
                         exit(1);
                     }
-                    initial_score_converge = atof(parm.query_param("bobyqa_initial_score_coverge", "5").c_str());
+                    initial_score_converge = atof(parm.query_param("bobyqa_initial_score_converge", "5").c_str());
                     if (initial_score_converge <= score_converge) {
                         cout <<
                             "ERROR:  Parameter must be larger than score converge value.  Program will terminate."
@@ -204,6 +204,12 @@ BOBYQA_Minimizer::input_parameters(Parameter_Reader & parm,
                 if (rho_end <= 0.0) {
                     cout <<
                         "ERROR:  Parameter must be a float greater than zero.  Program will terminate."
+                        << endl;
+                    exit(1);
+                }
+                if (rho_beg <= rho_end) {
+                    cout <<
+                        "ERROR:  bobyqa_rho_beg must be larger than bobyqa_rho_end.  Program will terminate."
                         << endl;
                     exit(1);
                 }
@@ -439,11 +445,12 @@ BOBYQA_Minimizer::input_parameters(Parameter_Reader & parm,
         }
 
         if (final_min or minimize_ligand) {
-            // random_seed only used for multi-start; only read when enabled
-            if (use_multi_start) {
-                random_seed =
-                    atoi(parm.query_param("bobyqa_random_seed", "0").c_str());
-            }
+            // Always read random_seed for reproducible results.
+            // Previously this was gated behind use_multi_start, which
+            // left random_seed=0 (deterministic srand) when multi-start
+            // was disabled.
+            random_seed =
+                atoi(parm.query_param("bobyqa_random_seed", "0").c_str());
             restrained_min = (parm.query_param("bobyqa_restraint_min", "no", "yes no") == "yes") ? true : false;
             if (restrained_min) {
                 coefficient_restraint =
@@ -463,6 +470,7 @@ BOBYQA_Minimizer::initialize()
     // stagnation_count = 0; (commented out - TODO: implement properly)
     // restart_count = 0; (commented out - TODO: implement properly)
     // ratio_history.clear(); (commented out - TODO: implement properly)
+    fopt_history.clear();
     diagnostics = ConvergenceDiagnostics();
 }
 
@@ -501,15 +509,19 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
         use_multi_start = save_multi_start;
         return result;
     }
-    // npt: number of interpolation points. If not set by user (<=0), use 2*n+1
-    nptmax = (npt > 0) ? npt : 2 * n + 1;
+    // npt: number of interpolation points. If not set by user (<=0), use a
+    // default tuned for noisy objectives: larger than the minimum 2n+1 stencil
+    // but smaller than the full quadratic stencil ((n+1)(n+2)/2).
+    int default_npt = max(2 * n + 1, (n + 1) * (n + 2) / 4);
+    nptmax = (npt > 0) ? npt : default_npt;
     if (nptmax < n + 2) nptmax = n + 2;
     int np = nptmax;               // shorthand
 
     int i, j, iter;
     float f, fnew, ratio, dPred, dAct;
-    float norm_g, norm_s;
+    float norm_g;
 
+    bool score_stalled = false;
     DOCKMol ref_mol, tmp_mol, rmsd_ref;
     copy_molecule(ref_mol, mol);
     copy_molecule(tmp_mol, mol);
@@ -523,9 +535,14 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
     const float rho_end_actual = (rho_end > 0.0f) ? rho_end : 0.001f;
     const float rho_beg_actual = (rho_beg > 0.0f) ? rho_beg : 1.0f;
 
-    // Resize interpolation point storage
-    xpts.resize(np);
-    fvals.resize(np, 0.0f);
+    // Resize interpolation point storage.
+    // Initialize every slot to a valid vector so that loops over all np
+    // points are safe even when PRELIM only fills the 2n+1 axis stencil.
+    // Points beyond the axis stencil start as duplicates of the initial
+    // vertex with a penalty score and are replaced during optimization.
+    const float PENALTY_SCORE = 1.0e6f;
+    xpts.resize(np, vertex);
+    fvals.assign(np, PENALTY_SCORE);
     g.resize(n, 0.0f);
     Hdiag.resize(n, 0.0f);
     if (use_full_quadratic) {
@@ -557,7 +574,6 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
     }
 
     // Evaluate all axis points - assign large penalty for failed evaluations
-    const float PENALTY_SCORE = 1.0e6f;
     cerr << "DEBUG: PRELIM evaluating axis points, n_axis=" << n_axis << " np=" << np << endl;
     for (i = 0; i < n_axis; i++) {
         int idx_p = 1 + i;
@@ -997,7 +1013,7 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
             }
             if (degenerate) {
                 diagnostics.rescue_calls++;
-                rescue(score, mol, ref_mol, tmp_mol, rmsd_ref,
+                rescue(score, mol, ref_mol, tmp_mol, rmsd_ref, best_mol,
                        trans_step_size, rot_step_size, tors_step_size,
                        rho_beg_actual);
             }
@@ -1032,22 +1048,49 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
         }
 
         // ---- 2h) Check convergence ----
+        // Primary: trust region has shrunk to minimum radius.
         if (delta <= rho_end_actual && iter > 5) break;
-        norm_g = 0.0f;
-        for (i = 0; i < n; i++) norm_g += g[i] * g[i];
-        norm_g = sqrt(norm_g);
-        if (norm_g < score_converge && delta <= rho_end_actual) break;
+
+        // Secondary: score stall. The r^12 repulsive internal energy can
+        // cause large per-iteration score spikes, so we look at the history
+        // of the best score (fopt) rather than raw per-iteration scores.
+        // If the best score has not improved meaningfully for a sustained
+        // window and the trust region is already small, declare convergence.
+        const int FOPT_STALL_WINDOW = 20;
+        const int MIN_ITER_BEFORE_STALL = 50;
+        const float SCORE_STALL_REL_TOL = 1.0e-3f;  // 0.1%
+        const float SCORE_STALL_DELTA_FACTOR = 10.0f;
+
+        while ((int)fopt_history.size() >= FOPT_STALL_WINDOW) {
+            fopt_history.pop_front();
+        }
+        fopt_history.push_back(fopt);
+
+        if (iter > MIN_ITER_BEFORE_STALL &&
+            (int)fopt_history.size() == FOPT_STALL_WINDOW) {
+            float f_max = *max_element(fopt_history.begin(), fopt_history.end());
+            float f_min = *min_element(fopt_history.begin(), fopt_history.end());
+            float range = f_max - f_min;
+            float scale = max(1.0f, fabs(f_min));  // avoid division by zero
+            if (range / scale < SCORE_STALL_REL_TOL &&
+                delta <= rho_end_actual * SCORE_STALL_DELTA_FACTOR) {
+                score_stalled = true;
+                break;
+            }
+        }
     }
 
     // Record convergence diagnostics
-    if (delta <= rho_end_actual && diagnostics.iterations > 5) {
-        // record_diagnostics("delta_converged"); (commented out - TODO: implement properly)
-    } else if (norm_g < score_converge && delta <= rho_end_actual) {
-        // record_diagnostics("gradient_converged"); (commented out - TODO: implement properly)
+    diagnostics.iterations = iter;
+    diagnostics.final_delta = delta;
+    if (score_stalled) {
+        diagnostics.termination_reason = "score_stall";
+    } else if (delta <= rho_end_actual && diagnostics.iterations > 5) {
+        diagnostics.termination_reason = "delta_converged";
     } else if (diagnostics.iterations >= max_iter_param) {
-        // record_diagnostics("max_iterations"); (commented out - TODO: implement properly)
+        diagnostics.termination_reason = "max_iterations";
     } else {
-        // record_diagnostics("unknown"); (commented out - TODO: implement properly)
+        diagnostics.termination_reason = "unknown";
     }
 
     // ========================================================
@@ -1230,7 +1273,7 @@ BOBYQA_Minimizer::update_model_full(Base_Score & score, DOCKMol & ref_mol,
 /**********************************************************************/
 void
 BOBYQA_Minimizer::rescue(Base_Score & score, DOCKMol & mol, DOCKMol & ref_mol,
-                          DOCKMol & tmp_mol, DOCKMol & rmsd_ref,
+                          DOCKMol & tmp_mol, DOCKMol & rmsd_ref, DOCKMol & best_mol,
                           float trans_step_size, float rot_step_size, float tors_step_size,
                           float rho_beg_actual)
 {
@@ -1303,6 +1346,13 @@ BOBYQA_Minimizer::rescue(Base_Score & score, DOCKMol & mol, DOCKMol & ref_mol,
             kopt = i;
         }
     }
+    // Rebuild full Hessian if using full quadratic model.
+    // The old off-diagonal elements are from the degenerate interpolation set
+    // and would mislead the CG solver. Rebuild from fresh corner evaluations.
+    if (use_full_quadratic) {
+        build_full_model(score, ref_mol, tmp_mol, rmsd_ref, best_mol,
+                         trans_step_size, rot_step_size, tors_step_size);
+    }
 }
 
 /**********************************************************************/
@@ -1332,7 +1382,8 @@ BOBYQA_Minimizer::multi_start_minimize(Base_Score & score, DOCKMol & mol,
     struct PrelimPoint { FLOATVec vertex; float score; };
     vector<PrelimPoint> prelim_points;
     const float PENALTY_SCORE = 1.0e6f;
-    int np = (npt > 0) ? npt : 2 * n + 1;
+    int default_npt = max(2 * n + 1, (n + 1) * (n + 2) / 4);
+    int np = (npt > 0) ? npt : default_npt;
     if (np < n + 2) np = n + 2;
     int n_axis = min(n, (np - 1) / 2);
     float rho_beg_actual = (rho_beg > 0.0f) ? rho_beg : 1.0f;
@@ -1465,86 +1516,6 @@ BOBYQA_Minimizer::multi_start_minimize(Base_Score & score, DOCKMol & mol,
 
 /**********************************************************************/
 // Run PRELIM phase and collect valid interpolation points as multi-start seeds
-// This evaluates the initial point and all axis points, returning valid ones sorted by score
-/**********************************************************************/
-void __attribute__((noinline))
-BOBYQA_Minimizer::run_prelim_and_collect_points(Base_Score & score, DOCKMol & ref_mol,
-                                                   DOCKMol & tmp_mol, DOCKMol & rmsd_ref,
-                                                   DOCKMol & mol,
-                                                   float trans_step_size, float rot_step_size,
-                                                   float tors_step_size,
-                                                   vector<PrelimPoint> & points)
-{
-    cerr << "DEBUG: run_prelim_and_collect_points called, n=" << n << " npt=" << npt << endl;
-    volatile int dummy_force_call = 1; (void)dummy_force_call;
-    int i;
-    const float PENALTY_SCORE = 1.0e6f;
-    // Compute nptmax locally since it may not be set yet when called from multi_start_minimize
-    int np = (npt > 0) ? npt : 2 * n + 1;
-    if (np < n + 2) np = n + 2;
-    int n_axis = min(n, (np - 1) / 2);
-    float rho_beg_actual = (rho_beg > 0.0f) ? rho_beg : 1.0f;
-    
-    // Use the input vertex as starting point (passed via xopt or vertex)
-    FLOATVec start_vertex;
-    if (!xopt.empty()) {
-        start_vertex = xopt;
-    } else {
-        start_vertex.resize(n, 0.0f);
-    }
-    
-    // Temporary storage for PRELIM evaluation
-    vector<FLOATVec> xpts_temp(np);
-    vector<float> fvals_temp(np, PENALTY_SCORE);
-    
-    // Point 0: the initial guess
-    xpts_temp[0] = start_vertex;
-    
-    // Evaluate starting point
-    if (eval_score(score, ref_mol, tmp_mol, xpts_temp[0],
-                   trans_step_size, rot_step_size, tors_step_size)) {
-        float score_val = tmp_mol.current_score + tmp_mol.internal_energy;
-        if (restrained_min) {
-            score_val += coefficient_restraint * calc_active_rmsd2(rmsd_ref, tmp_mol);
-        }
-        fvals_temp[0] = score_val;
-        points.push_back({xpts_temp[0], score_val});
-    }
-    
-    // Axis points: +/- rho_beg along each coordinate
-    for (i = 0; i < n_axis; i++) {
-        int idx_p = 1 + i;
-        xpts_temp[idx_p] = xpts_temp[0];
-        xpts_temp[idx_p][i] += rho_beg_actual;
-        
-        if (eval_score(score, ref_mol, tmp_mol, xpts_temp[idx_p],
-                       trans_step_size, rot_step_size, tors_step_size)) {
-            float score_val = tmp_mol.current_score + tmp_mol.internal_energy;
-            if (restrained_min) {
-                score_val += coefficient_restraint * calc_active_rmsd2(rmsd_ref, tmp_mol);
-            }
-            fvals_temp[idx_p] = score_val;
-            points.push_back({xpts_temp[idx_p], score_val});
-        }
-        
-        int idx_m = 1 + n_axis + i;
-        xpts_temp[idx_m] = xpts_temp[0];
-        xpts_temp[idx_m][i] -= rho_beg_actual;
-        
-        if (eval_score(score, ref_mol, tmp_mol, xpts_temp[idx_m],
-                       trans_step_size, rot_step_size, tors_step_size)) {
-            float score_val = tmp_mol.current_score + tmp_mol.internal_energy;
-            if (restrained_min) {
-                score_val += coefficient_restraint * calc_active_rmsd2(rmsd_ref, tmp_mol);
-            }
-            fvals_temp[idx_m] = score_val;
-            points.push_back({xpts_temp[idx_m], score_val});
-        }
-    }
-    
-    cout << "PRELIM collected " << points.size() << " valid points out of "
-         << (1 + 2 * n_axis) << " evaluated" << endl;
-}
 
 /**********************************************************************/
 // Estimate noise level from ratio history

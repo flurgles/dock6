@@ -4,6 +4,7 @@
 
 #include <string>
 #include <vector>
+#include <deque>
 #include "minimizer.h"
 
 class           BOBYQA_Minimizer : public Minimizer {
@@ -50,6 +51,7 @@ class           BOBYQA_Minimizer : public Minimizer {
     FLOATVec         s_step;      // last accepted step vector
     float            fopt_before; // function value at xopt before last step
     float            fnew_val;    // function value at last accepted step
+    std::deque<float> fopt_history; // sliding window of best scores for stall detection
 
     // Global optimization: noise tracking (kept for compilation, not actively used)
     float           noise_level;         // estimated noise in objective function
@@ -74,7 +76,7 @@ class           BOBYQA_Minimizer : public Minimizer {
     } diagnostics;
 
     // RESCUE: recover from degenerate interpolation set
-    void            rescue(Base_Score &, DOCKMol &, DOCKMol &, DOCKMol &, DOCKMol &,
+    void            rescue(Base_Score &, DOCKMol &, DOCKMol &, DOCKMol &, DOCKMol &, DOCKMol &,
                            float, float, float, float);
     // Full quadratic model helpers
     void            build_full_model(Base_Score &, DOCKMol &, DOCKMol &, DOCKMol &, DOCKMol &,
@@ -89,10 +91,6 @@ class           BOBYQA_Minimizer : public Minimizer {
         FLOATVec vertex;
         float score;
     };
-    void            run_prelim_and_collect_points(Base_Score &, DOCKMol &, DOCKMol &,
-                                                   DOCKMol &, DOCKMol &,
-                                                   float, float, float,
-                                                   std::vector<PrelimPoint> &);
     // Global optimization helpers (commented out - TODO: implement properly)
     // float           estimate_noise_level();
     // void            perform_adaptive_restart(Base_Score &, DOCKMol &, DOCKMol &, DOCKMol &, DOCKMol &,
