@@ -777,7 +777,7 @@ DN_GA_Build::prepare_fragment_graph( vector <Fragment> & frag_vec, vector <FragG
 // +++++++++++++++++++++++++++++++++++++++++
 // This function is the main de novo engine for building molecules. (called in dock.cpp)
 void
-DN_GA_Build::build_molecules( Master_Score & score, Simplex_Minimizer & simplex, AMBER_TYPER & typer,
+DN_GA_Build::build_molecules( Master_Score & score, Minimizer & simplex, AMBER_TYPER & typer,
                            Orient & orient )
 {   
     Trace trace("DN_GA_Build::build_molecules()");
@@ -1459,7 +1459,7 @@ DN_GA_Build::build_molecules( Master_Score & score, Simplex_Minimizer & simplex,
 // +++++++++++++++++++++++++++++++++++++++++
 // This function will combine things without too much thinking
 void
-DN_GA_Build::simple_build( Master_Score & score, Simplex_Minimizer & simplex, AMBER_TYPER & typer )
+DN_GA_Build::simple_build( Master_Score & score, Minimizer & simplex, AMBER_TYPER & typer )
 {
 //TODO
 // Needs an overhaul
@@ -1546,7 +1546,7 @@ DN_GA_Build::simple_build( Master_Score & score, Simplex_Minimizer & simplex, AM
 // root vector
 void
 DN_GA_Build::orient_fragments( vector <Fragment> & root, Fragment & frag, Master_Score & score,
-                            Simplex_Minimizer & simplex, AMBER_TYPER & typer, Orient & orient )
+                            Minimizer & simplex, AMBER_TYPER & typer, Orient & orient )
 {
 
     // This vector will hold orients
@@ -1657,7 +1657,7 @@ DN_GA_Build::orient_fragments( vector <Fragment> & root, Fragment & frag, Master
 void
 DN_GA_Build::sample_fraglib_exhaustive( Fragment & layer_frag, int j, vector <Fragment> & fraglib,
                                      vector <Fragment> & growing_ref, Master_Score & score, 
-                                     Simplex_Minimizer & simplex, AMBER_TYPER & typer, bool last_layer)
+                                     Minimizer & simplex, AMBER_TYPER & typer, bool last_layer)
 {
 
     // If the fragment library is empty, return without doing anything
@@ -1770,7 +1770,7 @@ DN_GA_Build::sample_fraglib_exhaustive( Fragment & layer_frag, int j, vector <Fr
 void
 DN_GA_Build::sample_fraglib_rand( Fragment & layer_frag, int j, vector <Fragment> & fraglib,
                                vector <Fragment> & growing_ref, Master_Score & score,
-                               Simplex_Minimizer & simplex, AMBER_TYPER & typer, bool last_layer )
+                               Minimizer & simplex, AMBER_TYPER & typer, bool last_layer )
 {
 
     // If the fragment library is empty for some reason, return without doing anything
@@ -1984,7 +1984,7 @@ DN_GA_Build::sample_fraglib_rand( Fragment & layer_frag, int j, vector <Fragment
 void
 DN_GA_Build::sample_fraglib_graph( Fragment & layer_frag, int j, vector <Fragment> & fraglib,
                                 vector <FragGraph> & fraggraph_vec, vector <Fragment> & growing_ref,
-                                Master_Score & score, Simplex_Minimizer & simplex,
+                                Master_Score & score, Minimizer & simplex,
                                 AMBER_TYPER & typer, bool last_layer )
 {
     //cout << "-SAMPLE_FRAGLIB_GRAPH-" << endl;
@@ -3640,7 +3640,7 @@ DN_GA_Build::compare_dummy_bonds( Fragment frag1, int dummy1, int heavy1,
 // and return the results in the vector.
 void
 DN_GA_Build::sample_minimized_torsions( Fragment & frag1, vector <Fragment> & list_of_frags, 
-                                     Master_Score & score, Simplex_Minimizer & simplex, 
+                                     Master_Score & score, Minimizer & simplex, 
                                      AMBER_TYPER & typer, std::pair<bool,float> tors_spec
  )
 {

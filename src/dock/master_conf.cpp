@@ -357,7 +357,7 @@ Master_Conformer_Search::submit_anchor_orientation(DOCKMol & mol,
 // +++++++++++++++++++++++++++++++++++++++++
 void
 Master_Conformer_Search::grow_periphery(Master_Score & score,
-                                        Simplex_Minimizer & simplex, Bump_Filter & bump)
+                                        Minimizer & simplex, Bump_Filter & bump)
 {
 
     // sudipto & trent: this command prevents segfault when no scoring function is specified

@@ -302,7 +302,7 @@ class           DN_Build {
     std::vector< float >        ordered_fragment_frequencies;
     void                        read_frag_frequencies( std::vector <Fragment> & );
     void                        sample_fraglib_frequency( Fragment &, int, std::vector <Fragment> &, std::vector <Fragment> &,
-                                         Master_Score &, Simplex_Minimizer &, AMBER_TYPER &, bool );    
+                                         Master_Score &, Minimizer &, AMBER_TYPER &, bool );    
     int                         select_frag_by_frequency( vector <Fragment> & fraglib );
     void                        new_select_frag_by_frequency( vector <Fragment> &, vector<int> &, vector<int> &, int);
     void                        accept_frags_by_frequency(vector <int> &);
@@ -401,21 +401,21 @@ class           DN_Build {
     void            generate_roulette();
     void            read_frequencies_matrix( std::string freq_matrix_file );
     // Main build functions
-    void            build_molecules( Master_Score &, Simplex_Minimizer &, AMBER_TYPER &, Orient & );
-    void            orient_fragments( std::vector <Fragment> &, Fragment &, Master_Score &, Simplex_Minimizer &,
+    void            build_molecules( Master_Score &, Minimizer &, AMBER_TYPER &, Orient & );
+    void            orient_fragments( std::vector <Fragment> &, Fragment &, Master_Score &, Minimizer &,
                                       AMBER_TYPER &, Orient & );
     void            sample_fraglib_exhaustive ( Fragment &, int , std::vector <Fragment> &, vector <Fragment> &,
-                                                Master_Score &, Simplex_Minimizer &, AMBER_TYPER &, bool );
+                                                Master_Score &, Minimizer &, AMBER_TYPER &, bool );
     void            sample_isofraglib_isoswap( Fragment &, int, std::vector <Fragment> &, std::vector <Fragment> &,
-                                                Master_Score &, Simplex_Minimizer &, AMBER_TYPER &, bool, Iso_Table::Iso_Tab &, int );
+                                                Master_Score &, Minimizer &, AMBER_TYPER &, bool, Iso_Table::Iso_Tab &, int );
     void            sample_fraglib_graph( Fragment &, int, std::vector <Fragment> &, std::vector <FragGraph> &,
-                                          std::vector <Fragment> &, Master_Score &, Simplex_Minimizer &, AMBER_TYPER &, 
+                                          std::vector <Fragment> &, Master_Score &, Minimizer &, AMBER_TYPER &, 
                                           vector<int> &, vector<int> &, bool ); //JDB JDB JDB
     void            sample_fraglib_rand( Fragment &, int, std::vector <Fragment> &,
-                                          std::vector <Fragment> &, Master_Score &, Simplex_Minimizer &, AMBER_TYPER &, 
+                                          std::vector <Fragment> &, Master_Score &, Minimizer &, AMBER_TYPER &, 
                                           vector<int> &, vector<int> &, bool ); // JDB JDB JDB 
     void            sample_fraglib_matrix( Fragment &, int, std::vector <Fragment> &, std::vector <Fragment> &,
-                                           Master_Score &, Simplex_Minimizer &, AMBER_TYPER &, bool );
+                                           Master_Score &, Minimizer &, AMBER_TYPER &, bool );
 
     // Functions for attaching two fragments together
     Fragment        combine_fragments( Fragment &, int, Fragment, int );
@@ -435,22 +435,22 @@ class           DN_Build {
 
     // Functions for sampling torsions, computing energy, and minimizing
     void            sample_minimized_torsions( Fragment &, std::vector <Fragment> &, Master_Score &,
-                                               Simplex_Minimizer &, AMBER_TYPER & );
+                                               Minimizer &, AMBER_TYPER & );
     float           sample_minimized_torsions_iso( Fragment &, std::vector <Fragment> &, Master_Score &,
-                                               Simplex_Minimizer &, AMBER_TYPER & );
+                                               Minimizer &, AMBER_TYPER & );
     void            just_minimize(Fragment &, std::vector <Fragment> &, Master_Score &,
-                                               Simplex_Minimizer &, AMBER_TYPER & ,bool ,bool);
+                                               Minimizer &, AMBER_TYPER & ,bool ,bool);
     float           calc_fragment_rmsd( Fragment &, Fragment & );
     void            frag_torsion_drive( Fragment &, std::vector <Fragment> & );
     std::vector<float> frag_torsion_drive_iso( Fragment &, std::vector <Fragment> & );
     void            just_turn_one_tors( Fragment &, float);
     std::pair<std::vector<float>,std::vector<Fragment> > attach_and_get_torsions (Fragment, int , Fragment, int, 
-                                Master_Score & , Simplex_Minimizer & , AMBER_TYPER & );
+                                Master_Score & , Minimizer & , AMBER_TYPER & );
     Fragment attach_isosteres(Fragment &, int, Fragment, int  );
 
     std::pair<float,Fragment>
     get_best_iso_head_tors( Fragment , int , std::pair<std::vector<float>,std::vector<Fragment> > , int , 
-                                  Master_Score & , Simplex_Minimizer & , AMBER_TYPER & );
+                                  Master_Score & , Minimizer & , AMBER_TYPER & );
     void            prepare_internal_energy( Fragment &, Master_Score & );
 
     // Horizontal pruning functions specific to denovo
@@ -519,7 +519,7 @@ class           DN_Build {
     // The functions below here were made obsolete by the new combine_fragments() function
     // (They still work, just slightly slower)
     void                      orient_fragments_old( vector <Fragment> &, Master_Score &,
-                                                    Simplex_Minimizer &, AMBER_TYPER &, Orient & );
+                                                    Minimizer &, AMBER_TYPER &, Orient & );
     Fragment                  combine_fragments_old( Fragment, int, int, Fragment &, int, int );
     DOCKVector                translate_frag( DOCKMol &, int );
     std::pair <float, float>  rotate_frag( DOCKMol &, int );

@@ -944,7 +944,7 @@ GA_Recomb::read_library( vector <DOCKMol> & parents, string filename )
 // Main function that will call the breeding function  based on the user-specified number of generations
 // and fitness parameters - called in dock.cpp
 void
-GA_Recomb::max_breeding( Master_Score & score, Simplex_Minimizer & simplex, AMBER_TYPER & c_typer, Orient & orient)
+GA_Recomb::max_breeding( Master_Score & score, Minimizer & simplex, AMBER_TYPER & c_typer, Orient & orient)
 {
     cout <<endl<< "----- ENTERING DOCK GENETIC ALGORITHM ------" << endl;
     //cout << ""
@@ -1793,7 +1793,7 @@ GA_Recomb::print_molecule_counts(int generation){
 // +++++++++++++++++++++++++++++++++++++++++
 // Determine the molecules with overlapping bonds and returns the set as reference 
 void
-GA_Recomb::check_exhaustive( Master_Score & score, Simplex_Minimizer & simplex, AMBER_TYPER & c_typer, Orient & orient )
+GA_Recomb::check_exhaustive( Master_Score & score, Minimizer & simplex, AMBER_TYPER & c_typer, Orient & orient )
 {
 
     Trace trace( "GA_Recomb::check_exhaustive()" );
@@ -2054,7 +2054,7 @@ GA_Recomb::check_exhaustive( Master_Score & score, Simplex_Minimizer & simplex, 
 // from two parents - called in max_generations
 // NOTE: Needs to be updated
 void
-GA_Recomb::breeding_exhaustive( Master_Score & score, Simplex_Minimizer & simplex, AMBER_TYPER & c_typer, Orient & orient, int gen_num )
+GA_Recomb::breeding_exhaustive( Master_Score & score, Minimizer & simplex, AMBER_TYPER & c_typer, Orient & orient, int gen_num )
 {
     //copy parents vector onto old parents for PDM - BTB
     vector<DOCKMol> old_parents;
@@ -2698,7 +2698,7 @@ GA_Recomb::breeding_exhaustive( Master_Score & score, Simplex_Minimizer & simple
 // Breeding is the unoffical main genetic algorithm function for breeding unique child molecules 
 // from two parents - called in max_generations
 void
-GA_Recomb::breeding_rand( Master_Score & score, Simplex_Minimizer & simplex, AMBER_TYPER & c_typer, Orient & orient, int gen_num )
+GA_Recomb::breeding_rand( Master_Score & score, Minimizer & simplex, AMBER_TYPER & c_typer, Orient & orient, int gen_num )
 {
  
     //copy parents vector onto old parents for PDM - BTB
@@ -3512,7 +3512,7 @@ GA_Recomb::breeding_rand( Master_Score & score, Simplex_Minimizer & simplex, AMB
 // ++++++++++++++++++++++++++++++++++++++++
 // Compare the molecules based on hungarian rmsd
 bool
-GA_Recomb::similarity_compare( DOCKMol &  mol1, int mol1o, int mol1t, DOCKMol & mol2, int mol2o, int mol2t, bool second, Master_Score & score, Simplex_Minimizer & simplex, AMBER_TYPER & typer )
+GA_Recomb::similarity_compare( DOCKMol &  mol1, int mol1o, int mol1t, DOCKMol & mol2, int mol2o, int mol2t, bool second, Master_Score & score, Minimizer & simplex, AMBER_TYPER & typer )
 {
     Trace trace( "GA_Recomb::similarity_compare()" );
     // Set all atom_active_flags to false
@@ -4951,7 +4951,7 @@ GA_Recomb::prepare_torenv_indices( Fragment & frag)
 // Only one mutation type will be perfomed on each molecule and only one mutant will be maintained
 void
 GA_Recomb::master_mut_exhaustive( std::vector <DOCKMol> & start, std::vector <DOCKMol> & save, std::vector <DOCKMol> & output, 
-                                  bool parents, Master_Score & score, Simplex_Minimizer & simplex, AMBER_TYPER & c_typer, Orient & orient, int gen_num)
+                                  bool parents, Master_Score & score, Minimizer & simplex, AMBER_TYPER & c_typer, Orient & orient, int gen_num)
 {
     Trace trace( "GA_Recomb::master_mut_exhaustive()" );
     // STEP 4: Mutations
@@ -5152,7 +5152,7 @@ GA_Recomb::master_mut_counter(bool parents, int output, int save, int mut_cycles
 // Only one mutation type will be perfomed on each molecule and only one mutant will be maintained
 void
 GA_Recomb::master_mut_rand( std::vector <DOCKMol> & start, std::vector <DOCKMol> & save, std::vector <DOCKMol> & output, 
-                       bool parents, Master_Score & score, Simplex_Minimizer & simplex, AMBER_TYPER & c_typer, Orient & orient, int gen_num)
+                       bool parents, Master_Score & score, Minimizer & simplex, AMBER_TYPER & c_typer, Orient & orient, int gen_num)
 {
     Trace trace( "GA_Recomb::master_mut_rand()" );
     // STEP 4: Mutations
@@ -5383,7 +5383,7 @@ GA_Recomb::segment_id( DOCKMol & gen, AMBER_TYPER & typer )
 // This function will randomly select the mutation type, identify bond (& atoms) for mutation,
 // and call the appropriate mutation functions (delete, replace, insert, or substitute)
 void
-GA_Recomb::mutation_selection( DOCKMol & gen, std::vector <DOCKMol> & mfinal, Master_Score & score, Simplex_Minimizer & simplex, 
+GA_Recomb::mutation_selection( DOCKMol & gen, std::vector <DOCKMol> & mfinal, Master_Score & score, Minimizer & simplex, 
                                AMBER_TYPER & typer, Orient & orient, int gen_num, int mut_attempt )
 {
     Trace trace( "GA_Recomb::mutation_selection()" );
@@ -6036,7 +6036,7 @@ GA_Recomb::mutation_selection( DOCKMol & gen, std::vector <DOCKMol> & mfinal, Ma
 // +++++++++++++++++++++++++++++++++++++++++
 // This function inactivates a portion of the molecule and replaces the inactive section with a H 
 void
-GA_Recomb::deletion_mutation( DOCKMol & gen, INTVec bonds, INTVec origV, INTVec termV, bool subst, Master_Score & score, Simplex_Minimizer & simplex, AMBER_TYPER & typer )
+GA_Recomb::deletion_mutation( DOCKMol & gen, INTVec bonds, INTVec origV, INTVec termV, bool subst, Master_Score & score, Minimizer & simplex, AMBER_TYPER & typer )
 {
     Trace trace( "GA_Recomb::deleteion_mutation()" );
     double start_time = time_seconds();
@@ -6403,7 +6403,7 @@ GA_Recomb::deletion_mutation( DOCKMol & gen, INTVec bonds, INTVec origV, INTVec 
 // This function will prepare the molecule for the addition of a fragment by the DN code
 // Additions accepts a dockmol to mutate through anchor param, the index of which fragment the addition is occuring on via segment, the score setup through master score, the simplex minimizer, amber typer, and orienter, a bool describing whether this addition is in a substitution mutation or not, the current generation, and the current mutation attempt; this returns a single top scoring molecule after a round of de novo additions
 void
-GA_Recomb::additions ( DOCKMol & anchor, int segment, Master_Score & score, Simplex_Minimizer & simplex, 
+GA_Recomb::additions ( DOCKMol & anchor, int segment, Master_Score & score, Minimizer & simplex, 
                        AMBER_TYPER & typer, Orient & orient, bool subst, int gen_num, int mut_attempt )
 {
     Trace trace( "GA_Recomb::additions()" );
@@ -6762,7 +6762,7 @@ GA_Recomb::additions ( DOCKMol & anchor, int segment, Master_Score & score, Simp
 // +++++++++++++++++++++++++++++++++++++++++
 // Replaces a scaffold or linker with a fragment from the library - maintains to best scored option
 void
-GA_Recomb::replacement( DOCKMol & gen, int final_seg, INTVec bonds, INTVec origV, INTVec termV, Master_Score & score, Simplex_Minimizer & simplex, AMBER_TYPER & typer, Orient & orient )
+GA_Recomb::replacement( DOCKMol & gen, int final_seg, INTVec bonds, INTVec origV, INTVec termV, Master_Score & score, Minimizer & simplex, AMBER_TYPER & typer, Orient & orient )
 {
     Trace trace( "GA_Recomb::replacement()" );
     double start_time = time_seconds();
@@ -6948,7 +6948,7 @@ GA_Recomb::prepare_replacement_segment( Fragment & frag, int segment, INTVec aps
 // Only rings can replace rings and non-rings can replace rings
 // Reference ReCore
 void
-GA_Recomb::rand_replacement( Fragment & ref, int final_seg, std::vector <Fragment> & fraglib, Master_Score & score, Simplex_Minimizer & simplex, AMBER_TYPER & typer, Orient & orient )
+GA_Recomb::rand_replacement( Fragment & ref, int final_seg, std::vector <Fragment> & fraglib, Master_Score & score, Minimizer & simplex, AMBER_TYPER & typer, Orient & orient )
 {
     Trace trace( "GA_Recomb::rand_replacement()" );
     double          start_time = time_seconds();
@@ -8690,7 +8690,7 @@ GA_Recomb::H_to_Du ( DOCKMol & mol, int a )
 // Generates a new DOCKMol where a molecule is capped with a hydrogen
 // In order to run this function, a mol2 and 3 atom numbers must be provided
 void
-GA_Recomb::add_H( DOCKMol & mol, int origin, int a, bool subst,  Master_Score & score, Simplex_Minimizer & simplex, AMBER_TYPER & typer)
+GA_Recomb::add_H( DOCKMol & mol, int origin, int a, bool subst,  Master_Score & score, Minimizer & simplex, AMBER_TYPER & typer)
 {
     Trace trace( "GA_Recomb::add_H()" );
  
@@ -9142,7 +9142,7 @@ GA_Recomb::prepare_internal_energy( DOCKMol & tmp_child, Master_Score & score )
 // Given a fragment and an empty vector of fragments, sample torsions for the most recent addition
 // and return the results in the vector. NOTE: DOES NOT MINIMIZE TORSIONS
 void
-GA_Recomb::minimize_children( DOCKMol & child, std::vector <DOCKMol> & molvec, Master_Score & score,Simplex_Minimizer & simplex, AMBER_TYPER & typer )
+GA_Recomb::minimize_children( DOCKMol & child, std::vector <DOCKMol> & molvec, Master_Score & score,Minimizer & simplex, AMBER_TYPER & typer )
 {
     Trace trace( "GA_Recomb::minimize_children()" );
     // Activate all atoms and bonds prior to any scoring
@@ -9456,7 +9456,7 @@ return;
 // and by compounds that could not be properly scored
 // MARK: This function requires the user to use a scoring function
 void
-GA_Recomb::fitness_pruning( std::vector <DOCKMol> & pruned, std::vector <DOCKMol> & mfinal, Master_Score & score, Simplex_Minimizer & simplex, AMBER_TYPER & typer )
+GA_Recomb::fitness_pruning( std::vector <DOCKMol> & pruned, std::vector <DOCKMol> & mfinal, Master_Score & score, Minimizer & simplex, AMBER_TYPER & typer )
 {
     Trace trace( "GA_Recomb::fitness_pruning()" );
     double start_time = time_seconds();
@@ -13042,7 +13042,7 @@ GA_Recomb::score_parents( std::vector <DOCKMol> & tmp, Master_Score & score,  AM
 // +++++++++++++++++++++++++++++++++++++++++++
 // Eliminate redundate parents - within one vector
 void
-GA_Recomb::unique_parents(std::vector <DOCKMol> & tmp, Master_Score & score, Simplex_Minimizer & simplex, AMBER_TYPER & typer)
+GA_Recomb::unique_parents(std::vector <DOCKMol> & tmp, Master_Score & score, Minimizer & simplex, AMBER_TYPER & typer)
 {
 
     Hungarian_RMSD h;

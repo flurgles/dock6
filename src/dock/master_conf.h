@@ -14,7 +14,7 @@
 class Bump_Filter;
 class Master_Score;
 class Parameter_Reader;
-class Simplex_Minimizer;
+class Minimizer;
 class AG_Conformer_Search;
 class DN_Build;
 
@@ -54,7 +54,7 @@ class           Master_Conformer_Search {
     void            prepare_molecule(DOCKMol &);
     bool            next_anchor(DOCKMol &);
     bool            submit_anchor_orientation(DOCKMol &, bool);
-    void            grow_periphery(Master_Score &, Simplex_Minimizer &, Bump_Filter &);
+    void            grow_periphery(Master_Score &, Minimizer &, Bump_Filter &);
     bool            next_conformer(DOCKMol &);
 
 };

@@ -345,15 +345,15 @@ class           GA_Recomb {
     void                     activate_vector( std::vector <DOCKMol> & );                           // activate a vector of mols
 
     // Main functions for breeding
-    void                     max_breeding( Master_Score &, Simplex_Minimizer &, AMBER_TYPER &, Orient & );        // main function
-    void                     check_exhaustive( Master_Score &, Simplex_Minimizer &, AMBER_TYPER &, Orient & );    // check overlapping bonds only
-    void                     breeding_exhaustive( Master_Score &, Simplex_Minimizer &, AMBER_TYPER &, Orient &, int ); // exhaustive xover & mut
-    void                     breeding_rand( Master_Score &, Simplex_Minimizer &, AMBER_TYPER &, Orient &, int );       // rand xover & mut
+    void                     max_breeding( Master_Score &, Minimizer &, AMBER_TYPER &, Orient & );        // main function
+    void                     check_exhaustive( Master_Score &, Minimizer &, AMBER_TYPER &, Orient & );    // check overlapping bonds only
+    void                     breeding_exhaustive( Master_Score &, Minimizer &, AMBER_TYPER &, Orient &, int ); // exhaustive xover & mut
+    void                     breeding_rand( Master_Score &, Minimizer &, AMBER_TYPER &, Orient &, int );       // rand xover & mut
  
   
     // Functions for combining two fragments for crossover
     bool                     similarity_compare( DOCKMol &, int, int, DOCKMol &, int, int, 
-                                                 bool, Master_Score &, Simplex_Minimizer &, AMBER_TYPER & );  // compare similarity of two segments
+                                                 bool, Master_Score &, Minimizer &, AMBER_TYPER & );  // compare similarity of two segments
     void                     recomb_mols( DOCKMol &, int, int, DOCKMol &, int, int, std::vector <DOCKMol> & );// main xover function
     void                     recomb_mols_xover( DOCKMol &, int, int, DOCKMol &, int, int, std::vector <DOCKMol> & ); // main xover function, w/ DNA JDB
     void                     rotate( float, float, DOCKVector, DOCKMol &, DOCKVector);                        // rotate/align segment for attachment
@@ -369,23 +369,23 @@ class           GA_Recomb {
     // Functions for mutations
     void                    master_mut_exhaustive( std::vector <DOCKMol> &, std::vector <DOCKMol> &, 
                                                    std::vector <DOCKMol> &, bool, Master_Score &, 
-                                                   Simplex_Minimizer &, AMBER_TYPER &, Orient &, int );            // exhaustive mutations
+                                                   Minimizer &, AMBER_TYPER &, Orient &, int );            // exhaustive mutations
     void                    master_mut_rand( std::vector <DOCKMol> &, std::vector <DOCKMol> &, 
                                              std::vector <DOCKMol> &, bool, Master_Score &, 
-                                             Simplex_Minimizer &, AMBER_TYPER &, Orient &, int );                  // random mutations
+                                             Minimizer &, AMBER_TYPER &, Orient &, int );                  // random mutations
     void                    segment_id(DOCKMol &, AMBER_TYPER &);                                             // get segment information (ag)
     void                    mutation_selection(DOCKMol &, std::vector <DOCKMol> &, Master_Score &, 
-                                               Simplex_Minimizer &, AMBER_TYPER &, Orient &, int, int );                // select mut type
+                                               Minimizer &, AMBER_TYPER &, Orient &, int, int );                // select mut type
     void                    deletion_mutation(DOCKMol &, INTVec, INTVec, INTVec, bool, 
-                                              Master_Score &, Simplex_Minimizer &, AMBER_TYPER &);            // deletion
-    void                    additions(DOCKMol &, int, Master_Score &, Simplex_Minimizer &, 
+                                              Master_Score &, Minimizer &, AMBER_TYPER &);            // deletion
+    void                    additions(DOCKMol &, int, Master_Score &, Minimizer &, 
                                       AMBER_TYPER &, Orient &, bool, int, int);                                         // additions
     void                    replacement (DOCKMol &, int, INTVec, INTVec, INTVec, Master_Score &, 
-                                         Simplex_Minimizer &, AMBER_TYPER &, Orient &);                       // main replacements
+                                         Minimizer &, AMBER_TYPER &, Orient &);                       // main replacements
     void                    prepare_replacement_segment (Fragment &, int, INTVec, INTVec, 
                                                          INTVec, AMBER_TYPER & );                             // prepare for repl
     void                    rand_replacement(Fragment &, int, std::vector <Fragment> &, 
-                                             Master_Score &, Simplex_Minimizer &, AMBER_TYPER &, Orient &);   // select & attach new frag 
+                                             Master_Score &, Minimizer &, AMBER_TYPER &, Orient &);   // select & attach new frag 
     std::vector <std::vector <int> > compare_bond_types ( Fragment &, Fragment & );                           // compare bond types
     std::vector <int>       allowed_bond_combos ( Fragment &, Fragment &, std::vector < std::vector <int> > & );// save same bond types
     std::vector <DOCKMol>   orient_frag_to_ref ( Fragment &, Fragment &, int, 
@@ -401,22 +401,22 @@ class           GA_Recomb {
     int                     compare_rmsd_bt ( Fragment &, Fragment &, bool, int, std::vector <std::pair <int, float> > & );
     bool                    rand_H_to_Du (DOCKMol &, int );
     void                    H_to_Du (DOCKMol &, int );
-    void                    add_H(DOCKMol &, int, int, bool, Master_Score &, Simplex_Minimizer &, AMBER_TYPER & );
+    void                    add_H(DOCKMol &, int, int, bool, Master_Score &, Minimizer &, AMBER_TYPER & );
     void                    cleanup_mutation_selection(INTVec & sidechain_ids, INTVec & linker_ids, INTVec & scaffold_ids, INTVec & rigid_ids);
     //since we used a bunch of global variables which need to be cleanuped before exiting the function, and there are multiple function exit points
 
     // Functions for sampling torsions, computing energy, and minimizing
     void                    score_parents( std::vector <DOCKMol> &, Master_Score &, AMBER_TYPER & );
-    void                    unique_parents( std::vector <DOCKMol> &, Master_Score &, Simplex_Minimizer &, AMBER_TYPER & ); // Eliminate redundancy based on hungarian
-    void                    score_children(int, Master_Score &, Simplex_Minimizer &, AMBER_TYPER & ); //REMOVE
-    void                    minimize_children( DOCKMol &, std::vector <DOCKMol> &, Master_Score &, Simplex_Minimizer &, AMBER_TYPER & ); //
+    void                    unique_parents( std::vector <DOCKMol> &, Master_Score &, Minimizer &, AMBER_TYPER & ); // Eliminate redundancy based on hungarian
+    void                    score_children(int, Master_Score &, Minimizer &, AMBER_TYPER & ); //REMOVE
+    void                    minimize_children( DOCKMol &, std::vector <DOCKMol> &, Master_Score &, Minimizer &, AMBER_TYPER & ); //
     void                    prepare_internal_energy( DOCKMol &, Master_Score & );
 
    
     // Pruning and fitness functions
     void                    uniqueness_prune( std::vector <DOCKMol> &, std::vector <DOCKMol> & , Master_Score &, AMBER_TYPER & );
     void                    uniqueness_prune_mut( std::vector <DOCKMol> &, std::vector <DOCKMol> & , std::vector <DOCKMol> &, Master_Score &, AMBER_TYPER & );
-    void                    fitness_pruning( std::vector <DOCKMol> &, std::vector <DOCKMol> &, Master_Score &, Simplex_Minimizer &, AMBER_TYPER & );
+    void                    fitness_pruning( std::vector <DOCKMol> &, std::vector <DOCKMol> &, Master_Score &, Minimizer &, AMBER_TYPER & );
     void                    hard_filter( std::vector <DOCKMol> & ); // COMMENT
     bool                    hard_filter_mol( DOCKMol & ); // COMMENT
     bool                    hard_filter_mol_HA_HD( DOCKMol & ); // COMMENT
@@ -492,10 +492,10 @@ class           GA_Recomb {
     //bool                     valid_torenv( DOCKMol  );
     //bool                     compare_atom_environments( std::string, std::string );
     // bool                    compare_dummy_bonds( Fragment, int, int, Fragment &, int, int );
-    //void                    prune_children( Master_Score &, Simplex_Minimizer &, AMBER_TYPER & );//REMOVE
+    //void                    prune_children( Master_Score &, Minimizer &, AMBER_TYPER & );//REMOVE
     //float                   calc_rmsd( DOCKMol &, DOCKMol & ); //REMOVE
     //void                    child_torsion_drive( int,std::vector <DOCKMol> & );
-    //void                    rmsd_prune( Master_Score &, Simplex_Minimizer &, AMBER_TYPER & );
+    //void                    rmsd_prune( Master_Score &, Minimizer &, AMBER_TYPER & );
 
     // fragment utiltieis
  

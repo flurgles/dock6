@@ -1752,7 +1752,7 @@ Library_File::sort_top_X_mol(vector <SCOREMol> & mol, int number, int *list)
 
 // TEB added this. 
 //
-void Library_File::sort_write(bool USE_FILT, bool USE_MPI, Master_Score & score, Simplex_Minimizer & min){
+void Library_File::sort_write(bool USE_FILT, bool USE_MPI, Master_Score & score, Minimizer & min){
     if (ranked_poses.size() > 0) {
         // sort ranked_poses
         sort(ranked_poses.begin(), ranked_poses.end());
@@ -1774,7 +1774,7 @@ void Library_File::sort_write(bool USE_FILT, bool USE_MPI, Master_Score & score,
 
 /************************************************/
 bool
-Library_File::get_mol(DOCKMol & mol,bool USE_FILT, bool USE_MPI, bool amber, AMBER_TYPER & typer, Master_Score & score, Simplex_Minimizer & min)
+Library_File::get_mol(DOCKMol & mol,bool USE_FILT, bool USE_MPI, bool amber, AMBER_TYPER & typer, Master_Score & score, Minimizer & min)
 {
     RANKMol         tmp_mol;
     int             i;
@@ -1976,7 +1976,7 @@ Library_File::submit_conformations(Master_Score & score)
 }
 /************************************************/
 void
-Library_File::submit_secondary_conformation(Master_Score & score, Simplex_Minimizer & min)
+Library_File::submit_secondary_conformation(Master_Score & score, Minimizer & min)
 {
     Trace trace( "Library_File::submit_secondary_conformation" );
     int i;
@@ -2065,7 +2065,7 @@ Library_File::submit_secondary_conformation(Master_Score & score, Simplex_Minimi
 /************************************************/
 void
 Library_File::submit_scored_pose(DOCKMol & mol, Master_Score & score,
-                                 Simplex_Minimizer & min)
+                                 Minimizer & min)
 {
     char            score_convert[100];
     RANKMol         tmp_rankmol;
@@ -2138,8 +2138,8 @@ Library_File::submit_scored_pose(DOCKMol & mol, Master_Score & score,
 /************************************************/
 void
 //Library_File::write_scored_poses(bool USE_FILT, bool USE_MPI, Master_Score & score)
-//Library_File::write_scored_poses(bool USE_MPI, Master_Score & score, Simplex_Minimizer & min)
-Library_File::write_scored_poses(bool USE_FILT, bool USE_MPI, Master_Score & score, Simplex_Minimizer & min)
+//Library_File::write_scored_poses(bool USE_MPI, Master_Score & score, Minimizer & min)
+Library_File::write_scored_poses(bool USE_FILT, bool USE_MPI, Master_Score & score, Minimizer & min)
 {
     Trace trace( "Library_File::write_scored_poses" );
     int             i,
@@ -2832,7 +2832,7 @@ Library_File::cluster_list(){
 
 /************************************************/
 void
-Library_File::secondary_rescore_poses(Master_Score & score, Simplex_Minimizer & min)
+Library_File::secondary_rescore_poses(Master_Score & score, Minimizer & min)
 {
     Trace trace( "Library_File::secondary_rescore_poses" );
     int i, j;

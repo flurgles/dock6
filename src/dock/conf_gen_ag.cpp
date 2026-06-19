@@ -896,7 +896,7 @@ AG_Conformer_Search::calc_active_rmsd(CONFORMER & ref, CONFORMER & conf)
 // +++++++++++++++++++++++++++++++++++++++++
 void
 AG_Conformer_Search::grow_periphery(Master_Score & score,
-                                    Simplex_Minimizer & simplex, Bump_Filter & bump)
+                                    Minimizer & simplex, Bump_Filter & bump)
 { Trace trace("AG_Conformer_Search::grow_periphery()");
     //cout << "AG_Conformer_Search::grow_periphery" << endl;
     int             i,

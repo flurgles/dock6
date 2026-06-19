@@ -11,7 +11,7 @@
 #include "gzstream/gzstream.h"
 class Master_Score;
 class Parameter_Reader;
-class Simplex_Minimizer;
+class Minimizer;
 class Filter;
 class RDTYPER;
 
@@ -140,7 +140,7 @@ class           Library_File:public Base_MPI {
 
     bool            read_mol(DOCKMol &, bool);
     void            write_mol(DOCKMol &, std::ofstream &);
-    bool            get_mol(DOCKMol &,bool, bool, bool, AMBER_TYPER &, Master_Score &, Simplex_Minimizer &);
+    bool            get_mol(DOCKMol &,bool, bool, bool, AMBER_TYPER &, Master_Score &, Minimizer &);
 
     void            write_footprint_file(DOCKMol &, Master_Score &, std::ofstream &);
     void            write_hbond_file(DOCKMol &, Master_Score &, std::ofstream &);
@@ -149,17 +149,17 @@ class           Library_File:public Base_MPI {
     bool            submit_orientation(DOCKMol &, Master_Score &, bool);
 //    void            submit_footprint(Master_Score &);
     void            submit_conformations(Master_Score &);
-    void            submit_secondary_conformation(Master_Score &, Simplex_Minimizer & min);
+    void            submit_secondary_conformation(Master_Score &, Minimizer & min);
     void            submit_scored_pose(DOCKMol &, Master_Score &,
-                                       Simplex_Minimizer & min);
+                                       Minimizer & min);
     void            submit_secondary_pose();
     void            rescore_conformation(DOCKMol &, Master_Score &,
-                                       Simplex_Minimizer & min);
+                                       Minimizer & min);
     void            secondary_rescore_poses(Master_Score &,
-                                       Simplex_Minimizer &);
+                                       Minimizer &);
 //    void            write_scored_poses(bool, Master_Score &);
-    void            write_scored_poses(bool,bool, Master_Score &, Simplex_Minimizer &);
-    void            sort_write(bool, bool, Master_Score &, Simplex_Minimizer & );
+    void            write_scored_poses(bool,bool, Master_Score &, Minimizer &);
+    void            sort_write(bool, bool, Master_Score &, Minimizer & );
     void            write_ranked_ligands(bool,Master_Score &);
     //void            old_submit_scored_pose(DOCKMol &, Master_Score &);
     //void            old_write_scored_poses();

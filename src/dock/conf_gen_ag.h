@@ -1,3 +1,6 @@
+#ifndef CONF_GEN_AG_H
+#define CONF_GEN_AG_H 
+
 #include <string>
 #include <vector>
 #include <map>
@@ -19,7 +22,7 @@
 class Bump_Filter;
 class Master_Score;
 class Parameter_Reader;
-class Simplex_Minimizer;
+class Minimizer;
 
 
 /********************************************************************/
@@ -258,7 +261,7 @@ class           AG_Conformer_Search {
     bool            submit_anchor_orientation(DOCKMol &, bool); // 
     float           calc_layer_rmsd(CONFORMER &, CONFORMER &);  // 
     float           calc_active_rmsd(CONFORMER &, CONFORMER &);  // 2008-11-17 trent balius add  
-    void            grow_periphery(Master_Score &, Simplex_Minimizer &, Bump_Filter &);
+    void            grow_periphery(Master_Score &, Minimizer &, Bump_Filter &);
     void            conf_header(CONFORMER &, std::string, Master_Score &);
     void            segment_torsion_drive(CONFORMER &, int, std::vector < CONFORMER > &, int);
     void            activate_layer_segment(DOCKMol &, int, int);        // 
@@ -311,3 +314,5 @@ class           AG_Conformer_Search {
 // Sort Functions
 int       frequency_sort(std::pair <std::string, int>, std::pair <std::string, int> );
 int       fingerprint_sort(std::pair <std::string, int>, std::pair <std::string, int> );
+
+#endif

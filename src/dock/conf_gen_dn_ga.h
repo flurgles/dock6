@@ -185,17 +185,17 @@ class           DN_GA_Build {
     void            read_roulette( string roulette_table);
     void            generate_roulette();
     // Main build functions
-    void            build_molecules( Master_Score &, Simplex_Minimizer &, AMBER_TYPER &, Orient & );
-    void            orient_fragments( std::vector <Fragment> &, Fragment &, Master_Score &, Simplex_Minimizer &,
+    void            build_molecules( Master_Score &, Minimizer &, AMBER_TYPER &, Orient & );
+    void            orient_fragments( std::vector <Fragment> &, Fragment &, Master_Score &, Minimizer &,
                                       AMBER_TYPER &, Orient & );
-    void            simple_build( Master_Score &, Simplex_Minimizer &, AMBER_TYPER & );
+    void            simple_build( Master_Score &, Minimizer &, AMBER_TYPER & );
     void            sample_fraglib_exhaustive( Fragment &, int, std::vector <Fragment> &, std::vector <Fragment> &,
-                                               Master_Score &, Simplex_Minimizer &, AMBER_TYPER &, bool );
+                                               Master_Score &, Minimizer &, AMBER_TYPER &, bool );
     void            sample_fraglib_rand( Fragment &, int, std::vector <Fragment> &, std::vector <Fragment> &,
-                                         Master_Score &, Simplex_Minimizer &, AMBER_TYPER &, bool );
+                                         Master_Score &, Minimizer &, AMBER_TYPER &, bool );
     void            sample_fraglib_graph( Fragment &, int, std::vector <Fragment> &, std::vector <FragGraph> &,
                                           std::vector <Fragment> &,
-                                          Master_Score &, Simplex_Minimizer &, AMBER_TYPER &, bool );
+                                          Master_Score &, Minimizer &, AMBER_TYPER &, bool );
 
     // Functions for attaching two fragments together
     Fragment        combine_fragments( Fragment &, int, int, Fragment, int, int );
@@ -208,7 +208,7 @@ class           DN_GA_Build {
     bool            roulette_valid_torenv ( Fragment & );
     // Functions for sampling torsions, computing energy, and minimizing
     void            sample_minimized_torsions( Fragment &, std::vector <Fragment> &, Master_Score &,
-                                               Simplex_Minimizer &, AMBER_TYPER &, 
+                                               Minimizer &, AMBER_TYPER &, 
                                                std::pair<bool,float> = {false, 0.0}
                                              );
     float           calc_fragment_rmsd( Fragment &, Fragment & );

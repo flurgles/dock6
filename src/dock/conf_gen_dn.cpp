@@ -2369,7 +2369,7 @@ DN_Build::utilities_methods( AMBER_TYPER & typer ){
 // +++++++++++++++++++++++++++++++++++++++++
 // This function is the main de novo engine for building molecules. (called in dock.cpp)
 void
-DN_Build::build_molecules( Master_Score & score, Simplex_Minimizer & simplex, AMBER_TYPER & typer,
+DN_Build::build_molecules( Master_Score & score, Minimizer & simplex, AMBER_TYPER & typer,
                            Orient & orient )
 {   
     Trace trace("DN_Build::build_molecules()");
@@ -3959,7 +3959,7 @@ DN_Build::select_frag_by_frequency(vector <Fragment> & fraglib ){
 // root vector
 void
 DN_Build::orient_fragments( vector <Fragment> & root, Fragment & frag, Master_Score & score,
-                            Simplex_Minimizer & simplex, AMBER_TYPER & typer, Orient & orient )
+                            Minimizer & simplex, AMBER_TYPER & typer, Orient & orient )
 {
 
     // This vector will hold orients
@@ -4163,7 +4163,7 @@ DN_Build::select_frags_from_fraglib(vector <Fragment> & fraglib, vector<int> & a
 void
 DN_Build::sample_isofraglib_isoswap( Fragment & layer_frag, int j, vector <Fragment> & fraglib,
                                         vector <Fragment> & growing_ref, Master_Score & score, 
-                                        Simplex_Minimizer & simplex, AMBER_TYPER & typer, bool last_layer,
+                                        Minimizer & simplex, AMBER_TYPER & typer, bool last_layer,
 					Iso_Table::Iso_Tab & iso_table, int layer_num )
 {
  
@@ -5035,7 +5035,7 @@ DN_Build::sample_isofraglib_isoswap( Fragment & layer_frag, int j, vector <Fragm
 // Sample the contents of a given fragment library following the FragGraph
 void
 DN_Build::sample_fraglib_rand( Fragment & layer_frag, int j, vector <Fragment> & fraglib, vector <Fragment> & growing_ref,
-                                Master_Score & score, Simplex_Minimizer & simplex, AMBER_TYPER & typer, 
+                                Master_Score & score, Minimizer & simplex, AMBER_TYPER & typer, 
                                 vector<int> & available_fragment_indices, vector<int> & selected_fragments, 
                                 bool last_layer )
 {
@@ -5133,7 +5133,7 @@ DN_Build::sample_fraglib_rand( Fragment & layer_frag, int j, vector <Fragment> &
 void
 DN_Build::sample_fraglib_graph( Fragment & layer_frag, int j, vector <Fragment> & fraglib,
                                 vector <FragGraph> & fraggraph_vec, vector <Fragment> & growing_ref,
-                                Master_Score & score, Simplex_Minimizer & simplex,
+                                Master_Score & score, Minimizer & simplex,
                                 AMBER_TYPER & typer, vector<int> & available_fragment_indices, vector<int> & selected_fragments, 
                                 bool last_layer )
 {
@@ -5330,7 +5330,7 @@ DN_Build::sample_fraglib_graph( Fragment & layer_frag, int j, vector <Fragment> 
 void
 DN_Build::sample_fraglib_exhaustive( Fragment & layer_frag, int j, vector <Fragment> & fraglib,
                                      vector <Fragment> & growing_ref, Master_Score & score, 
-                                     Simplex_Minimizer & simplex, AMBER_TYPER & typer, bool last_layer )
+                                     Minimizer & simplex, AMBER_TYPER & typer, bool last_layer )
 {
 
     // If the fragment library is empty, return without doing anything
@@ -5433,7 +5433,7 @@ DN_Build::sample_fraglib_exhaustive( Fragment & layer_frag, int j, vector <Fragm
 void
 DN_Build::sample_fraglib_matrix( Fragment & layer_frag, int j, vector <Fragment> & fraglib,
                                  vector <Fragment> & growing_ref, Master_Score & score,
-                                 Simplex_Minimizer & simplex, AMBER_TYPER & typer, bool last_layer )
+                                 Minimizer & simplex, AMBER_TYPER & typer, bool last_layer )
 {
 
     // If the fragment library is empty for some reason, return without doing anything
@@ -5539,7 +5539,7 @@ DN_Build::sample_fraglib_matrix( Fragment & layer_frag, int j, vector <Fragment>
 void
 DN_Build::sample_fraglib_matrix( Fragment & layer_frag, int j, vector <Fragment> & fraglib,
                                  vector <Fragment> & growing_ref, Master_Score & score,
-                                 Simplex_Minimizer & simplex, AMBER_TYPER & typer, bool last_layer )
+                                 Minimizer & simplex, AMBER_TYPER & typer, bool last_layer )
 {
 
     // If the fragment library is empty for some reason, return without doing anything
@@ -7717,7 +7717,7 @@ DN_Build::compare_dummy_bonds( Fragment & frag1, int attachment_point_1,
 // and return the results in the vector.
 void
 DN_Build::sample_minimized_torsions( Fragment & frag1, vector <Fragment> & list_of_frags, 
-                                     Master_Score & score, Simplex_Minimizer & simplex, 
+                                     Master_Score & score, Minimizer & simplex, 
                                      AMBER_TYPER & typer )
 {
     // Activate all atoms and bonds prior to any scoring
@@ -7911,7 +7911,7 @@ DN_Build::sample_minimized_torsions( Fragment & frag1, vector <Fragment> & list_
 // and return the results in the vector.
 float
 DN_Build::sample_minimized_torsions_iso( Fragment & frag1, vector <Fragment> & list_of_frags, 
-                                     Master_Score & score, Simplex_Minimizer & simplex, 
+                                     Master_Score & score, Minimizer & simplex, 
                                      AMBER_TYPER & typer )
 {
     // Activate all atoms and bonds prior to any scoring
@@ -8179,7 +8179,7 @@ DN_Build::sample_minimized_torsions_iso( Fragment & frag1, vector <Fragment> & l
 
 void
 DN_Build::just_minimize(Fragment & frag1, vector <Fragment> & list_of_frags, 
-                                     Master_Score & score, Simplex_Minimizer & simplex, 
+                                     Master_Score & score, Minimizer & simplex, 
                                      AMBER_TYPER & typer, bool prepare, bool minimize )
 {
    
@@ -10503,7 +10503,7 @@ void DN_Build::write_mols_to_file(string dn_output_prefix,
 
 std::pair<std::vector<float>,std::vector<Fragment> >
 DN_Build::attach_and_get_torsions( Fragment layer_frag, int att_1, Fragment att_frag, int att_2,
-                                   Master_Score & score, Simplex_Minimizer & simplex, AMBER_TYPER &  typer){
+                                   Master_Score & score, Minimizer & simplex, AMBER_TYPER &  typer){
 
     std::vector<Fragment>  return_vec {};
     std::vector<Fragment>  tmp_list {};
@@ -10589,7 +10589,7 @@ DN_Build::attach_and_get_torsions( Fragment layer_frag, int att_1, Fragment att_
 
 std::pair<float,Fragment>
 DN_Build::get_best_iso_head_tors( Fragment layer_frag, int att_1, std::pair<std::vector<float>,std::vector<Fragment> > torsion_cand , int att_2 ,
-                                  Master_Score & score, Simplex_Minimizer & simplex, AMBER_TYPER &  typer){
+                                  Master_Score & score, Minimizer & simplex, AMBER_TYPER &  typer){
 
     //left best isohead , right combined frag
     std::pair<float,Fragment> best_orient_pair;

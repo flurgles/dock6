@@ -63,6 +63,10 @@
 #include "master_score.h"
 #include "orient.h"
 #include "simplex.h"
+#include "bobyqa.h"
+#include "steepest_descent.h"
+#include "conjugate_gradient.h"
+#include "minimizer.h"
 #include "trace.h"
 #include "utils.h"
 #include "version.h"
@@ -130,6 +134,10 @@ main(int argc, char **argv)
     Master_Conformer_Search  c_master_conf;
     Bump_Filter              c_bmp_score;
     Simplex_Minimizer        c_simplex;
+    BOBYQA_Minimizer        c_bobyqa;
+    Steepest_Descent_Minimizer c_sd;
+    Conjugate_Gradient_Minimizer c_cg;
+    Minimizer              *active_min = nullptr;
     Master_Score             c_master_score;
     AMBER_TYPER              c_typer;
     Filter                   c_filter;
@@ -208,18 +216,36 @@ main(int argc, char **argv)
     c_orient.input_parameters(c_parm);
     c_bmp_score.input_parameters(c_parm);
     c_master_score.input_parameters(c_parm);
-    c_simplex.input_parameters(c_parm, c_master_conf.flexible_ligand, c_master_conf.genetic_algorithm, c_master_conf.denovo_design, c_master_score);
+    // Read minimizer_type once, then only configure the selected minimizer.
+    // This avoids consuming shared params (minimize_ligand, etc.) from params_in
+    // for the unused minimizer, which would produce spurious warnings.
+    c_simplex.minimizer_type = c_parm.query_param("minimizer_type", "simplex", "simplex bobyqa steepest_descent conjugate_gradient");
+    if (c_simplex.minimizer_type == "bobyqa") {
+        c_bobyqa.input_parameters(c_parm, c_master_conf.flexible_ligand, c_master_conf.genetic_algorithm, c_master_conf.denovo_design, c_master_score);
+        active_min = static_cast<Minimizer*>(&c_bobyqa);
+    } else if (c_simplex.minimizer_type == "steepest_descent") {
+        c_sd.input_parameters(c_parm, c_master_conf.flexible_ligand, c_master_conf.genetic_algorithm, c_master_conf.denovo_design, c_master_score);
+        active_min = static_cast<Minimizer*>(&c_sd);
+    } else if (c_simplex.minimizer_type == "conjugate_gradient") {
+        c_cg.input_parameters(c_parm, c_master_conf.flexible_ligand, c_master_conf.genetic_algorithm, c_master_conf.denovo_design, c_master_score);
+        active_min = static_cast<Minimizer*>(&c_cg);
+    } else {
+        c_simplex.input_parameters(c_parm, c_master_conf.flexible_ligand, c_master_conf.genetic_algorithm, c_master_conf.denovo_design, c_master_score);
+        active_min = static_cast<Minimizer*>(&c_simplex);
+    }
+
+
 
     // check parms compatablity
     if (c_master_conf.method == 3){ // if covalent some minimizer parameters are not compatable. 
-         if (c_simplex.use_min_rigid_anchor){
+         if (active_min->use_min_rigid_anchor){
              cout << "min anchor must be turned off for covalent" << endl;
-             c_simplex.use_min_rigid_anchor = false;
+             active_min->use_min_rigid_anchor = false;
              exit(0);
          }
-         if (c_simplex.flex_min_max_iterations > 0.0){
+         if (active_min->flex_min_max_iterations > 0.0){
              cout << "flex_min_max_iterations must be set to 0.0 for covalent" << endl;
-             c_simplex.flex_min_max_iterations = 0.0;
+             active_min->flex_min_max_iterations = 0.0;
              exit(0);
          }
     } 
@@ -245,7 +271,7 @@ main(int argc, char **argv)
     }
 
 
-    if (c_master_conf.flexible_ligand   || c_simplex.minimize_ligand 
+    if (c_master_conf.flexible_ligand   || active_min->minimize_ligand 
         || c_filter.use_database_filter || c_orient.orient_ligand 
         || c_bmp_score.bump_filter      || c_library.calc_rmsd)
         c_master_score.read_vdw = true;
@@ -303,7 +329,12 @@ main(int argc, char **argv)
     c_orient.initialize(argc, argv);
     c_bmp_score.initialize();
     c_master_score.initialize_all(c_typer, argc, argv);  //removed reference to flex_min_add_internal: not used any more
+    // always initialize both minimizers; the actual minimization method
+    // is selected at each minimize_* call via minimizer_type.
     c_simplex.initialize();
+    c_bobyqa.initialize();
+    c_sd.initialize();
+    c_cg.initialize();
 
 #ifdef BUILD_DOCK_WITH_MPI
     if ((USE_MPI) && (c_library.rank > 0)) {
@@ -334,10 +365,10 @@ main(int argc, char **argv)
         //if (c_master_conf.c_dn_build.simple_build_flag)
         //    c_master_conf.c_dn_build.simple_build(c_master_score, c_simplex, c_typer);
         //else
-            c_master_conf.c_dn_build.build_molecules(c_master_score, c_simplex, c_typer, c_orient);
+            c_master_conf.c_dn_build.build_molecules(c_master_score, *active_min, c_typer, c_orient);
 
     } else if (c_master_conf.method == 3) { // this is covalent
-    while (c_library.get_mol(mol,false, USE_MPI, c_master_score.amber, c_typer, c_master_score, c_simplex)) { 
+    while (c_library.get_mol(mol,false, USE_MPI, c_master_score.amber, c_typer, c_master_score, *active_min)) { 
         // If MPI is used this is done on the compute nodes.
         // filtering must be done here because it needs all prep for docking
         // before the mols can be eliminated.
@@ -346,8 +377,8 @@ main(int argc, char **argv)
         double          mol_start_time = wall_clock_seconds();
         //int             mol_start_ntime = wall_clock_nseconds();
 
-        //seed random number generator
-        c_simplex.initialize();
+        //seed random number generators
+        active_min->initialize();
 
         //parse ligand atoms into child lists
         mol.prepare_molecule();
@@ -416,7 +447,7 @@ main(int argc, char **argv)
                     // keep track of time for individual placements
                     double          mol_start_time = wall_clock_seconds();
 
-                    c_simplex.initialize();
+                    active_min->initialize();
 
                     //cout << "for debuging ... bl_val  = " << bl_val << endl;
                     //cout << "                 bl_val2 = " << bl_val2 << endl;
@@ -470,14 +501,14 @@ main(int argc, char **argv)
                                         //add mol to (orientation) anchor_positions array 
                                         //prune anchors, then perform growth, minimization, and pruning
                                         //until molecule is fully grown
-                                        c_master_conf.grow_periphery(c_master_score, c_simplex, c_bmp_score);
+                                        c_master_conf.grow_periphery(c_master_score, *active_min, c_bmp_score);
                                         //for the fully grown conformations, if there are conformations
                                         //remaining
                                         while (c_master_conf.next_conformer(mol)) {
                                                 //cout << "Entering while loop next_conformer" << endl; 
                     
                                                 //minimize the final pose
-                                                c_simplex.minimize_final_pose(mol, c_master_score, c_typer);
+                                                active_min->minimize_final_pose(mol, c_master_score, c_typer);
                     
                                                 //calculate score and internal
                                                 //c_master_score.compute_primary_score(mol); 
@@ -501,7 +532,7 @@ main(int argc, char **argv)
                     
                                                 //add best scoring pose to list for
                                                 //ranking and further analysis
-                                                c_library.submit_scored_pose(mol, c_master_score, c_simplex);
+                                                c_library.submit_scored_pose(mol, c_master_score, *active_min);
                                         }
                                         //write out list of final conformations
                                         c_library.submit_conformations(c_master_score);
@@ -575,7 +606,7 @@ main(int argc, char **argv)
   
     // If you are doing genetic algorithm, enter this function
     } else if (c_master_conf.method == 4) {
-          c_master_conf.c_ga_recomb.max_breeding(c_master_score, c_simplex, c_typer, c_orient);
+          c_master_conf.c_ga_recomb.max_breeding(c_master_score, *active_min, c_typer, c_orient);
     
     // If you are doing hierarchical database (HDB) searching enter this function
     } else if (c_master_conf.method == 5) {
@@ -635,7 +666,7 @@ main(int argc, char **argv)
                   //ifstream   db2_stream;
                   //c_orient.cliques.clear();
                    
-                  c_simplex.initialize();
+                  active_min->initialize();
                   
                   c_master_conf.c_hdb_conf.all_poses.clear();
               
@@ -700,7 +731,7 @@ main(int argc, char **argv)
                   //search db2 file and score segments
                   //score viable poses and write out the top scoring poses
                   //
-                  //c_simplex.initialize();
+                  //active_min->initialize();
 
                   //for (int i = 0; i < number_min; i++) {  
                   for (int ii = 0; ii < number_min; ii++) {  
@@ -717,7 +748,7 @@ main(int argc, char **argv)
                          //c_typer.prepare_molecule(mol, c_master_score.read_vdw,
                          //                c_orient.use_chemical_matching, c_master_score.use_ph4, c_master_score.use_volume);
                          //c_master_conf.prepare_molecule(mol);
-                         c_simplex.minimize_final_pose(mol, c_master_score, c_typer);
+                         active_min->minimize_final_pose(mol, c_master_score, c_typer);
                          c_master_score.compute_primary_score(mol); 
                          //cout << i << " : score affter min = " << mol.current_score << endl;  
                          //mol.score_text_data = mol.score_text_data + mol.hdb_data;
@@ -726,7 +757,7 @@ main(int argc, char **argv)
                          //ranking and further analysis
                          //mol.flag_write_solvation = true;
                          mol.flag_write_solvation = c_library.write_solv_mol2;
-                         c_library.submit_scored_pose(mol, c_master_score, c_simplex);
+                         c_library.submit_scored_pose(mol, c_master_score, *active_min);
                          //write out list of final conformations
                   }
 
@@ -769,9 +800,9 @@ main(int argc, char **argv)
                            << mol_stop_time - mol_start_time << " seconds\n\n";
                   }
                   //c_library.write_scored_poses(USE_MPI, c_master_score);
-                  //c_library.sort_write(USE_MPI, c_master_score, c_simplex);
-                  //c_library.sort_write(USE_FILT,USE_MPI, c_master_score, c_simplex);
-                  c_library.sort_write(false,USE_MPI, c_master_score, c_simplex);
+                  //c_library.sort_write(USE_MPI, c_master_score, *active_min);
+                  //c_library.sort_write(USE_FILT,USE_MPI, c_master_score, *active_min);
+                  c_library.sort_write(false,USE_MPI, c_master_score, *active_min);
                }
                db2_stream.clear();
                db2_stream.close();
@@ -781,7 +812,7 @@ main(int argc, char **argv)
     // Else if you are doing flexible, rigid, or fixed anchor docking, enter here
     } else {
 
-    while (c_library.get_mol(mol,c_filter.use_database_filter, USE_MPI, c_master_score.amber, c_typer, c_master_score, c_simplex)) { 
+    while (c_library.get_mol(mol,c_filter.use_database_filter, USE_MPI, c_master_score.amber, c_typer, c_master_score, *active_min)) { 
         // If MPI is used this is done on the compute nodes.
         // filtering must be done here because it needs all prep for docking
         // before the mols can be eliminated.
@@ -794,8 +825,8 @@ main(int argc, char **argv)
         struct timespec mol_start_time;
         timespec_get(&mol_start_time, TIME_UTC);
 #endif
-        //seed random number generator
-        c_simplex.initialize();
+        //seed random number generators
+        active_min->initialize();
 
         //parse ligand atoms into child lists
         mol.prepare_molecule();
@@ -897,7 +928,7 @@ main(int argc, char **argv)
                           c_master_score.primary_score->nb_int.clear();
                           trace.note("Clearing the Rigid non-bonded pairlist");
                           c_master_conf.initialize_once = true; // reset for internal energy for rigid docking. 
-                          c_master_conf.grow_periphery(c_master_score, c_simplex, c_bmp_score);
+                          c_master_conf.grow_periphery(c_master_score, *active_min, c_bmp_score);
                     }
 
 
@@ -913,7 +944,7 @@ main(int argc, char **argv)
                             //add mol to (orientation) anchor_positions array 
                             //prune anchors, then perform growth, minimization, and pruning
                             //until molecule is fully grown
-                            c_master_conf.grow_periphery(c_master_score, c_simplex, c_bmp_score);
+                            c_master_conf.grow_periphery(c_master_score, *active_min, c_bmp_score);
 
                             //for the fully grown conformations, if there are conformations
                             //remaining
@@ -921,14 +952,14 @@ main(int argc, char **argv)
                                 trace.note( "Entering while loop next_conformer" );
 
                                 //minimize the final pose
-                                c_simplex.minimize_final_pose(mol, c_master_score, c_typer);
+                                active_min->minimize_final_pose(mol, c_master_score, c_typer);
 
                                 //calculate score and internal
                                 // c_master_score.compute_primary_score(mol); 
 
                                 //add best scoring pose to list for
                                 //ranking and further analysis
-                                c_library.submit_scored_pose(mol, c_master_score, c_simplex);
+                                c_library.submit_scored_pose(mol, c_master_score, *active_min);
                             }
 
                         }
@@ -1047,7 +1078,7 @@ main(int argc, char **argv)
         c_master_conf.c_ag_conf.write_unique_fragments();
     // Rescore library using secondary scoring
     if (c_master_score.use_secondary_score) {
-        c_library.secondary_rescore_poses(c_master_score, c_simplex);
+        c_library.secondary_rescore_poses(c_master_score, *active_min);
         c_library.submit_secondary_pose();
     }
     

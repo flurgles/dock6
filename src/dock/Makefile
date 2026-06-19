@@ -6,8 +6,9 @@ include ../../install/config.h
 BIN= ../../bin
 PROGS= dock6$(DOCK_SUFFIX)
 
-OBJS= amber_typer.o base_grid.o base_mpi.o base_score.o conf_gen_ag.o \
+OBJS= amber_typer.o base_grid.o base_mpi.o base_score.o bobyqa.o minimizer.o conf_gen_ag.o \
       conf_gen_cg.o conf_gen_dn.o conf_gen_dn_ga.o conf_gen_ga.o conf_gen_hdb.o \
+      conjugate_gradient.o steepest_descent.o \
       dock.o dockmol.o filter.o fingerprint.o fraggraph.o fragment.o \
       gasteiger.o grid.o hungarian.o library_file.o limit_max_change.o master_conf.o master_score.o \
       orient.o sasa.o score.o score_amber.o score_chemgrid.o \
@@ -212,7 +213,16 @@ simplex.o: score_multigrid.h score_footprint.h score_ph4.h score_volume.h
 simplex.o: score_hbond.h score_internal.h score_descriptor.h fingerprint.h
 simplex.o: hungarian.h score_gist.h score_amber.h nab/nab.h defreal.h
 simplex.o: nab/nabtypes.h nab/defreal.h score_chemgrid.h base_grid.h
-simplex.o: score_solvent.h grid.h score_sasa.h sasa.h simplex.h
+simplex.o: score_solvent.h grid.h score_sasa.h sasa.h simplex.h minimizer.h
+bobyqa.o: master_score.h score.h base_score.h utils.h dockmol.h
+bobyqa.o: score_multigrid.h score_footprint.h score_ph4.h score_volume.h
+bobyqa.o: score_hbond.h score_internal.h score_descriptor.h fingerprint.h
+bobyqa.o: hungarian.h score_gist.h score_amber.h nab/nab.h defreal.h
+bobyqa.o: nab/nabtypes.h nab/defreal.h score_chemgrid.h base_grid.h
+minimizer.o: minimizer.cpp minimizer.h master_score.h utils.h
+	@$(CXX) -c $(CXXFLAGS) -o $@ $(DOCKBUILDFLAGS) $<
+
+bobyqa.o: score_solvent.h grid.h score_sasa.h sasa.h bobyqa.h minimizer.h
 sphere.o: sphere.h utils.h
 trace.o: trace.h trace.inl
 utils.o: utils.h dockmol.h
@@ -220,6 +230,25 @@ xlogp.o: xlogp.h dockmol.h utils.h
 rdtyper.o: rdtyper.h dockmol.h
 rddrive.o: rdtyper.h rddrive.h dockmol.h
 iso_align.o: iso_align.h iso_align.cpp dockmol.h hungarian.h fragment.h
+
+
+steepest_descent.o: master_score.h score.h base_score.h utils.h dockmol.h
+steepest_descent.o: score_multigrid.h score_footprint.h score_ph4.h
+steepest_descent.o: score_volume.h score_hbond.h score_internal.h
+steepest_descent.o: score_descriptor.h fingerprint.h hungarian.h score_gist.h
+steepest_descent.o: score_amber.h nab/nab.h defreal.h nab/nabtypes.h
+steepest_descent.o: nab/defreal.h score_chemgrid.h base_grid.h
+steepest_descent.o: score_solvent.h grid.h score_sasa.h sasa.h
+steepest_descent.o: steepest_descent.h minimizer.h
+
+conjugate_gradient.o: master_score.h score.h base_score.h utils.h dockmol.h
+conjugate_gradient.o: score_multigrid.h score_footprint.h score_ph4.h
+conjugate_gradient.o: score_volume.h score_hbond.h score_internal.h
+conjugate_gradient.o: score_descriptor.h fingerprint.h hungarian.h score_gist.h
+conjugate_gradient.o: score_amber.h nab/nab.h defreal.h nab/nabtypes.h
+conjugate_gradient.o: nab/defreal.h score_chemgrid.h base_grid.h
+conjugate_gradient.o: score_solvent.h grid.h score_sasa.h sasa.h
+conjugate_gradient.o: conjugate_gradient.h minimizer.h
 
 
 sffdock6$(DOCK_SUFFIX):  configured $(OBJS) nab_objects
