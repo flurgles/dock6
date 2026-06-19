@@ -490,7 +490,7 @@ BOBYQA_Minimizer::initialize()
     // noise_window = 10; (commented out - TODO: implement properly)
     // stagnation_count = 0; (commented out - TODO: implement properly)
     // restart_count = 0; (commented out - TODO: implement properly)
-    // ratio_history.clear(); (commented out - TODO: implement properly)
+    ratio_history.clear();
     fopt_history.clear();
     restart_count = 0;
     diagnostics = ConvergenceDiagnostics();
@@ -945,6 +945,16 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
         ratio = dAct / dPred;
 
         cerr << "DEBUG: section 2d, ratio=" << ratio << endl;
+
+        // ---- Track sliding-window ratio history ----
+        ratio_history.push_back(ratio);
+        while ((int)ratio_history.size() > max_ratio_window)
+            ratio_history.pop_front();
+        float avg_ratio = 0.0f;
+        for (size_t ri = 0; ri < ratio_history.size(); ri++)
+            avg_ratio += ratio_history[ri];
+        avg_ratio /= (float)ratio_history.size();
+
         // ---- 2d) Accept / reject step ----
         if (ratio > 0.0f) {
             // cerr << "DEBUG: inside 2d accept" << endl;
@@ -978,7 +988,13 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
             made_progress = true;
         } else if (ratio < eta1) {
             // Poor step: contract
-            delta *= gamma_down;
+            // If the model has been consistently poor (low avg_ratio over the
+            // sliding window), contract more aggressively to recover faster.
+            if (avg_ratio < 0.15f && (int)ratio_history.size() >= max_ratio_window) {
+                delta *= gamma_down * gamma_down;  // double contraction
+            } else {
+                delta *= gamma_down;
+            }
             if (delta < rho_end_actual) delta = rho_end_actual;
         }
 
@@ -1106,6 +1122,14 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
     // Record convergence diagnostics
     diagnostics.iterations = iter;
     diagnostics.final_delta = delta;
+
+    // Compute average ratio over the full history for diagnostics
+    if (!ratio_history.empty()) {
+        float total = 0.0f;
+        for (size_t ri = 0; ri < ratio_history.size(); ri++)
+            total += ratio_history[ri];
+        diagnostics.avg_ratio = total / (float)ratio_history.size();
+    }
     if (delta <= rho_end_actual && diagnostics.iterations > 5) {
         diagnostics.termination_reason = "delta_converged";
     } else if (diagnostics.iterations >= max_iter_param) {

@@ -61,6 +61,8 @@ class           BOBYQA_Minimizer : public Minimizer {
     float            fopt_before; // function value at xopt before last step
     float            fnew_val;    // function value at last accepted step
     std::deque<float> fopt_history; // sliding window of best scores for stall detection
+    std::deque<float> ratio_history; // sliding window of predicted/actual reduction ratios
+    static const int max_ratio_window = 10;  // keep last 10 ratios for avg
 
     // Global optimization: adaptive restart state
     int             restart_count;       // number of restarts performed
