@@ -509,11 +509,16 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
         use_multi_start = save_multi_start;
         return result;
     }
-    // npt: number of interpolation points. If not set by user (<=0), use a
-    // default tuned for noisy objectives: larger than the minimum 2n+1 stencil
-    // but smaller than the full quadratic stencil ((n+1)(n+2)/2).
-    int default_npt = max(2 * n + 1, (n + 1) * (n + 2) / 4);
-    nptmax = (npt > 0) ? npt : default_npt;
+    // npt: number of interpolation points. If not set by user (<=0), use 2*n+1.
+    // NOTE: pybobyqa recommends max(2*n+1, (n+1)*(n+2)/4) for noisy objectives.
+    // We tested that formula but it caused regressions in full_quad variants on
+    // several DT100 systems (e.g. 1DMP worsened by 5.6 points) because PRELIM
+    // only fills 2*n+1 axis points and the remaining duplicate/penalty slots
+    // degraded the full quadratic model quality.
+    // To try the larger default again, PRELIM must first be extended to fill all
+    // np points with distinct well-poised evaluations.
+    // int default_npt = max(2 * n + 1, (n + 1) * (n + 2) / 4);
+    nptmax = (npt > 0) ? npt : 2 * n + 1;
     if (nptmax < n + 2) nptmax = n + 2;
     int np = nptmax;               // shorthand
 
@@ -521,7 +526,6 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
     float f, fnew, ratio, dPred, dAct;
     float norm_g;
 
-    bool score_stalled = false;
     DOCKMol ref_mol, tmp_mol, rmsd_ref;
     copy_molecule(ref_mol, mol);
     copy_molecule(tmp_mol, mol);
@@ -1048,44 +1052,19 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
         }
 
         // ---- 2h) Check convergence ----
-        // Primary: trust region has shrunk to minimum radius.
+        // Standard BOBYQA convergence: trust region has shrunk to minimum radius.
         if (delta <= rho_end_actual && iter > 5) break;
 
-        // Secondary: score stall. The r^12 repulsive internal energy can
-        // cause large per-iteration score spikes, so we look at the history
-        // of the best score (fopt) rather than raw per-iteration scores.
-        // If the best score has not improved meaningfully for a sustained
-        // window and the trust region is already small, declare convergence.
-        const int FOPT_STALL_WINDOW = 20;
-        const int MIN_ITER_BEFORE_STALL = 50;
-        const float SCORE_STALL_REL_TOL = 1.0e-3f;  // 0.1%
-        const float SCORE_STALL_DELTA_FACTOR = 10.0f;
-
-        while ((int)fopt_history.size() >= FOPT_STALL_WINDOW) {
-            fopt_history.pop_front();
-        }
+        // Track best-score history for future adaptive-restart use.
+        // Not used for convergence — the delta check is sufficient.
+        while ((int)fopt_history.size() >= 20) fopt_history.pop_front();
         fopt_history.push_back(fopt);
-
-        if (iter > MIN_ITER_BEFORE_STALL &&
-            (int)fopt_history.size() == FOPT_STALL_WINDOW) {
-            float f_max = *max_element(fopt_history.begin(), fopt_history.end());
-            float f_min = *min_element(fopt_history.begin(), fopt_history.end());
-            float range = f_max - f_min;
-            float scale = max(1.0f, fabs(f_min));  // avoid division by zero
-            if (range / scale < SCORE_STALL_REL_TOL &&
-                delta <= rho_end_actual * SCORE_STALL_DELTA_FACTOR) {
-                score_stalled = true;
-                break;
-            }
-        }
     }
 
     // Record convergence diagnostics
     diagnostics.iterations = iter;
     diagnostics.final_delta = delta;
-    if (score_stalled) {
-        diagnostics.termination_reason = "score_stall";
-    } else if (delta <= rho_end_actual && diagnostics.iterations > 5) {
+    if (delta <= rho_end_actual && diagnostics.iterations > 5) {
         diagnostics.termination_reason = "delta_converged";
     } else if (diagnostics.iterations >= max_iter_param) {
         diagnostics.termination_reason = "max_iterations";
@@ -1382,8 +1361,9 @@ BOBYQA_Minimizer::multi_start_minimize(Base_Score & score, DOCKMol & mol,
     struct PrelimPoint { FLOATVec vertex; float score; };
     vector<PrelimPoint> prelim_points;
     const float PENALTY_SCORE = 1.0e6f;
-    int default_npt = max(2 * n + 1, (n + 1) * (n + 2) / 4);
-    int np = (npt > 0) ? npt : default_npt;
+    // Same npt default as do_minimize (see comment there).
+    // int default_npt = max(2 * n + 1, (n + 1) * (n + 2) / 4);
+    int np = (npt > 0) ? npt : 2 * n + 1;
     if (np < n + 2) np = n + 2;
     int n_axis = min(n, (np - 1) / 2);
     float rho_beg_actual = (rho_beg > 0.0f) ? rho_beg : 1.0f;
