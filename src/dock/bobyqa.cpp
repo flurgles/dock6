@@ -150,6 +150,23 @@ BOBYQA_Minimizer::input_parameters(Parameter_Reader & parm,
                     cout << "ERROR:  bobyqa_noise_threshold must be non-negative. Program will terminate." << endl;
                     exit(1);
                 }
+
+                // --- DOF-aware restart scaling ---
+                // Multi-start and adaptive restart counts scale with torsional DOF:
+                //   restarts = 5 + n_tors * restarts_per_torsion
+                // Each additional per-torsion restart gives more shots at finding
+                // the global minimum without needing a separate input parameter per
+                // restart type. The formula is always-on and overrides any explicit
+                // multi_start_restarts / max_restarts from the input file.
+                //
+                // Default 5 per torsion was tuned on the DT100 benchmark:
+                //   n_tors=1:  10 restarts   n_tors=14:  75 restarts   (3CCW)
+                //   n_tors=5:  30 restarts   n_tors=22: 115 restarts   (1AGM)
+                restarts_per_torsion = atoi(parm.query_param("bobyqa_restarts_per_torsion", "5").c_str());
+                if (restarts_per_torsion < 1) {
+                    cout << "ERROR:  bobyqa_restarts_per_torsion must be >= 1. Program will terminate." << endl;
+                    exit(1);
+                }
                 restart_from_best = (parm.query_param("bobyqa_restart_from_best", "yes", "yes no") == "yes") ? true : false;
 
                 if (!use_min_flex_growth_ramp) {
@@ -534,7 +551,7 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
     // convergence (rho_end=0.001 + score_converge=0.01) combined with more
     // iterations per restart gives each shot more room to converge.
     int n_tors = max(0, n - 6);  // torsional DOF = total DOF minus trans(3) and rot(3)
-    int scaled_restarts = 5 + n_tors * 5;
+    int scaled_restarts = 5 + n_tors * restarts_per_torsion;
     int scaled_max_iter = 5000 + n_tors * 2000;
     if (multi_start_restarts < scaled_restarts) {
         multi_start_restarts = scaled_restarts;

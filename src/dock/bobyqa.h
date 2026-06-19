@@ -25,6 +25,10 @@ class           BOBYQA_Minimizer : public Minimizer {
     bool            use_adaptive_restart; // enable adaptive restart on stagnation
     int             max_restarts;         // maximum number of adaptive restarts
     float           restart_delta_scale;  // factor to scale rho_beg on restart
+    int             restarts_per_torsion;  // multi_start_restarts = 5 + n_tors * this (default 5)
+                                          // Controls how many additional restarts each torsional
+                                          // DOF adds. Higher values give more thorough exploration
+                                          // of high-DOF conformational space at the cost of runtime.
     int             improv_window;        // sliding window of fopt values for improvement detection
                                           // When the range of fopt over this window is below the threshold
                                           // (improv_tol, with 0.01 absolute floor), the minimizer has stalled.
