@@ -781,6 +781,15 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
         FLOATVec s_newt(n, 0.0f);
         float norm_newt = 0.0f;
         if (use_full_quadratic) {
+            // Estimate Hessian eigenvalues. If the smallest eigenvalue is
+            // strongly negative, CG will immediately detect indefiniteness
+            // and fall back to Cauchy. Skip CG in that case.
+            float eig_min = 0.0f, eig_max = 0.0f;
+            estimate_hessian_eigenvalues(min(5, n), &eig_min, &eig_max);
+            if (eig_min < -1.0e-4f) {
+                cerr << "DEBUG: CG skip (indefinite H, eig_min=" << eig_min
+                     << "), fall back to Cauchy" << endl;
+            } else {
             cerr << "DEBUG: CG solver start, n=" << n << " delta=" << delta << endl;
             // Conjugate gradient: solve H * s = -g
             // H should be SPD; if not, CG may fail, fall back to diagonal
@@ -887,6 +896,7 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                 }
                 // Fallback: if computation fails, keep Cauchy step
             }
+        }
         } else {
             // Diagonal Hessian: s_newt_i = -g_i / H_ii
             for (i = 0; i < n; i++) {
@@ -1129,6 +1139,14 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
         for (size_t ri = 0; ri < ratio_history.size(); ri++)
             total += ratio_history[ri];
         diagnostics.avg_ratio = total / (float)ratio_history.size();
+    }
+
+    // Estimate Hessian eigenvalues for diagnostics
+    if (n > 0) {
+        float eig_min = 0.0f, eig_max = 0.0f;
+        estimate_hessian_eigenvalues(min(5, n), &eig_min, &eig_max);
+        diagnostics.hessian_min_eigenvalue = eig_min;
+        diagnostics.hessian_max_eigenvalue = eig_max;
     }
     if (delta <= rho_end_actual && diagnostics.iterations > 5) {
         diagnostics.termination_reason = "delta_converged";
@@ -1508,6 +1526,160 @@ BOBYQA_Minimizer::perform_adaptive_restart(Base_Score & score, DOCKMol & mol,
         build_full_model(score, ref_mol, tmp_mol, rmsd_ref, best_mol,
                          trans_step_size, rot_step_size, tors_step_size);
     }
+}
+
+/**********************************************************************/
+// Lanczos eigenvalue estimation on the quadratic model Hessian.
+// For the diagonal model, eigenvalues are just the Hdiag entries.
+// For the full n×n model, runs k Lanczos iterations to estimate the
+// extreme eigenvalues, which detect indefiniteness for CG and give
+// insight into the local landscape curvature.
+/**********************************************************************/
+void
+BOBYQA_Minimizer::estimate_hessian_eigenvalues(int k,
+                                                float *eig_min_out,
+                                                float *eig_max_out)
+{
+    if (n <= 0) return;
+
+    // ---- Diagonal model: trivially Hdiag entries ----
+    if (!use_full_quadratic || n == 1) {
+        float emin = Hdiag[0];
+        float emax = Hdiag[0];
+        for (int i = 1; i < n; i++) {
+            if (Hdiag[i] < emin) emin = Hdiag[i];
+            if (Hdiag[i] > emax) emax = Hdiag[i];
+        }
+        if (eig_min_out) *eig_min_out = emin;
+        if (eig_max_out) *eig_max_out = emax;
+        return;
+    }
+
+    // ---- Full model: Lanczos iteration on H ----
+    if (k <= 0 || k > n) k = min(5, n);
+    if (k < 1) k = 1;
+
+    // Lanczos coefficients: T_k = tridiag(beta[i-1], alpha[i], beta[i])
+    // Only beta[0..k-2] are valid; beta[k-1] is unused.
+    std::vector<float> alpha(k, 0.0f);
+    std::vector<float> beta(k, 0.0f);
+
+    // Lanczos vectors: V[j][0..n-1] for j = 0..k
+    // We only need V[j] and V[j-1] at each step, but store all for clarity.
+    std::vector< std::vector<float> > V(k + 1,
+                                         std::vector<float>(n, 0.0f));
+
+    // Initialize V[0] with a deterministic pseudo-random vector.
+    // A fixed seed ensures reproducible eigenvalues across runs.
+    float norm = 0.0f;
+    int seed = 42;
+    for (int i = 0; i < n; i++) {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        V[0][i] = (float)seed / (float)0x7fffffff * 2.0f - 1.0f;
+        norm += V[0][i] * V[0][i];
+    }
+    norm = sqrt(norm);
+    if (norm < 1.0e-20f) norm = 1.0f;
+    for (int i = 0; i < n; i++) V[0][i] /= norm;
+
+    // Lanczos main loop
+    std::vector<float> w(n, 0.0f);
+    int actual_k = k;
+    for (int j = 0; j < k; j++) {
+        // w = H * V[j]
+        for (int i = 0; i < n; i++) {
+            w[i] = 0.0f;
+            for (int l = 0; l < n; l++) {
+                w[i] += H[i][l] * V[j][l];
+            }
+        }
+
+        // alpha[j] = V[j]^T * w
+        alpha[j] = 0.0f;
+        for (int i = 0; i < n; i++)
+            alpha[j] += V[j][i] * w[i];
+
+        // w = w - alpha[j] * V[j] - beta[j-1] * V[j-1]
+        for (int i = 0; i < n; i++) {
+            w[i] -= alpha[j] * V[j][i];
+            if (j > 0) w[i] -= beta[j-1] * V[j-1][i];
+        }
+
+        // beta[j] = ||w||
+        if (j < k - 1) {
+            float bdot = 0.0f;
+            for (int i = 0; i < n; i++) bdot += w[i] * w[i];
+            beta[j] = sqrt(bdot);
+
+            if (beta[j] > 1.0e-15f) {
+                for (int i = 0; i < n; i++)
+                    V[j+1][i] = w[i] / beta[j];
+            } else {
+                // Invariant subspace found; no need for more iterations.
+                actual_k = j + 1;
+                break;
+            }
+        }
+    }
+
+    // ---- Compute eigenvalues of T (actual_k × actual_k tridiagonal) ----
+    // Uses the Sturm sequence property: for symmetric tridiagonal T with
+    // diagonal a[0..m-1] and sub-diagonal b[0..m-2], the number of sign
+    // changes in the Sturm sequence at shift λ equals the number of
+    // eigenvalues of T less than λ.  We bisect within Gershgorin bounds
+    // to locate each eigenvalue.
+
+    // Gershgorin: |λ - a[i]| ≤ |b[i-1]| + |b[i]|
+    float lo = alpha[0], hi = alpha[0];
+    for (int i = 0; i < actual_k; i++) {
+        float rad = 0.0f;
+        if (i > 0)     rad += fabs(beta[i-1]);
+        if (i < actual_k-1) rad += fabs(beta[i]);
+        float left  = alpha[i] - rad;
+        float right = alpha[i] + rad;
+        if (left  < lo) lo = left;
+        if (right > hi) hi = right;
+    }
+    // Pad bounds to avoid edge cases
+    float pad = (hi - lo) * 0.01f + 1.0e-10f;
+    lo -= pad;
+    hi += pad;
+
+    // Sturm sequence: count eigenvalues < lambda
+    auto sturm_count = [&](float lambda) -> int {
+        float p0 = 1.0f;
+        float p1 = alpha[0] - lambda;
+        int sc = (p0 * p1 < 0.0f) ? 1 : 0;
+        for (int i = 1; i < actual_k; i++) {
+            float pi = (alpha[i] - lambda) * p1
+                       - beta[i-1] * beta[i-1] * p0;
+            if (pi * p1 < 0.0f) sc++;
+            p0 = p1;
+            p1 = pi;
+        }
+        return sc;
+    };
+
+    // Bisect to find each eigenvalue
+    std::vector<float> eigs(actual_k, 0.0f);
+    for (int idx = 0; idx < actual_k; idx++) {
+        float l = lo, r = hi;
+        // We want the eigenvalue where exactly idx eigenvalues are below it.
+        // sturm_count(r) >= idx+1 (since r is an upper bound on all eigs)
+        // sturm_count(l) < idx+1 (since l is a lower bound)
+        for (int iter = 0; iter < 80; iter++) {
+            float m = (l + r) * 0.5f;
+            if (sturm_count(m) >= idx + 1)
+                r = m;
+            else
+                l = m;
+        }
+        eigs[idx] = (l + r) * 0.5f;
+    }
+
+    // The eigenvalues are sorted ascending (by construction of Sturm bisection).
+    if (eig_min_out) *eig_min_out = eigs[0];
+    if (eig_max_out) *eig_max_out = eigs[actual_k - 1];
 }
 
 /**********************************************************************/

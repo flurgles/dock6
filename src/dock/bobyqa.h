@@ -77,11 +77,20 @@ class           BOBYQA_Minimizer : public Minimizer {
         float final_gradient_norm = 0.0f;
         float avg_ratio = 0.0f;
         float noise_level = 0.0f;
+        float hessian_min_eigenvalue = 0.0f;   // Lanczos estimate of smallest eigenvalue
+        float hessian_max_eigenvalue = 0.0f;   // Lanczos estimate of largest eigenvalue
         int restarts = 0;
         int rescue_calls = 0;
         bool converged_normally = false;
         std::string termination_reason = "";
     } diagnostics;
+
+    // Lanczos eigenvalue estimation on the quadratic model Hessian
+    // Runs k iterations (default min(5,n)) to estimate extreme eigenvalues.
+    // For the diagonal model (use_full_quadratic=false), eigenvalues are just Hdiag entries.
+    void            estimate_hessian_eigenvalues(int k = 0,
+                                                  float *eig_min_out = nullptr,
+                                                  float *eig_max_out = nullptr);
 
     // Adaptive restart on stagnation
     void            perform_adaptive_restart(Base_Score &, DOCKMol &, DOCKMol &, DOCKMol &, DOCKMol &, DOCKMol &,
