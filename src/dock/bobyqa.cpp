@@ -538,7 +538,7 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
         cerr << "ERROR: BOBYQA: zero degrees of freedom" << endl;
         return 1.0e10f;
     }
-    cerr << "DEBUG: do_minimize entry, n=" << n << " hessian_mode=" << hessian_mode << " use_multi_start=" << use_multi_start << endl;
+    // cerr << "DEBUG: do_minimize entry, n=" << n << " hessian_mode=" << hessian_mode << " use_multi_start=" << use_multi_start << endl;
 
     // ---- DOF-scaling: derive restarts and max_iter from torsional DOF ----
     // Systems with more torsional degrees of freedom need more restarts and more
@@ -562,8 +562,8 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
     if (max_iter_param < scaled_max_iter) {
         max_iter_param = scaled_max_iter;
     }
-    cerr << "DEBUG: n_tors=" << n_tors << " multi_start=" << multi_start_restarts
-         << " max_restarts=" << max_restarts << " max_iter=" << max_iter_param << endl;
+    // cerr << "DEBUG: n_tors=" << n_tors << " multi_start=" << multi_start_restarts
+         // << " max_restarts=" << max_restarts << " max_iter=" << max_iter_param << endl;
 
     // -- Multi-start wrapper --
     // If enabled, delegate to multi_start_minimize() which calls back into
@@ -646,11 +646,11 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
     }
 
     // Evaluate all axis points - assign large penalty for failed evaluations
-    cerr << "DEBUG: PRELIM evaluating axis points, n_axis=" << n_axis << " np=" << np << endl;
+    // cerr << "DEBUG: PRELIM evaluating axis points, n_axis=" << n_axis << " np=" << np << endl;
     for (i = 0; i < n_axis; i++) {
         int idx_p = 1 + i;
         if (idx_p < np) {
-            cerr << "DEBUG: eval axis +" << i << " idx=" << idx_p << endl;
+            // cerr << "DEBUG: eval axis +" << i << " idx=" << idx_p << endl;
             if (eval_score(score, ref_mol, tmp_mol, xpts[idx_p],
                            trans_step_size, rot_step_size, tors_step_size)) {
                 fvals[idx_p] = tmp_mol.current_score + tmp_mol.internal_energy;
@@ -663,7 +663,7 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
         }
         int idx_m = 1 + n_axis + i;
         if (idx_m < np) {
-            cerr << "DEBUG: eval axis -" << i << " idx=" << idx_m << endl;
+            // cerr << "DEBUG: eval axis -" << i << " idx=" << idx_m << endl;
             if (eval_score(score, ref_mol, tmp_mol, xpts[idx_m],
                            trans_step_size, rot_step_size, tors_step_size)) {
                 fvals[idx_m] = tmp_mol.current_score + tmp_mol.internal_energy;
@@ -739,7 +739,7 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
     }
     
     if (!start_ok) {
-        cerr << "ERROR: BOBYQA: initial scoring failed after all fallback strategies" << endl;
+        //cerr << "ERROR: BOBYQA: initial scoring failed after all fallback strategies" << endl;
         return 1.0e10f;
     }
     
@@ -766,10 +766,10 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
 
     // Full quadratic model: build off-diagonal elements if enabled
     if (hessian_mode != "default") {
-        cerr << "DEBUG: Calling build_full_model at PRELIM" << endl;
+        // cerr << "DEBUG: Calling build_full_model at PRELIM" << endl;
         build_full_model(score, ref_mol, tmp_mol, rmsd_ref, best_mol,
                          trans_step_size, rot_step_size, tors_step_size);
-        cerr << "DEBUG: build_full_model returned" << endl;
+        // cerr << "DEBUG: build_full_model returned" << endl;
     }
 
     delta = rho_beg_actual;
@@ -780,7 +780,7 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
     // ========================================================
 
     for (iter = 0; iter < max_iter_param; iter++) {
-        cerr << "DEBUG: iter=" << iter << ", delta=" << delta << ", fopt=" << fopt << endl;
+        // cerr << "DEBUG: iter=" << iter << ", delta=" << delta << ", fopt=" << fopt << endl;
 
         // ---- 2a) TRSBOX: Solve trust-region subproblem ----
         // cerr << "DEBUG: Starting TRSBOX" << endl;
@@ -832,8 +832,8 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
             // the pHp < 0 check, falling back to the Cauchy step.
             float eig_min = 0.0f, eig_max = 0.0f;
             estimate_hessian_eigenvalues(min(5, n), &eig_min, &eig_max);
-            cerr << "DEBUG: CG solver start (Jacobi PC), n=" << n << " delta=" << delta
-                 << " eig_min=" << eig_min << " eig_max=" << eig_max << endl;
+            // cerr << "DEBUG: CG solver start (Jacobi PC), n=" << n << " delta=" << delta
+                 // << " eig_min=" << eig_min << " eig_max=" << eig_max << endl;
             // Preconditioned conjugate gradient: solve H * s = -g
             // with Jacobi preconditioner M = diag(H).
             // The PCG algorithm replaces the r·r / p·H·p ratio with
@@ -879,8 +879,8 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                 // direction. Fall back to steepest descent (Cauchy step).
                 if (fabs(pHp) < 1.0e-20f || pHp < 0.0f) {
                     if (pHp < 0.0f) {
-                        cerr << "DEBUG: CG indefinite H (pHp=" << pHp
-                             << "), fall back to Cauchy" << endl;
+                        // cerr << "DEBUG: CG indefinite H (pHp=" << pHp
+                             // << "), fall back to Cauchy" << endl;
                     }
                     break;
                 }
@@ -903,7 +903,7 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                 rz = rz_new;
                 for (i = 0; i < n; i++) p[i] = z_new[i] + beta * p[i];
             }
-            cerr << "DEBUG: CG done, converged=" << cg_converged << " n_newt=" << norm_newt << endl;
+            // cerr << "DEBUG: CG done, converged=" << cg_converged << " n_newt=" << norm_newt << endl;
             norm_newt = 0.0f;
             for (i = 0; i < n; i++) norm_newt += s_newt[i] * s_newt[i];
             norm_newt = sqrt(norm_newt);
@@ -982,9 +982,9 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
         if (eval_score(score, ref_mol, tmp_mol, x_trial,
                        trans_step_size, rot_step_size, tors_step_size)) {
             fnew = tmp_mol.current_score + tmp_mol.internal_energy;
-            cerr << "DEBUG: trial score grid=" << tmp_mol.current_score
-                 << " internal=" << tmp_mol.internal_energy
-                 << " total=" << fnew << endl;
+            // cerr << "DEBUG: trial score grid=" << tmp_mol.current_score
+                 // << " internal=" << tmp_mol.internal_energy
+                 // << " total=" << fnew << endl;
             if (restrained_min) {
                 fnew += coefficient_restraint * calc_active_rmsd2(rmsd_ref, tmp_mol);
             }
@@ -1018,7 +1018,7 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
 
         ratio = dAct / dPred;
 
-        cerr << "DEBUG: section 2d, ratio=" << ratio << endl;
+        // cerr << "DEBUG: section 2d, ratio=" << ratio << endl;
 
         // ---- Track sliding-window ratio history ----
         ratio_history.push_back(ratio);
@@ -1047,9 +1047,9 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
             // cerr << "DEBUG: copy xopt" << endl;
             xopt = x_trial;
             // cerr << "DEBUG: done copy xopt" << endl;
-            cerr << "DEBUG: accept fopt=" << fopt << " -> " << fnew
-                 << " grid=" << tmp_mol.current_score
-                 << " internal=" << tmp_mol.internal_energy << endl;
+            // cerr << "DEBUG: accept fopt=" << fopt << " -> " << fnew
+                 // << " grid=" << tmp_mol.current_score
+                 // << " internal=" << tmp_mol.internal_energy << endl;
             fopt = fnew;
             // cerr << "DEBUG: end accept" << endl;
         }
@@ -1106,7 +1106,7 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
             continue;
         }
 
-        cerr << "DEBUG: section 2f, np=" << np << " xpts.size=" << xpts.size() << endl;
+        // cerr << "DEBUG: section 2f, np=" << np << " xpts.size=" << xpts.size() << endl;
         // ---- 2f) Update interpolation set (farthest-point replacement) ----
         // Find the farthest interpolation point from xopt
         float max_dist = -1.0f;
@@ -1150,7 +1150,7 @@ BOBYQA_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                 rescue(score, mol, ref_mol, tmp_mol, rmsd_ref, best_mol,
                        trans_step_size, rot_step_size, tors_step_size,
                        rho_beg_actual);
-                cerr << "DEBUG: after rescue fopt=" << fopt << endl;
+                // cerr << "DEBUG: after rescue fopt=" << fopt << endl;
             }
         }
 
@@ -1510,7 +1510,7 @@ BOBYQA_Minimizer::rescue(Base_Score & score, DOCKMol & mol, DOCKMol & ref_mol,
                           float trans_step_size, float rot_step_size, float tors_step_size,
                           float rho_beg_actual)
 {
-    cout << "BOBYQA RESCUE: rebuilding interpolation set" << endl;
+    // cout << "BOBYQA RESCUE: rebuilding interpolation set" << endl;
     
     int i, j;
     
@@ -1601,9 +1601,9 @@ BOBYQA_Minimizer::perform_adaptive_restart(Base_Score & score, DOCKMol & mol,
                                             float trans_step_size, float rot_step_size,
                                             float tors_step_size, float rho_beg_actual)
 {
-    cout << "BOBYQA ADAPTIVE RESTART " << (restart_count + 1)
-         << ": stagnation detected, delta=" << delta
-         << ", fopt=" << fopt << endl;
+    // cout << "BOBYQA ADAPTIVE RESTART " << (restart_count + 1)
+         // << ": stagnation detected, delta=" << delta
+         // << ", fopt=" << fopt << endl;
 
     int i;
     restart_count++;
@@ -1666,9 +1666,9 @@ BOBYQA_Minimizer::perform_adaptive_restart(Base_Score & score, DOCKMol & mol,
                    trans_step_size, rot_step_size, tors_step_size)) {
         copy_crds(best_mol, tmp_mol);
     }
-    cerr << "DEBUG: restart fopt=" << fopt
-         << " grid=" << tmp_mol.current_score
-         << " internal=" << tmp_mol.internal_energy << endl;
+    // cerr << "DEBUG: restart fopt=" << fopt
+         // << " grid=" << tmp_mol.current_score
+         // << " internal=" << tmp_mol.internal_energy << endl;
     xpts[0] = xopt;
     fvals[0] = fopt;
     kopt = 0;
@@ -1871,7 +1871,7 @@ BOBYQA_Minimizer::multi_start_minimize(Base_Score & score, DOCKMol & mol,
                            trans_step_size, rot_step_size, tors_step_size);
     }
     
-    cout << "BOBYQA multi-start: " << (multi_start_restarts + 1) << " runs" << endl;
+    // cout << "BOBYQA multi-start: " << (multi_start_restarts + 1) << " runs" << endl;
     
     // First, run PRELIM inline to collect valid interpolation points as starting seeds
     DOCKMol ref_mol, tmp_mol, rmsd_ref;
@@ -1946,14 +1946,14 @@ BOBYQA_Minimizer::multi_start_minimize(Base_Score & score, DOCKMol & mol,
         }
         prelim_debug.close();
     }
-    cerr << "DEBUG PRELIM: collected " << prelim_points.size() << " valid points" << endl;
+    // cerr << "DEBUG PRELIM: collected " << prelim_points.size() << " valid points" << endl;
     
     // Sort by score (best first)
     sort(prelim_points.begin(), prelim_points.end(),
          [](const PrelimPoint &a, const PrelimPoint &b) { return a.score < b.score; });
     
-    cout << "BOBYQA multi-start: collected " << prelim_points.size()
-         << " valid PRELIM points, running " << (multi_start_restarts + 1) << " runs" << endl;
+    // cout << "BOBYQA multi-start: collected " << prelim_points.size()
+         // << " valid PRELIM points, running " << (multi_start_restarts + 1) << " runs" << endl;
     
     float best_final_score = 1.0e10f;
     FLOATVec best_vertex = vertex;
@@ -1965,7 +1965,7 @@ BOBYQA_Minimizer::multi_start_minimize(Base_Score & score, DOCKMol & mol,
                                    max_iter_param, score_converge,
                                    trans_step_size, rot_step_size, tors_step_size);
     
-    cout << "BOBYQA run 0 (original): score = " << score_val << endl;
+    // cout << "BOBYQA run 0 (original): score = " << score_val << endl;
     
     if (score_val < best_final_score) {
         best_final_score = score_val;
@@ -1982,8 +1982,8 @@ BOBYQA_Minimizer::multi_start_minimize(Base_Score & score, DOCKMol & mol,
         if (run <= (int)prelim_points.size()) {
             // Use PRELIM interpolation point as starting position
             run_vertex = prelim_points[run - 1].vertex;
-            cout << "BOBYQA run " << run << " (PRELIM point " << run - 1
-                 << ", score=" << prelim_points[run - 1].score << "): ";
+            // cout << "BOBYQA run " << run << " (PRELIM point " << run - 1
+                 // << ", score=" << prelim_points[run - 1].score << "): ";
         } else {
             // Fallback: small perturbation of original
             const float perturb_scale = 0.10f;
@@ -1992,14 +1992,14 @@ BOBYQA_Minimizer::multi_start_minimize(Base_Score & score, DOCKMol & mol,
                 float perturb = ((float)rand() / RAND_MAX - 0.5f) * tors_step_size * perturb_scale;
                 run_vertex[i] = orig_vertex[i] + perturb;
             }
-            cout << "BOBYQA run " << run << " (perturbed): ";
+            // cout << "BOBYQA run " << run << " (perturbed): ";
         }
         
         score_val = do_minimize(score, run_mol, run_vertex,
                                    max_iter_param, score_converge,
                                    trans_step_size, rot_step_size, tors_step_size);
         
-        cout << score_val << endl;
+        // cout << score_val << endl;
         
         if (score_val < best_final_score) {
             best_final_score = score_val;

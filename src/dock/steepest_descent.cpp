@@ -47,25 +47,25 @@ Steepest_Descent_Minimizer::input_parameters(Parameter_Reader & parm,
             fd_step = atof(parm.query_param("sd_fd_step", "1.0e-4").c_str());
             if (fd_step <= 0.0) {
                 cout << "ERROR:  Parameter must be a float greater than zero.  Program will terminate." << endl;
-                exit(0);
+                exit(1);
             }
 
             line_search_alpha = atof(parm.query_param("sd_line_search_alpha", "1.0").c_str());
             if (line_search_alpha <= 0.0) {
                 cout << "ERROR:  Parameter must be a float greater than zero.  Program will terminate." << endl;
-                exit(0);
+                exit(1);
             }
 
             line_search_tau = atof(parm.query_param("sd_line_search_tau", "0.5").c_str());
             if (line_search_tau <= 0.0 || line_search_tau >= 1.0) {
                 cout << "ERROR:  sd_line_search_tau must be in (0,1).  Program will terminate." << endl;
-                exit(0);
+                exit(1);
             }
 
             max_line_search = atoi(parm.query_param("sd_max_line_search", "20").c_str());
             if (max_line_search <= 0) {
                 cout << "ERROR:  Parameter must be an integer greater than zero.  Program will terminate." << endl;
-                exit(0);
+                exit(1);
             }
 
             // --- Basic minimization parameters ---
@@ -73,19 +73,19 @@ Steepest_Descent_Minimizer::input_parameters(Parameter_Reader & parm,
                 max_iterations = atoi(parm.query_param("sd_max_iterations", "1000").c_str());
                 if (max_iterations < 0) {
                     cout << "ERROR:  sd_max_iterations must be >= 0.  Program will terminate." << endl;
-                    exit(0);
+                    exit(1);
                 }
 
                 torsion_iterations = atoi(parm.query_param("sd_tors_premin_iterations", "0").c_str());
                 if (torsion_iterations < 0) {
                     cout << "ERROR:  sd_tors_premin_iterations cannot be negative. Program will terminate." << endl;
-                    exit(0);
+                    exit(1);
                 }
 
                 max_cycles = atoi(parm.query_param("sd_max_cycles", "1").c_str());
                 if (max_cycles <= 0) {
                     cout << "ERROR:  Parameter must be an integer greater than zero.  Program will terminate." << endl;
-                    exit(0);
+                    exit(1);
                 }
 
                 score_converge = atof(parm.query_param("sd_score_converge", "0.1").c_str());
@@ -104,17 +104,17 @@ Steepest_Descent_Minimizer::input_parameters(Parameter_Reader & parm,
                         max_iterations = atoi(parm.query_param("sd_max_iterations", "1000").c_str());
                         if (max_iterations < 0) {
                             cout << "ERROR:  sd_max_iterations must be >= 0.  Program will terminate." << endl;
-                            exit(0);
+                            exit(1);
                         }
                         torsion_iterations = atoi(parm.query_param("sd_tors_premin_iterations", "0").c_str());
                         if (torsion_iterations < 0) {
                             cout << "ERROR:  sd_tors_premin_iterations cannot be negative. Program will terminate." << endl;
-                            exit(0);
+                            exit(1);
                         }
                         max_cycles = atoi(parm.query_param("sd_max_cycles", "1").c_str());
                         if (max_cycles <= 0) {
                             cout << "ERROR:  Parameter must be an integer greater than zero.  Program will terminate." << endl;
-                            exit(0);
+                            exit(1);
                         }
                         score_converge = atof(parm.query_param("sd_score_converge", "0.1").c_str());
                         cycle_converge = atof(parm.query_param("sd_cycle_converge", "1.0").c_str());
@@ -139,12 +139,12 @@ Steepest_Descent_Minimizer::input_parameters(Parameter_Reader & parm,
                     anchor_min_max_iterations = atoi(parm.query_param("sd_anchor_max_iterations", "500").c_str());
                     if (anchor_min_max_iterations <= 0) {
                         cout << "ERROR:  Parameter must be an integer greater than zero.  Program will terminate." << endl;
-                        exit(0);
+                        exit(1);
                     }
                     anchor_min_max_cycles = atoi(parm.query_param("sd_anchor_max_cycles", "1").c_str());
                     if (anchor_min_max_cycles <= 0) {
                         cout << "ERROR:  Parameter must be an integer greater than zero.  Program will terminate." << endl;
-                        exit(0);
+                        exit(1);
                     }
                     anchor_min_trans_step_size = atof(parm.query_param("sd_anchor_trans_step", "1.0").c_str());
                     anchor_min_rot_step_size = atof(parm.query_param("sd_anchor_rot_step", "0.1").c_str());
@@ -160,12 +160,12 @@ Steepest_Descent_Minimizer::input_parameters(Parameter_Reader & parm,
                     }
                     if (flex_min_max_iterations < 0) {
                         cout << "ERROR:  sd_grow_max_iterations cannot be negative.  Program will terminate." << endl;
-                        exit(0);
+                        exit(1);
                     }
                     flex_min_max_cycles = atoi(parm.query_param("sd_grow_max_cycles", "1").c_str());
                     if (flex_min_max_cycles <= 0) {
                         cout << "ERROR:  Parameter must be an integer greater than zero.  Program will terminate." << endl;
-                        exit(0);
+                        exit(1);
                     }
                     flex_min_tors_step_size = atof(parm.query_param("sd_grow_tors_step", "10.0").c_str());
                     flex_min_torsion_iterations = atoi(parm.query_param("sd_grow_tors_premin_iterations", "0").c_str());
@@ -183,12 +183,12 @@ Steepest_Descent_Minimizer::input_parameters(Parameter_Reader & parm,
                     final_min_max_iterations = atoi(parm.query_param("sd_final_max_iterations", "500").c_str());
                     if (final_min_max_iterations <= 0) {
                         cout << "ERROR:  Parameter must be an integer greater than zero.  Program will terminate." << endl;
-                        exit(0);
+                        exit(1);
                     }
                     final_min_max_cycles = atoi(parm.query_param("sd_final_max_cycles", "1").c_str());
                     if (final_min_max_cycles <= 0) {
                         cout << "ERROR:  Parameter must be an integer greater than zero.  Program will terminate." << endl;
-                        exit(0);
+                        exit(1);
                     }
                     final_min_trans_step_size = atof(parm.query_param("sd_final_trans_step", "1.0").c_str());
                     final_min_rot_step_size = atof(parm.query_param("sd_final_rot_step", "0.1").c_str());

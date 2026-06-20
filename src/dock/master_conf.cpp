@@ -155,17 +155,18 @@ Master_Conformer_Search::input_parameters(Parameter_Reader & parm)
 
         ie_att_exp = 6;
         ie_diel = 4.0;
+        ie_soft_delta = atof(parm.query_param("internal_energy_soft_delta", "0.0").c_str());
         cout <<"Note: Internal energy only includes repulsive VDW for growth and/or minimization."
              << endl;
 
         if (method == 1)
-            c_ag_conf.initialize_internal_energy_parms(use_internal_energy, ie_rep_exp, ie_att_exp, ie_diel, ie_cutoff); 
+            c_ag_conf.initialize_internal_energy_parms(use_internal_energy, ie_rep_exp, ie_att_exp, ie_diel, ie_soft_delta, ie_cutoff); 
         else if (method == 2)
-            c_dn_build.initialize_internal_energy_parms(use_internal_energy, ie_rep_exp, ie_att_exp, ie_diel, ie_cutoff); 
+            c_dn_build.initialize_internal_energy_parms(use_internal_energy, ie_rep_exp, ie_att_exp, ie_diel, ie_soft_delta, ie_cutoff); 
         else if (method == 3)
-            c_cg_conf.initialize_internal_energy_parms(use_internal_energy, ie_rep_exp, ie_att_exp, ie_diel, ie_cutoff); 
+            c_cg_conf.initialize_internal_energy_parms(use_internal_energy, ie_rep_exp, ie_att_exp, ie_diel, ie_soft_delta, ie_cutoff); 
         else if (method == 4)
-            c_ga_recomb.initialize_internal_energy_parms(use_internal_energy, ie_rep_exp, ie_att_exp, ie_diel, ie_cutoff);
+            c_ga_recomb.initialize_internal_energy_parms(use_internal_energy, ie_rep_exp, ie_att_exp, ie_diel, ie_soft_delta, ie_cutoff);
 
     }
     else {
@@ -383,6 +384,7 @@ Master_Conformer_Search::grow_periphery(Master_Score & score,
            score.primary_score->ie_att_exp = ie_att_exp;
            score.primary_score->ie_rep_exp = ie_rep_exp;
            score.primary_score->ie_diel = ie_diel;
+           score.primary_score->ie_soft_delta = ie_soft_delta;
            score.primary_score->use_internal_energy = true;
 
            // need to use DOCKMol with radii and segments assigned

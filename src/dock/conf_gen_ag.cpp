@@ -161,12 +161,13 @@ AG_Conformer_Search::initialize()
 // Trent E Balius 2009-02-11
 // this function gets the internal energy parms from Master_Conformer_Search.
 void
-AG_Conformer_Search::initialize_internal_energy_parms(bool uie, int rep_exp, int att_exp, float diel, float iec)
+AG_Conformer_Search::initialize_internal_energy_parms(bool uie, int rep_exp, int att_exp, float diel, float soft_delta, float iec)
 {
      use_internal_energy = uie;
      ie_rep_exp = rep_exp;
      ie_att_exp = att_exp;
      ie_diel    = diel;
+     ie_soft_delta = soft_delta;
      internal_energy_cutoff = iec;
 }
 
@@ -935,10 +936,11 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
              score.primary_score->ie_att_exp = ie_att_exp;
              score.primary_score->ie_rep_exp = ie_rep_exp;
              score.primary_score->ie_diel = ie_diel;
+             score.primary_score->ie_soft_delta = ie_soft_delta;
              ie_prune=true;
            }
            if (!use_internal_energy){
-              initialize_internal_energy_parms(use_internal_energy, score.primary_score->ie_rep_exp, score.primary_score->ie_att_exp, score.primary_score->ie_diel, growth_score_cutoff);
+              initialize_internal_energy_parms(use_internal_energy, score.primary_score->ie_rep_exp, score.primary_score->ie_att_exp, score.primary_score->ie_diel, score.primary_score->ie_soft_delta, growth_score_cutoff);
            }
            // need to use DOCKMol with radii and segments assigned
            // it does not matter which atoms are labeled active

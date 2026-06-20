@@ -281,7 +281,8 @@ class           GA_Recomb {
     bool                     use_internal_energy;                // int energy function superseded by funct in base_score
     int                      ie_att_exp;                         // attractive VDW exponent (6 by default)
     int                      ie_rep_exp;                         // repulsive VDW exponent (12 by default, can change in input file)
-    float                    ie_diel;                            // dielectric constant (4.0 by default)
+    float                    ie_diel;
+    float                      ie_soft_delta;                            // soft-core LJ shift (0.0 = standard r^12)
     float                    ie_cutoff;                          // BCF internal energy cutoff
 
 
@@ -333,7 +334,7 @@ class           GA_Recomb {
     void                     input_parameters_selection( Parameter_Reader & parm );                // initialize GA selection method params
     void                     initialize();                                                         // initialize all DOCK params
     void                     initialize_fraglib( std::vector <Fragment> & );                       // initialize frag library for GA 
-    void                     initialize_internal_energy_parms( bool, int, int, float, float );     // initialize internal energy
+    void                     initialize_internal_energy_parms( bool, int, int, float, float, float );     // initialize internal energy
     void                     read_library( std::vector <DOCKMol> &, std::string );                 // read library
     void                     activate_half_mol( DOCKMol &, int, int, DOCKMol &, int, int, bool );  // turn on subset of atom/bond active flags
     Fragment                 mol_to_frag ( DOCKMol &);                                             // convert dockmol to fragment type

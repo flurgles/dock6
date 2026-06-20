@@ -883,7 +883,7 @@ GA_Recomb::initialize_fraglib( std::vector<Fragment> & scaffolds )
 // +++++++++++++++++++++++++++++++++++++++++
 // Get the internal energy parameters from Master_Conformer_Search
 void
-GA_Recomb::initialize_internal_energy_parms( bool uie, int rep_exp, int att_exp, float diel, float iec )
+GA_Recomb::initialize_internal_energy_parms( bool uie, int rep_exp, int att_exp, float diel, float soft_delta, float iec )
 {
    Trace trace( "GA_Recomb::initialize_internal_energy_parms()" );
    // These parameters will be defined before the minimzer is called
@@ -9124,6 +9124,7 @@ GA_Recomb::prepare_internal_energy( DOCKMol & tmp_child, Master_Score & score )
             score.primary_score->ie_att_exp = ie_att_exp;
             score.primary_score->ie_rep_exp = ie_rep_exp;
             score.primary_score->ie_diel = ie_diel;
+            score.primary_score->ie_soft_delta = ie_soft_delta;
 
             // Need to use DOCKMol with radii and segments assigned
             // it does not matter which atoms are labeled active
@@ -13020,6 +13021,7 @@ GA_Recomb::score_parents( std::vector <DOCKMol> & tmp, Master_Score & score,  AM
              score.primary_score->ie_att_exp = ie_att_exp;
              score.primary_score->ie_rep_exp = ie_rep_exp;
              score.primary_score->ie_diel = ie_diel;
+            score.primary_score->ie_soft_delta = ie_soft_delta;
          
              // Need to use DOCKMol with radii and segments assigned
              // it does not matter which atoms are labeled active

@@ -42,6 +42,7 @@ class           Base_Score {
     int             ie_att_exp;
     int             ie_rep_exp;
     float           ie_diel;
+    float           ie_soft_delta;
     float          *ie_vdwA;  //indexed by mol.num_atoms
     float          *ie_vdwB;  //indexed by mol.num_atoms
 

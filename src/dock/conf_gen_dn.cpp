@@ -885,7 +885,7 @@ DN_Build::initialize()
 // +++++++++++++++++++++++++++++++++++++++++
 // Get the internal energy parameters from Master_Conformer_Search
 void
-DN_Build::initialize_internal_energy_parms( bool uie, int rep_exp, int att_exp, float diel, float iec )
+DN_Build::initialize_internal_energy_parms( bool uie, int rep_exp, int att_exp, float diel, float soft_delta, float iec )
 {
     Trace trace("DN_Build::initialize_internal_energy_parms()");
     // These just need to be defined before we try to call the minimizer
@@ -894,6 +894,7 @@ DN_Build::initialize_internal_energy_parms( bool uie, int rep_exp, int att_exp, 
     ie_rep_exp          = rep_exp;     // int. energy vdw repulsive exponent (default 12)
     ie_att_exp          = att_exp;     // int. energy vdw attractive exponent (6)
     ie_diel             = diel;        // int. energy dielectric (4.0)
+    ie_soft_delta        = soft_delta;
   //internal_energy_cutoff = iec;
     ie_cutoff           = iec;         // BCF internal energy cutoff 
     return;
@@ -9076,6 +9077,7 @@ DN_Build::prepare_internal_energy( Fragment & frag1, Master_Score & score )
             score.primary_score->ie_att_exp = ie_att_exp;
             score.primary_score->ie_rep_exp = ie_rep_exp;
             score.primary_score->ie_diel = ie_diel;
+            score.primary_score->ie_soft_delta = ie_soft_delta;
 
             // Need to use DOCKMol with radii and segments assigned
             // it does not matter which atoms are labeled active

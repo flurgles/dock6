@@ -332,7 +332,8 @@ class           DN_Build {
     bool               use_internal_energy;    // int energy function superseded by funct in base_score
     int                ie_att_exp;             // attractive VDW exponent (6 by default)
     int                ie_rep_exp;             // repulsive VDW exponent (12 by default, can change in input file)
-    float              ie_diel;                // dielectric constant (4.0 by default)
+    float              ie_diel;
+    float              ie_soft_delta;          // soft-core LJ shift (0.0 = hard, >0.0 softens r^12 repulsion)
     //float              internal_energy_cutoff;        //BCF internal energy cutoff
     float              ie_cutoff;              //BCF internal energy cutoff
 
@@ -390,7 +391,7 @@ class           DN_Build {
     // Read parameters from file, initialize stuff, prepare vectors and molecules
     void            input_parameters( Parameter_Reader & parm );
     void            initialize();
-    void            initialize_internal_energy_parms( bool, int, int, float, float );
+    void            initialize_internal_energy_parms( bool, int, int, float, float, float );
     void            read_library_anchor( std::vector <Fragment> &, std::string );
     void            read_library( std::vector <DOCKMol>  &, std::string );
     void            read_library( std::vector <Fragment> &, std::string );

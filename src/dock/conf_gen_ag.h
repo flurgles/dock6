@@ -201,6 +201,7 @@ class           AG_Conformer_Search {
     int             ie_att_exp;
     int             ie_rep_exp;
     float           ie_diel;
+    float           ie_soft_delta;
     float          *ie_vdwA;
     float          *ie_vdwB; 
     float           internal_energy_cutoff;        //BCF internal energy cutoff
@@ -248,7 +249,7 @@ class           AG_Conformer_Search {
     AG_Conformer_Search();
     virtual ~ AG_Conformer_Search();
     void            initialize();       // 
-    void            initialize_internal_energy_parms(bool uie, int rep_exp, int att_exp, float diel, float iec); 
+    void            initialize_internal_energy_parms(bool uie, int rep_exp, int att_exp, float diel, float soft_delta, float iec); 
     void            initialize_internal_energy_null(bool uie); 
                     // get values from Master_Conformer_Search called in input_parameters of Master
     void            input_parameters(Parameter_Reader & parm);  // 

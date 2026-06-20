@@ -47,6 +47,7 @@ class           Master_Conformer_Search {
     int             ie_att_exp;
     int             ie_rep_exp;
     float           ie_diel;
+    float           ie_soft_delta;
     float           ie_cutoff;
 
     void            input_parameters(Parameter_Reader & parm);

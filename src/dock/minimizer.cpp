@@ -442,21 +442,21 @@ Minimizer::eval_score(Base_Score & score, DOCKMol & ref_mol,
     FLOATVec        new_vec;
     bool            return_val;
 
-    cerr << "DEBUG: eval_score start, vertex[0]=" << vertex[0] << endl;
+    // cerr << "DEBUG: eval_score start, vertex[0]=" << vertex[0] << endl;
     copy_crds(tmp_mol, ref_mol);
-    cerr << "DEBUG: copy_crds done" << endl;
+    // cerr << "DEBUG: copy_crds done" << endl;
     scale_vector(new_vec, vertex, trans_step_size, rot_step_size,
                          tors_step_size);
-    cerr << "DEBUG: scale_vector done, new_vec.size=" << new_vec.size() << endl;
+    // cerr << "DEBUG: scale_vector done, new_vec.size=" << new_vec.size() << endl;
     vector_to_dockmol(tmp_mol, new_vec);
-    cerr << "DEBUG: vector_to_dockmol done" << endl;
+    // cerr << "DEBUG: vector_to_dockmol done" << endl;
 
     // compute internal energy as well
     score.compute_ligand_internal_energy(tmp_mol);
-    cerr << "DEBUG: compute_ligand_internal_energy done" << endl;
+    // cerr << "DEBUG: compute_ligand_internal_energy done" << endl;
 
     return_val = score.compute_score(tmp_mol);
-    cerr << "DEBUG: compute_score done" << endl;
+    // cerr << "DEBUG: compute_score done" << endl;
 
     //cout << "In Minimizer::simplex_score: "
     //     << "score = " << tmp_mol.current_score
