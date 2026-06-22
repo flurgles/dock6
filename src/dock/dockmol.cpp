@@ -1199,7 +1199,61 @@ copy_molecule(DOCKMol & target, const DOCKMol & original)
 {
     int             i;
 
-    target.allocate_arrays(original.num_atoms, original.num_bonds, original.num_residues);
+    // ------------------------------------------------------------------
+    // OPTIMIZATION: skip the clear_molecule() + allocate_arrays() cycle
+    // when the target already has arrays allocated with matching dimensions.
+    //
+    // Background:
+    //   allocate_arrays() always calls clear_molecule() first, which does
+    //   ~46 delete[] calls, then allocates ~48 new[] arrays, then initializes
+    //   them all to defaults.  The copy loop below then overwrites every one
+    //   of those default values.  For a 30-atom ligand that is ~14 KB of
+    //   heap churn per copy_molecule() call.
+    //
+    // In flex docking's segment_torsion_drive(), copy_molecule() is called
+    //   twice per torsion angle sampled (once parent→new_conf, once
+    //   new_conf→return_list).  For a typical run with 20 seeds × 6 torsions
+    //   × 1 segment, that is 240 full deep copies per growth layer, each
+    //   triggering delete+new+init on ~48 arrays — all immediately overwritten.
+    //
+    // This optimization detects when the target DOCKMol already has arrays
+    //   allocated with the same num_atoms and num_bonds as the source.  In
+    //   that case we skip clear_molecule() and allocate_arrays() entirely and
+    //   go straight to the copy loop, which unconditionally overwrites every
+    //   element that allocate_arrays() would have initialized.
+    //
+    // Safety analysis:
+    //   - All 34 per-atom arrays (x,y,z, charges, atom_types, amber_at_*,
+    //     atom_active_flags, etc.) are overwritten element-by-element.
+    //   - All 11 per-bond arrays (bonds_origin_atom, bond_types, amber_bt_*,
+    //     bond_active_flags, etc.) are overwritten element-by-element.
+    //   - Vector-of-vector arrays (amber_bt_torsions, neighbor_list,
+    //     atom_child_list) are overwritten via vector assignment operator,
+    //     which replaces content and frees old data.
+    //   - The footprints vector is explicitly cleared with .clear() before
+    //     being repopulated (see below in this function).
+    //   - Scalar strings/scalars are overwritten by direct assignment.
+    //   - The only container not explicitly cleared is ph4, which is
+    //     commented out and unused.
+    //
+    // When dimensions do NOT match, or the target has never been allocated
+    //   (arrays_allocated == false), we fall through to the original
+    //   allocate_arrays() path — no behavioral change.
+    // ------------------------------------------------------------------
+
+    if (target.arrays_allocated
+        && target.num_atoms == original.num_atoms
+        && target.num_bonds == original.num_bonds) {
+        // Target already has correctly-sized arrays.  Skip the costly
+        // clear_molecule() (46 delete[]) + allocate_arrays() (48 new[] +
+        // default initialization) cycle.  The copy loops below will
+        // overwrite every element.
+       ;
+    } else {
+        // First copy into this DOCKMol, or dimensions changed — need
+        // the full allocate + initialize path.
+        target.allocate_arrays(original.num_atoms, original.num_bonds, original.num_residues);
+    }
 
     // copy scalar data
     target.title = original.title;
