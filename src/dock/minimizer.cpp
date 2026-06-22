@@ -147,12 +147,22 @@ Minimizer::minimize_rigid_anchor(DOCKMol & mol, Master_Score & score)
         bond_vectors.clear();
         bond_vectors.resize(mol.num_bonds, -1);
 
+        // OPTIMIZATION: cache internal energy once before minimization.
+        // The anchor has no torsional DOFs (only 6 rigid-body DOF:
+        // rotation + translation), so inter-atomic distances are
+        // invariant — the internal energy never changes during anchor
+        // minimization.  Computing it once and reusing the cached value
+        // avoids O(nb_int) loop overhead on every eval_score() call.
+        score.primary_score->compute_ligand_internal_energy(mol);
+        skip_internal_energy = true;
+
         // mc_premin_override = false;
         minimize(*score.primary_score, mol, vertex, anchor_min_max_cycles,
                  anchor_min_cycle_converge, anchor_min_max_iterations,
                  anchor_min_score_converge, anchor_min_trans_step_size,
                  anchor_min_rot_step_size, anchor_min_tors_step_size);
 
+        skip_internal_energy = false;
     }
 
 }
@@ -452,7 +462,11 @@ Minimizer::eval_score(Base_Score & score, DOCKMol & ref_mol,
     // cerr << "DEBUG: vector_to_dockmol done" << endl;
 
     // compute internal energy as well
-    score.compute_ligand_internal_energy(tmp_mol);
+    // OPTIMIZATION: during rigid anchor minimization the internal energy
+    // is invariant (no torsional DOFs) and is cached by
+    // minimize_rigid_anchor().  Skip the recomputation.
+    if (!skip_internal_energy)
+        score.compute_ligand_internal_energy(tmp_mol);
     // cerr << "DEBUG: compute_ligand_internal_energy done" << endl;
 
     return_val = score.compute_score(tmp_mol);

@@ -118,6 +118,12 @@ class Minimizer {
     // GA-specific flag (used by genetic algorithm code externally)
     bool            simplex_ga_flag;
 
+    // Optimization: skip internal energy recomputation during rigid anchor
+    // minimization.  Internal energy is invariant under rigid-body
+    // transformations (only 6 DOF: rotation + translation) so caching once
+    // at the start of Minimizer::minimize_rigid_anchor() is sufficient.
+    bool            skip_internal_energy = false;
+
 
     // ----- Virtual algorithm interface -----
 

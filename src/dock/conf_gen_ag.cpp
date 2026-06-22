@@ -965,8 +965,13 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
 
     for (i = 0; i < anchor_positions.size(); i++) {
         // compute the score for the molecule
+        // OPTIMIZATION: internal energy was already computed and cached in
+        // mol.internal_energy by minimize_rigid_anchor().  The anchor has no
+        // torsional DOFs so internal energy is invariant under rigid-body
+        // transformations.  Call compute_score() directly instead of
+        // compute_primary_score() to avoid redundant O(nb_int) loop work.
         if (score.use_primary_score) {
-            valid_orient = score.compute_primary_score(anchor_positions[i].second);
+            valid_orient = score.primary_score->compute_score(anchor_positions[i].second);
 
             // code to check if there was an error in the scoring function: sudipto 
             // the scoring function stores an error description in dockmol.current_data 
