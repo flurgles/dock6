@@ -24,5 +24,7 @@ typedef struct grid_struct
 
   FILE_NAME box_file_name;	/* Grid-enclosing box file */
 
+  float soft_delta;		/* Soft-core LJ delta (0=standard) */
+
 } GRID;
 

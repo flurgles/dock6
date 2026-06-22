@@ -23,7 +23,8 @@ void make_grids
   SCORE_CHEMICAL *chemical,
   SCORE_ENERGY *energy,
   LABEL *label,
-  MOLECULE *receptor
+  MOLECULE *receptor,
+  float soft_delta
 )
 {
   int i, j, k, l, atomi, index;
@@ -189,7 +190,17 @@ void make_grids
               {
                 dist_inv = 1.0 / dist;
 
-                POWER (dist_inv, energy->repulsive_exponent, dist_power);
+                if (soft_delta > 0.0f)
+                {
+                  /* Soft-core repulsive: A / sqrt(r^2 + delta)^rep_exp */
+                  float soft_dist = sqrt (dist_sq + soft_delta);
+                  float soft_dist_inv = 1.0f / soft_dist;
+                  POWER (soft_dist_inv, energy->repulsive_exponent, dist_power);
+                }
+                else
+                {
+                  POWER (dist_inv, energy->repulsive_exponent, dist_power);
+                }
                 energy->avdw[index] +=
                   energy->vdwA[receptor->atom[atomi].vdw_id] *
                   dist_power;

@@ -3,6 +3,55 @@
 ## Overview
 This log tracks the addition of a **BOBYQA** (Bound Optimization BY Quadratic Approximation) minimizer to DOCK6, alongside the existing Nelder-Mead simplex minimizer. BOBYQA is a derivative-free bound-constrained optimization algorithm by M.J.D. Powell, with a reference Python implementation at [pybobyqa](https://github.com/numericalalgorithmsgroup/pybobyqa/).
 
+## 2026-06-21: Soft-core LJ grid experiment — δ=1.0 too aggressive
+
+### Goal
+Test whether applying the soft-core Lennard-Jones potential (`E = A / (r² + δ)^rep_exp`) at the grid level (receptor-ligand interaction) is working correctly.
+
+### What was done
+1. Implemented `grid_soft_delta` parameter in `src/grid/` (5 files):
+   - `grid.h`: `float soft_delta` field in GRID struct
+   - `parm_grid.c`: reads `grid_soft_delta` parameter (default 0.0)
+   - `score_grid.c`: `make_grids()` uses `A / sqrt(r²+δ)^rep_exp` when δ>0
+   - `score_grid.h`: updated prototype
+   - `grid.c`: passes `grid.soft_delta` to `make_grids()`
+2. Compiled grid binary via `make utils`
+3. Generated δ=0 and δ=1 grids for 4 test systems (1A28, 5P21, 4PHV, 1Y93) using distinct file prefixes (no clobbering)
+4. Ran singlepoint scoring with the same dock6 binary to compare
+
+### Backward compatibility (δ=0 vs original)
+All 4 systems showed float-level drift (~1e-5) from compiler optimization, NOT from the code change:
+- 1A28: −75.289146 → −75.289139 (Δ = +7e-6)
+- 5P21: −190.881500 → −190.881485 (Δ = +1.5e-5)
+- 4PHV: −124.377914 → −124.377892 (Δ = +2.2e-5)
+- 1Y93: −28.419003 → −28.419010 (Δ = -7e-6)
+
+### δ=1.0 results (disaster)
+
+| System | Grid_Score (δ=0) | Grid_Score (δ=1) | Grid_vdw_energy | Internal_rep |
+|--------|-----------------|-----------------|-----------------|-------------|
+| 1A28   | −75.29         | **−414,212**    | −414,179        | 21.3        |
+| 5P21   | −190.88        | **−3,638,153**  | −3,637,111      | 6.9         |
+| 4PHV   | −124.38        | **−2,475,326**  | −2,475,406      | 27.3        |
+| 1Y93   | −28.42         | **−1,457,616**  | −1,457,474      | 0.01        |
+
+Scores are 5,500–51,000× more negative than standard — completely useless.
+
+### Root cause
+Binary `.nrg` format = header(4 ints) + bvdw[N] + avdw[N] + es[N].
+- **avdw (repulsive)**: ALL points differ between δ=0 and δ=1. Matching ratio is exactly `(1/sqrt(0.3²+1))^9 / (1/0.3)^9 ≈ 1.3e-5` at DISTANCE_MIN=0.3.
+- **bvdw (attractive)**: 0 differences — the attractive term is NOT affected by soft-core ✓
+- **es**: 0 differences ✓
+
+Max avdw: 18,393,470 (δ=0) → 246.78 (δ=1) — repulsive wall effectively eliminated.
+
+### Conclusion
+- The soft-core grid implementation IS working correctly.
+- δ=1.0 eliminates the repulsive wall almost entirely, making scores meaningless.
+- A much smaller δ (e.g., 0.01–0.1) is needed to modestly soften repulsion while preserving score utility.
+- For context: the internal-energy soft-core from earlier used δ=0.5–3.0 but only affects the 20-40 ligand intramolecular terms, not the million+ grid points.
+- ✓ Created project skill `verify-grid-backward-compat` for future grid code changes.
+
 ---
 
 ## 2026-06-15 — Phase 1: Design, Class Skeleton & Build Integration

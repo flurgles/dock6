@@ -15,6 +15,7 @@ void make_grids
   SCORE_CHEMICAL *,
   SCORE_ENERGY *,
   LABEL *,
-  MOLECULE *
+  MOLECULE *,
+  float
 );
 

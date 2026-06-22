@@ -1,7 +1,31 @@
 {
-  "$schema": "https://unpkg.com/@aliou/pi-guardrails@0.14.0/schema.json",
+  "$schema": "https://unpkg.com/@aliou/pi-guardrails@0.14.1/schema.json",
   "pathAccess": {
-    "allowedPaths": []
+    "allowedPaths": [
+      {
+        "kind": "directory",
+        "path": "~/dock6/DT100"
+      },
+      {
+        "kind": "directory",
+        "path": "/tmp"
+      },
+      {
+        "kind": "directory",
+        "path": "~/dock6"
+      },
+      {
+        "kind": "directory",
+        "path": "~/.pi/agent/memory"
+      },
+      {
+        "kind": "directory",
+        "path": "~/.pi/agent"
+      }
+    ]
   },
-  "version": "0.13.0-20260619"
+  "version": "0.13.0-20260619",
+  "features": {
+    "pathAccess": true
+  }
 }

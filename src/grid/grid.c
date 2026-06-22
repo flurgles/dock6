@@ -273,7 +273,8 @@ int main (int argc, char *argv[])
       &score_chemical,
       &score_energy,
       &label,
-      &receptor
+      &receptor,
+      grid.soft_delta
     );
 
 /*

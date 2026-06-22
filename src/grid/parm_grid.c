@@ -221,6 +221,14 @@ int get_parameters
     score_bump->flag
   );
 
+  get_parameter
+  (
+    (void *) &grid->soft_delta,
+    &parm, Real, "grid_soft_delta",
+    "0.0",
+    score_grid->flag
+  );
+
 
   fprintf (global.outfile, 
     "\n____________________File_Input____________________\n");
