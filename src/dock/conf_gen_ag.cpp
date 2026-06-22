@@ -1396,6 +1396,111 @@ AG_Conformer_Search::segment_torsion_drive(CONFORMER & conf, int current_bond, v
     //if (verbose) cout << num_torsions << " torsions sampled for bond_num=" << bond_list[bond].bond_num 
     //    << " Conf_#=" << conf.conformer_num << " Score=" << conf.score << endl;
 
+    // ------------------------------------------------------------------
+    // OPTIMIZATION: pre-compute the activation pattern once, apply per torsion.
+    //
+    // WHAT activate_layer_segment() DOES (formerly called once per torsion):
+    //   1. reset_active_lists(): zeros ALL atom_active_flags and
+    //      bond_active_flags.  O(N) writes.
+    //   2. Re-enables flags for all complete layers before layer_num:
+    //      for each layer 0..layer_num-1, for each segment, activate its
+    //      atoms and bonds.  O(N) total across all layers.
+    //   3. Re-enables flags for the current layer up to current_bond:
+    //      for segments 0..current_bond, activate atoms and bonds.  O(S)
+    //      where S << N.
+    //   4. Counts active atoms/bonds by scanning entire arrays.  O(N).
+    //   Total per torsion: ~3N operations.
+    //
+    // WHY THE PATTERN IS CONSTANT:
+    //   activate_layer_segment(mol, layer_num, curr_seg) depends only on
+    //   layer_num and curr_seg — NOT on coordinates, torsion angles, or
+    //   any per-conformer state.  In this function, layer_num =
+    //   conf.layer_num and current_bond are set BEFORE the torsion loop
+    //   and never change.  The only thing that varies per torsion is the
+    //   angle (via set_torsion, which modifies x/y/z only).  Therefore
+    //   the activation pattern is identical for every torsion angle.
+    //
+    // WHAT THIS OPTIMIZATION DOES:
+    //   Before the torsion loop, compute the pattern into temporary arrays
+    //   (pattern_atom_flags, pattern_bond_flags) with one pass of the
+    //   activate logic — same 3N work done once.  Inside the loop, apply
+    //   via std::copy (N writes) instead of calling activate_layer_segment
+    //   (3N writes).  This makes the loop body cleaner: set_torsion for
+    //   coordinates, then a simple memcpy for flags — no hidden O(N) work.
+    //
+    // WHY THIS IS SAFE:
+    //   1. std::copy completely overwrites atom_active_flags and
+    //      bond_active_flags — no stale parent flags can leak through.
+    //   2. The count (num_active_atoms, num_active_bonds) is assigned
+    //      directly from pre-computed values, not accumulated, so it is
+    //      always correct regardless of the parent's state.
+    //   3. set_torsion() only modifies x/y/z coordinates using the
+    //      atom_child_list — it does not touch active_flags.
+    //   4. copy_molecule() (called at loop start) copies the parent's
+    //      flags, but std::copy immediately overwrites them — the copy
+    //      is wasted work but harmless (already optimized separately in
+    //      the inplace copy_molecule change).
+    //   5. The only other caller of activate_layer_segment (line 593) is
+    //      in the anchor setup loop, not in this function, so it is
+    //      unaffected.
+    //
+    // CODE CLEANLINESS:
+    //   The torsion loop body now reads linearly: copy → set torsion →
+    //   apply pre-computed flags.  The old call to activate_layer_segment
+    //   hid O(N) reset + rebuild + count work inside what looks like a
+    //   simple flag assignment.  Making the pattern computation explicit
+    //   and separate from the application makes the algorithm clearer.
+    // ------------------------------------------------------------------
+
+    // Allocate temporary arrays for the pre-computed activation pattern.
+    // We use the parent molecule's dimensions (conf.structure) which are
+    // the same for all children in this loop.
+    const int natoms = conf.structure.num_atoms;
+    const int nbonds = conf.structure.num_bonds;
+    bool *pattern_atom_flags = new bool[natoms];
+    bool *pattern_bond_flags = new bool[nbonds];
+    int pattern_num_active_atoms = 0;
+    int pattern_num_active_bonds = 0;
+
+    // Step 1: Zero all flags (replicates reset_active_lists [L1610-1625])
+    for (int idx = 0; idx < natoms; idx++)
+        pattern_atom_flags[idx] = false;
+    for (int idx = 0; idx < nbonds; idx++)
+        pattern_bond_flags[idx] = false;
+
+    // Step 2: Activate all complete layers before the current one.
+    // Replicates activate_layer_segment [L1567-1583]: for each layer
+    // 0..layer_num-1, for each segment in that layer, activate its atoms
+    // and bonds.
+    for (int li = 0; li < conf.layer_num; li++) {
+        for (size_t lj = 0; lj < layers[li].segments.size(); lj++) {
+            int seg = layers[li].segments[lj];
+            for (size_t lk = 0; lk < layer_segments[seg].atoms.size(); lk++)
+                pattern_atom_flags[layer_segments[seg].atoms[lk]] = true;
+            for (size_t lk = 0; lk < layer_segments[seg].bonds.size(); lk++)
+                pattern_bond_flags[layer_segments[seg].bonds[lk]] = true;
+        }
+    }
+
+    // Step 3: Activate current layer up to current_bond (inclusive).
+    // Replicates activate_layer_segment [L1586-1597]: for segments
+    // 0..current_bond in layer layer_num, activate atoms and bonds.
+    for (int li = 0; li <= current_bond; li++) {
+        int seg_num = layers[conf.layer_num].segments[li];
+        for (size_t lj = 0; lj < layer_segments[seg_num].atoms.size(); lj++)
+            pattern_atom_flags[layer_segments[seg_num].atoms[lj]] = true;
+        for (size_t lj = 0; lj < layer_segments[seg_num].bonds.size(); lj++)
+            pattern_bond_flags[layer_segments[seg_num].bonds[lj]] = true;
+    }
+
+    // Step 4: Count active atoms/bonds.
+    // Replicates activate_layer_segment [L1600-1607]: scan all flags and
+    // count those set to true.
+    for (int idx = 0; idx < natoms; idx++)
+        if (pattern_atom_flags[idx]) pattern_num_active_atoms++;
+    for (int idx = 0; idx < nbonds; idx++)
+        if (pattern_bond_flags[idx]) pattern_num_active_bonds++;
+
     for (int i = 0; i < num_torsions; i++) {
 
         copy_molecule(new_conf.structure, conf.structure);
@@ -1431,7 +1536,18 @@ AG_Conformer_Search::segment_torsion_drive(CONFORMER & conf, int current_bond, v
             if (layer_segments[layers[new_conf.layer_num].segments[current_bond]].origin_segment != bond_list[bond].seg2)       // -1
                 cout << "Layer growth error!" << endl;
 
-        activate_layer_segment(new_conf.structure, new_conf.layer_num, current_bond);   // -1
+        // Apply pre-computed activation pattern via std::copy.
+        // This replaces the call to activate_layer_segment() which would
+        // reset O(N) + rebuild O(N) + count O(N) = 3N operations per
+        // torsion.  std::copy does 2N writes (atom + bond flags) plus 2
+        // integer assignments (counts).  The pattern was computed once
+        // before the torsion loop and is identical for all angles.
+        std::copy(pattern_atom_flags, pattern_atom_flags + natoms,
+                  new_conf.structure.atom_active_flags);
+        std::copy(pattern_bond_flags, pattern_bond_flags + nbonds,
+                  new_conf.structure.bond_active_flags);
+        new_conf.structure.num_active_atoms = pattern_num_active_atoms;
+        new_conf.structure.num_active_bonds = pattern_num_active_bonds;
 
         // Write_Mol2(new_conf.structure,
         // cout);////////////////////////////////////////////////////////////////
@@ -1455,6 +1571,10 @@ AG_Conformer_Search::segment_torsion_drive(CONFORMER & conf, int current_bond, v
               count_conf_num++; //trent balius 2008-12-03
       }
     }
+
+    // Free temporary pattern arrays allocated before the torsion loop.
+    delete[] pattern_atom_flags;
+    delete[] pattern_bond_flags;
 
 }
 
