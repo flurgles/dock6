@@ -3,23 +3,30 @@
 /*                                                                    */
 
 /*
-Metal GPU backend for grid generation.
+Metal GPU backend for grid generation — Tiled Gather Kernel.
 
 Implements the GPU abstraction API defined in score_grid_gpu.h using
-Apple Metal on macOS (Apple Silicon).  The Metal compute kernel is
-embedded as a C string and compiled at runtime via newLibraryWithSource:
-to avoid adding a .metal compilation step to the Makefile.
+Apple Metal on macOS (Apple Silicon).
 
-Architecture:
-    one GPU thread per receptor atom (scatter pattern)
-    each thread iterates its bounding box of grid points
-    accumulates contributions via atomic_fetch_add_explicit
+Kernel strategy: Tiled gather — 1 GPU thread per grid point, organized
+into 8x8x8 tiles processed by threadgroups.  Atom data is loaded into
+shared memory in batches, so all 512 threads in a threadgroup reuse the
+same atom data without redundant global-memory reads.  Each thread
+accumulates contributions to its unique grid point in registers (no
+atomic operations needed), then writes the result coalesced.
+
+This replaces the earlier scatter+atomic approach.  Key benefits:
+  - Zero atomic operations (each thread owns its grid point)
+  - Atom data cached in threadgroup shared memory (12 KB per batch)
+  - High thread occupancy for any GPU runtime (span_x * span_y * span_z)
+  - Scales gracefully with box size and grid spacing
 */
 
 #import <Metal/Metal.h>
 #import <Foundation/Foundation.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 /* Full struct definitions — needed because we access struct members like
    energy->repulsive_exponent, receptor->coord[i], label->vdw.total, etc.
    The public header score_grid_gpu.h only uses forward declarations to avoid
@@ -32,13 +39,28 @@ Architecture:
 #include "score_grid_gpu.h"
 #include "score_grid_gpu_metal.h"
 
+/* Tile dimensions — powers of two for efficient memory coalescing */
+#define TILE_W  8
+#define TILE_H  8
+#define TILE_D  8
+#define TILE_VOL (TILE_W * TILE_H * TILE_D)  /* 512 threads per tile */
+
+/* Batch size for loading atoms into threadgroup shared memory.
+   Must match TILE_VOL so each thread loads one atom per batch. */
+/* Atom batch size matches tile volume for 1:1 thread-to-atom loading */
+
+
 /* ================================================================== */
-/*  Embedded Metal Shader Source                                      */
+/*  Embedded Metal Shader Source — Tiled Gather Kernel                 */
 /* ================================================================== */
 
 static const char* shader_src = \
 "#include <metal_stdlib>\n"
 "using namespace metal;\n"
+"\n"
+"constant int TILE_W = 8;\n"
+"constant int TILE_H = 8;\n"
+"constant int TILE_D = 8;\n"
 "\n"
 "struct GridParams {\n"
 "    float origin_x, origin_y, origin_z;\n"
@@ -68,108 +90,119 @@ static const char* shader_src = \
 "}\n"
 "\n"
 "kernel void grid_energy_kernel(\n"
-"    device const float*    atom_pos    [[buffer(0)]],\n"
-"    device const int*      vdw_id      [[buffer(1)]],\n"
-"    device const float*    charge      [[buffer(2)]],\n"
-"    device const float*    vdwA        [[buffer(3)]],\n"
-"    device const float*    vdwB        [[buffer(4)]],\n"
-"    device float*          avdw        [[buffer(5)]],\n"
-"    device float*          bvdw        [[buffer(6)]],\n"
-"    device float*          es          [[buffer(7)]],\n"
-"    constant GridParams&   p           [[buffer(8)]],\n"
-"    uint                   atom_id     [[thread_position_in_grid]])\n"
+"    device const float*    atom_pos     [[buffer(0)]],\n"
+"    device const float*    atom_vdwA    [[buffer(1)]],\n"
+"    device const float*    atom_vdwB    [[buffer(2)]],\n"
+"    device const float*    atom_charge  [[buffer(3)]],\n"
+"    device float*          avdw         [[buffer(4)]],\n"
+"    device float*          bvdw         [[buffer(5)]],\n"
+"    device float*          es           [[buffer(6)]],\n"
+"    constant GridParams&   p            [[buffer(7)]],\n"
+"    uint3                  gid          [[thread_position_in_grid]],\n"
+"    uint3                  tpt          [[thread_position_in_threadgroup]])\n"
 "{\n"
-"    int ai = 3 * atom_id;\n"
-"    float3 pos = float3(atom_pos[ai], atom_pos[ai+1], atom_pos[ai+2]);\n"
-"    int vid = vdw_id[atom_id];\n"
+"    /* Clamp to grid bounds (handles edge tiles) */\n"
+"    if (gid.x >= (uint)p.span_x ||\n"
+"        gid.y >= (uint)p.span_y ||\n"
+"        gid.z >= (uint)p.span_z) return;\n"
 "\n"
-"    /* Skip zero-well-depth atoms */\n"
-"    if (vdwA[vid] == 0.0f) return;\n"
+"    /* Linear index for this grid point */\n"
+"    int idx = p.span_x * p.span_y * (int)gid.z\n"
+"            + p.span_x * (int)gid.y\n"
+"            + (int)gid.x;\n"
 "\n"
-"    /* Grid-coordinate of this atom */\n"
-"    float3 ocrd = float3(pos.x - p.origin_x, pos.y - p.origin_y, pos.z - p.origin_z);\n"
-"    int3 g = int3(round(ocrd / p.spacing));\n"
+"    /* Position of this grid point in Angstroms */\n"
+"    float3 gpos;\n"
+"    gpos.x = (float)gid.x * p.spacing + p.origin_x;\n"
+"    gpos.y = (float)gid.y * p.spacing + p.origin_y;\n"
+"    gpos.z = (float)gid.z * p.spacing + p.origin_z;\n"
 "\n"
-"    int grid_cutoff = (int)(p.distance / p.spacing + 1.0f);\n"
+"    /* Per-thread accumulators (registers — no atomics needed) */\n"
+"    float my_avdw = 0.0;\n"
+"    float my_bvdw = 0.0;\n"
+"    float my_es   = 0.0;\n"
 "\n"
-"    /* Quick reject if atom is far outside grid bounds */\n"
-"    if (g.x < -grid_cutoff || g.x >= p.span_x + grid_cutoff) return;\n"
-"    if (g.y < -grid_cutoff || g.y >= p.span_y + grid_cutoff) return;\n"
-"    if (g.z < -grid_cutoff || g.z >= p.span_z + grid_cutoff) return;\n"
+"    /* Linear thread ID within threadgroup for cooperative loading */\n"
+"    int tid = (int)(tpt.x + TILE_W * (tpt.y + TILE_H * tpt.z));\n"
 "\n"
-"    /* Bounding box of grid points within cutoff of this atom */\n"
-"    int i0 = max(0, g.x - grid_cutoff);\n"
-"    int i1 = min(p.span_x, g.x + grid_cutoff + 1);\n"
-"    int j0 = max(0, g.y - grid_cutoff);\n"
-"    int j1 = min(p.span_y, g.y + grid_cutoff + 1);\n"
-"    int k0 = max(0, g.z - grid_cutoff);\n"
-"    int k1 = min(p.span_z, g.z + grid_cutoff + 1);\n"
+"    /* Shared memory buffers for one batch of atom data */\n"
+"    threadgroup float3  sh_pos[TILE_W * TILE_H * TILE_D];\n"
+"    threadgroup float   sh_vdwA[TILE_W * TILE_H * TILE_D];\n"
+"    threadgroup float   sh_vdwB[TILE_W * TILE_H * TILE_D];\n"
+"    threadgroup float   sh_charge[TILE_W * TILE_H * TILE_D];\n"
 "\n"
-"    float aA = vdwA[vid];\n"
-"    float aB = vdwB[vid];\n"
-"    float q = charge[atom_id];\n"
-"    int rep_exp = (int)(p.rep_exponent + 0.5f);\n"
-"    int att_exp = (int)(p.att_exponent + 0.5f);\n"
+"    /* Number of atoms to process */\n"
+"    /* NOTE: In a real kernel we'd pass num_atoms as a parameter.  We use\n"
+"       a large sentinel (max_uint32) and the batch loop runs until the host\n"
+"       signals completion.  For now we iterate over ALL atoms per tile.\n"
+"       Future: pass p.num_atoms and only load that many batches. */\n"
+"    /* --- Process atoms in batches --- */\n"
+"    int num_atoms = p.grid_size;  /* reuse field as atom count for now */\n"
+"    for (int batch_start = 0; batch_start < num_atoms; batch_start += TILE_W * TILE_H * TILE_D) {\n"
 "\n"
-"    for (int i = i0; i < i1; i++) {\n"
-"        float gx = float(i) * p.spacing + p.origin_x;\n"
-"        float dx = gx - pos.x;\n"
-"        float dx2 = dx * dx;\n"
+"        /* Cooperative load: each thread loads one atom into shared memory */\n"
+"        int atom_id = batch_start + tid;\n"
+"        if (atom_id < num_atoms) {\n"
+"            int ai3 = 3 * atom_id;\n"
+"            sh_pos[tid].x = atom_pos[ai3];\n"
+"            sh_pos[tid].y = atom_pos[ai3 + 1];\n"
+"            sh_pos[tid].z = atom_pos[ai3 + 2];\n"
+"            sh_vdwA[tid]    = atom_vdwA[atom_id];\n"
+"            sh_vdwB[tid]    = atom_vdwB[atom_id];\n"
+"            sh_charge[tid]  = atom_charge[atom_id];\n"
+"        }\n"
+"        threadgroup_barrier(mem_flags::mem_threadgroup);\n"
 "\n"
-"        for (int j = j0; j < j1; j++) {\n"
-"            float gy = float(j) * p.spacing + p.origin_y;\n"
-"            float dy = gy - pos.y;\n"
-"            float dy2 = dy * dy;\n"
-"            float dxy2 = dx2 + dy2;\n"
+"        int batch_end = min(TILE_W * TILE_H * TILE_D, num_atoms - batch_start);\n"
+"        for (int a = 0; a < batch_end; a++) {\n"
+"            float3 apos = sh_pos[a];\n"
+"            float dx = gpos.x - apos.x;\n"
+"            float dy = gpos.y - apos.y;\n"
+"            float dz = gpos.z - apos.z;\n"
+"            float dist_sq = dx * dx + dy * dy + dz * dz;\n"
 "\n"
-"            for (int k = k0; k < k1; k++) {\n"
-"                float gz = float(k) * p.spacing + p.origin_z;\n"
-"                float dz = gz - pos.z;\n"
-"                float dist_sq = dxy2 + dz * dz;\n"
+"            if (dist_sq < p.dist_sq_min)\n"
+"                dist_sq = p.dist_sq_min;\n"
 "\n"
-"                if (dist_sq < p.dist_sq_min)\n"
-"                    dist_sq = p.dist_sq_min;\n"
+"            float dist = sqrt(dist_sq);\n"
 "\n"
-"                float dist = sqrt(dist_sq);\n"
+"            if (dist <= p.distance) {\n"
+"                float dist_inv = 1.0 / dist;\n"
 "\n"
-"                if (dist <= p.distance) {\n"
-"                    int idx = p.span_x * p.span_y * k + p.span_x * j + i;\n"
-"                    float dist_inv = 1.0f / dist;\n"
-"\n"
-"                    /* Soft-core repulsive distance */\n"
-"                    float rep_dist_inv;\n"
-"                    if (p.soft_delta > 0.0f) {\n"
-"                        float sd = sqrt(dist_sq + p.soft_delta);\n"
-"                        rep_dist_inv = 1.0f / sd;\n"
-"                    } else {\n"
-"                        rep_dist_inv = dist_inv;\n"
-"                    }\n"
-"\n"
-"                    float rep_power = int_pow(rep_dist_inv, rep_exp);\n"
-"                    float att_power = int_pow(dist_inv, att_exp);\n"
-"\n"
-"                    atomic_fetch_add_explicit(\n"
-"                        (device atomic_float*)&avdw[idx],\n"
-"                        aA * rep_power, memory_order_relaxed);\n"
-"\n"
-"                    atomic_fetch_add_explicit(\n"
-"                        (device atomic_float*)&bvdw[idx],\n"
-"                        aB * att_power, memory_order_relaxed);\n"
-"\n"
-"                    /* Electrostatic */\n"
-"                    float es_val;\n"
-"                    if (p.distance_dielectric)\n"
-"                        es_val = p.dielectric_factor * q * (dist_inv * dist_inv);\n"
-"                    else\n"
-"                        es_val = p.dielectric_factor * q * dist_inv;\n"
-"\n"
-"                    atomic_fetch_add_explicit(\n"
-"                        (device atomic_float*)&es[idx],\n"
-"                        es_val, memory_order_relaxed);\n"
+"                /* Soft-core repulsive distance */\n"
+"                float rep_dist_inv;\n"
+"                if (p.soft_delta > 0.0) {\n"
+"                    float sd = sqrt(dist_sq + p.soft_delta);\n"
+"                    rep_dist_inv = 1.0 / sd;\n"
+"                } else {\n"
+"                    rep_dist_inv = dist_inv;\n"
 "                }\n"
+"\n"
+"                int rep_exp = (int)(p.rep_exponent + 0.5);\n"
+"                int att_exp = (int)(p.att_exponent + 0.5);\n"
+"                float rep_power = int_pow(rep_dist_inv, rep_exp);\n"
+"                float att_power = int_pow(dist_inv, att_exp);\n"
+"\n"
+"                my_avdw += sh_vdwA[a] * rep_power;\n"
+"                my_bvdw += sh_vdwB[a] * att_power;\n"
+"\n"
+"                /* Electrostatic */\n"
+"                float es_val;\n"
+"                if (p.distance_dielectric)\n"
+"                    es_val = p.dielectric_factor * sh_charge[a]\n"
+"                           * (dist_inv * dist_inv);\n"
+"                else\n"
+"                    es_val = p.dielectric_factor * sh_charge[a] * dist_inv;\n"
+"                my_es += es_val;\n"
 "            }\n"
 "        }\n"
+"        threadgroup_barrier(mem_flags::mem_threadgroup);\n"
 "    }\n"
+"\n"
+"    /* Write results — no atomics needed, each thread owns a unique index */\n"
+"    avdw[idx] = my_avdw;\n"
+"    bvdw[idx] = my_bvdw;\n"
+"    es[idx]   = my_es;\n"
 "}\n";
 
 
@@ -182,20 +215,18 @@ static id<MTLCommandQueue>         g_cmdq      = nil;
 static id<MTLComputePipelineState> g_pso       = nil;
 
 /* GPU buffers (shared memory — CPU and GPU see the same data) */
-static id<MTLBuffer> g_buf_atom_pos = nil;
-static id<MTLBuffer> g_buf_vdw_id   = nil;
-static id<MTLBuffer> g_buf_charge   = nil;
-static id<MTLBuffer> g_buf_vdwA     = nil;
-static id<MTLBuffer> g_buf_vdwB     = nil;
-static id<MTLBuffer> g_buf_avdw     = nil;
-static id<MTLBuffer> g_buf_bvdw     = nil;
-static id<MTLBuffer> g_buf_es       = nil;
+static id<MTLBuffer> g_buf_atom_pos    = nil;
+static id<MTLBuffer> g_buf_atom_vdwA   = nil;
+static id<MTLBuffer> g_buf_atom_vdwB   = nil;
+static id<MTLBuffer> g_buf_atom_charge = nil;
+static id<MTLBuffer> g_buf_avdw        = nil;
+static id<MTLBuffer> g_buf_bvdw        = nil;
+static id<MTLBuffer> g_buf_es          = nil;
 
 /* Cached parameters */
 static GridParams g_params;           /* filled during init, used by compute */
 static int  g_num_atoms   = 0;
 static int  g_grid_size   = 0;
-static int  g_vdw_total   = 0;
 static int  g_initialized = 0;        /* device + pipeline created */
 static int  g_uploaded    = 0;        /* buffers allocated + populated */
 
@@ -272,7 +303,10 @@ int gpu_grid_init(SCORE_ENERGY *energy, MOLECULE *receptor, SCORE_GRID *grid,
             return 0;
         }
 
-        /* Cache grid parameters for the compute kernel */
+        /* Cache grid parameters for the compute kernel.
+           We also reuse the grid_size field as a num_atoms transport for the
+           shader, since the grid params are the only constant buffer sent to
+           the kernel.  This avoids adding a separate num_atoms parameter. */
         g_params.origin_x          = grid->origin[0];
         g_params.origin_y          = grid->origin[1];
         g_params.origin_z          = grid->origin[2];
@@ -290,15 +324,13 @@ int gpu_grid_init(SCORE_ENERGY *energy, MOLECULE *receptor, SCORE_GRID *grid,
         g_params.grid_size         = grid->span[0] * grid->span[1] * grid->span[2];
 
         g_grid_size = g_params.grid_size;
-        g_vdw_total = label->vdw.total;
 
         g_initialized = 1;
         g_uploaded    = 0;
 
-        NSLog(@"Metal GPU ready: %d atom slots, grid %dx%dx%d = %d pts",
-              GPU_MAX_ATOMS,
+        NSLog(@"Metal GPU ready: grid %dx%dx%d = %d pts, tile %dx%dx%d",
               g_params.span_x, g_params.span_y, g_params.span_z,
-              g_grid_size);
+              g_grid_size, TILE_W, TILE_H, TILE_D);
         return 1;
     }
 }
@@ -314,9 +346,8 @@ void gpu_grid_upload(SCORE_ENERGY *energy, MOLECULE *receptor, SCORE_GRID *grid,
 
     @autoreleasepool {
         g_num_atoms = receptor->total.atoms;
-        if (g_num_atoms <= 0 || g_num_atoms > GPU_MAX_ATOMS) {
-            NSLog(@"Metal: atom count %d out of range [1,%d] — CPU fallback",
-                  g_num_atoms, GPU_MAX_ATOMS);
+        if (g_num_atoms <= 0) {
+            NSLog(@"Metal: atom count %d invalid — CPU fallback", g_num_atoms);
             gpu_grid_cleanup();
             return;
         }
@@ -334,18 +365,17 @@ void gpu_grid_upload(SCORE_ENERGY *energy, MOLECULE *receptor, SCORE_GRID *grid,
         g_params.grid_size = grid->span[0] * grid->span[1] * grid->span[2];
         g_grid_size = g_params.grid_size;
 
-        /* Allocate shared-memory buffers */
-        g_buf_atom_pos = alloc_buffer(sizeof(float) * 3 * GPU_MAX_ATOMS, "atom_pos");
-        g_buf_vdw_id   = alloc_buffer(sizeof(int)   * GPU_MAX_ATOMS,    "vdw_id");
-        g_buf_charge   = alloc_buffer(sizeof(float) * GPU_MAX_ATOMS,    "charge");
-        g_buf_vdwA     = alloc_buffer(sizeof(float) * g_vdw_total,      "vdwA");
-        g_buf_vdwB     = alloc_buffer(sizeof(float) * g_vdw_total,      "vdwB");
-        g_buf_avdw     = alloc_buffer(sizeof(float) * g_grid_size,      "avdw");
-        g_buf_bvdw     = alloc_buffer(sizeof(float) * g_grid_size,      "bvdw");
-        g_buf_es       = alloc_buffer(sizeof(float) * g_grid_size,      "es");
+        /* Allocate shared-memory buffers — exact sizes, no sentinel */
+        g_buf_atom_pos    = alloc_buffer(sizeof(float) * 3 * g_num_atoms, "atom_pos");
+        g_buf_atom_vdwA   = alloc_buffer(sizeof(float) * g_num_atoms,    "atom_vdwA");
+        g_buf_atom_vdwB   = alloc_buffer(sizeof(float) * g_num_atoms,    "atom_vdwB");
+        g_buf_atom_charge = alloc_buffer(sizeof(float) * g_num_atoms,    "atom_charge");
+        g_buf_avdw        = alloc_buffer(sizeof(float) * g_grid_size,    "avdw");
+        g_buf_bvdw        = alloc_buffer(sizeof(float) * g_grid_size,    "bvdw");
+        g_buf_es          = alloc_buffer(sizeof(float) * g_grid_size,    "es");
 
-        if (!g_buf_atom_pos || !g_buf_vdw_id || !g_buf_charge ||
-            !g_buf_vdwA   || !g_buf_vdwB   ||
+        if (!g_buf_atom_pos || !g_buf_atom_vdwA || !g_buf_atom_vdwB ||
+            !g_buf_atom_charge ||
             !g_buf_avdw   || !g_buf_bvdw   || !g_buf_es) {
             NSLog(@"Metal: buffer allocation failed — CPU fallback");
             gpu_grid_cleanup();
@@ -354,7 +384,7 @@ void gpu_grid_upload(SCORE_ENERGY *energy, MOLECULE *receptor, SCORE_GRID *grid,
 
         /* --- Populate buffers --- */
 
-        /* Atom positions: float3 = 3 consecutive floats per atom */
+        /* Atom positions: 3 consecutive floats per atom */
         float* pos_ptr = (float*)[g_buf_atom_pos contents];
         for (int i = 0; i < g_num_atoms; i++) {
             pos_ptr[i*3 + 0] = receptor->coord[i][0];
@@ -362,17 +392,16 @@ void gpu_grid_upload(SCORE_ENERGY *energy, MOLECULE *receptor, SCORE_GRID *grid,
             pos_ptr[i*3 + 2] = receptor->coord[i][2];
         }
 
-        /* VDW IDs and charges */
-        int*   vdw_ptr = (int*)[g_buf_vdw_id contents];
-        float* chg_ptr = (float*)[g_buf_charge contents];
+        /* Pre-resolve VDW A/B per atom (remove type-lookup indirection) */
+        float* vdwA_ptr = (float*)[g_buf_atom_vdwA contents];
+        float* vdwB_ptr = (float*)[g_buf_atom_vdwB contents];
+        float* chg_ptr  = (float*)[g_buf_atom_charge contents];
         for (int i = 0; i < g_num_atoms; i++) {
-            vdw_ptr[i] = receptor->atom[i].vdw_id;
-            chg_ptr[i] = receptor->atom[i].charge;
+            int vid = receptor->atom[i].vdw_id;
+            vdwA_ptr[i] = energy->vdwA[vid];
+            vdwB_ptr[i] = energy->vdwB[vid];
+            chg_ptr[i]  = receptor->atom[i].charge;
         }
-
-        /* VDW parameters */
-        memcpy([g_buf_vdwA contents], energy->vdwA, sizeof(float) * g_vdw_total);
-        memcpy([g_buf_vdwB contents], energy->vdwB, sizeof(float) * g_vdw_total);
 
         /* Zero output grids */
         memset([g_buf_avdw contents], 0, sizeof(float) * g_grid_size);
@@ -380,8 +409,9 @@ void gpu_grid_upload(SCORE_ENERGY *energy, MOLECULE *receptor, SCORE_GRID *grid,
         memset([g_buf_es   contents], 0, sizeof(float) * g_grid_size);
 
         g_uploaded = 1;
-        NSLog(@"Metal: uploaded %d atoms, %d vdw types, grid %d pts",
-              g_num_atoms, g_vdw_total, g_grid_size);
+        NSLog(@"Metal: uploaded %d atoms, grid %d pts (%dx%dx%d)",
+              g_num_atoms, g_grid_size,
+              g_params.span_x, g_params.span_y, g_params.span_z);
     }
 }
 
@@ -392,6 +422,11 @@ void gpu_grid_compute(float soft_delta)
 
     @autoreleasepool {
         g_params.soft_delta = soft_delta;
+        /* Reuse grid_size field to pass atom count to the shader.
+           This is safe because grid_size is only used to size global-memory
+           buffers, which are allocated in upload() before compute() runs.
+           The shader uses grid_size as num_atoms for the batch loop. */
+        g_params.grid_size = g_num_atoms;
 
         id<MTLCommandBuffer>  cmdbuf  = [g_cmdq commandBuffer];
         cmdbuf.label = @"GridCompute";
@@ -402,38 +437,39 @@ void gpu_grid_compute(float soft_delta)
         [enc setComputePipelineState:g_pso];
 
         /* Bind all buffers */
-        [enc setBuffer:g_buf_atom_pos offset:0 atIndex:0];
-        [enc setBuffer:g_buf_vdw_id   offset:0 atIndex:1];
-        [enc setBuffer:g_buf_charge   offset:0 atIndex:2];
-        [enc setBuffer:g_buf_vdwA     offset:0 atIndex:3];
-        [enc setBuffer:g_buf_vdwB     offset:0 atIndex:4];
-        [enc setBuffer:g_buf_avdw     offset:0 atIndex:5];
-        [enc setBuffer:g_buf_bvdw     offset:0 atIndex:6];
-        [enc setBuffer:g_buf_es       offset:0 atIndex:7];
+        [enc setBuffer:g_buf_atom_pos    offset:0 atIndex:0];
+        [enc setBuffer:g_buf_atom_vdwA   offset:0 atIndex:1];
+        [enc setBuffer:g_buf_atom_vdwB   offset:0 atIndex:2];
+        [enc setBuffer:g_buf_atom_charge offset:0 atIndex:3];
+        [enc setBuffer:g_buf_avdw        offset:0 atIndex:4];
+        [enc setBuffer:g_buf_bvdw        offset:0 atIndex:5];
+        [enc setBuffer:g_buf_es          offset:0 atIndex:6];
 
         /* Write GridParams into a temporary buffer for the constant argument */
         id<MTLBuffer> params_buf = [g_device newBufferWithBytes:&g_params
                                                           length:sizeof(GridParams)
                                                          options:MTLResourceStorageModeShared];
-        [enc setBuffer:params_buf offset:0 atIndex:8];
+        [enc setBuffer:params_buf offset:0 atIndex:7];
 
-        /* Dispatch one thread per receptor atom */
-        MTLSize threadsPerGrid  = MTLSizeMake(g_num_atoms, 1, 1);
-        MTLSize maxThreadgroup  = MTLSizeMake([g_pso maxTotalThreadsPerThreadgroup], 1, 1);
-        /* Use a reasonable threadgroup size (Apple Silicon sweet spot) */
-        NSUInteger tg_size = 256;
-        if (tg_size > maxThreadgroup.width) tg_size = maxThreadgroup.width;
-        MTLSize threadgroupSize = MTLSizeMake(tg_size, 1, 1);
+        /* Dispatch one thread per grid point, organized in 8x8x8 tiles */
+        MTLSize threadsPerGrid  = MTLSizeMake(g_params.span_x,
+                                              g_params.span_y,
+                                              g_params.span_z);
+        MTLSize threadgroupSize = MTLSizeMake(TILE_W, TILE_H, TILE_D);
 
-        [enc dispatchThreads:threadsPerGrid threadsPerThreadgroup:threadgroupSize];
+        [enc dispatchThreads:threadsPerGrid
+           threadsPerThreadgroup:threadgroupSize];
         [enc endEncoding];
 
         /* Commit and wait for completion */
         [cmdbuf commit];
         [cmdbuf waitUntilCompleted];
 
-        NSLog(@"Metal: GPU compute finished (%d atoms, %d grid pts)",
-              g_num_atoms, g_grid_size);
+        NSLog(@"Metal: GPU compute finished (%d atoms, %d grid pts, tiles %dx%dx%d)",
+              g_num_atoms, g_grid_size,
+              (g_params.span_x + TILE_W - 1) / TILE_W,
+              (g_params.span_y + TILE_H - 1) / TILE_H,
+              (g_params.span_z + TILE_D - 1) / TILE_D);
     }
 }
 
@@ -459,22 +495,20 @@ void gpu_grid_download(SCORE_ENERGY *energy, SCORE_GRID *grid,
 void gpu_grid_cleanup(void)
 {
     @autoreleasepool {
-        g_buf_atom_pos = nil;
-        g_buf_vdw_id   = nil;
-        g_buf_charge   = nil;
-        g_buf_vdwA     = nil;
-        g_buf_vdwB     = nil;
-        g_buf_avdw     = nil;
-        g_buf_bvdw     = nil;
-        g_buf_es       = nil;
-        g_pso          = nil;
-        g_cmdq         = nil;
-        g_device       = nil;
-        g_num_atoms    = 0;
-        g_grid_size    = 0;
-        g_vdw_total    = 0;
-        g_initialized  = 0;
-        g_uploaded     = 0;
+        g_buf_atom_pos    = nil;
+        g_buf_atom_vdwA   = nil;
+        g_buf_atom_vdwB   = nil;
+        g_buf_atom_charge = nil;
+        g_buf_avdw        = nil;
+        g_buf_bvdw        = nil;
+        g_buf_es          = nil;
+        g_pso             = nil;
+        g_cmdq            = nil;
+        g_device          = nil;
+        g_num_atoms       = 0;
+        g_grid_size       = 0;
+        g_initialized     = 0;
+        g_uploaded        = 0;
         memset(&g_params, 0, sizeof(g_params));
     }
 }
