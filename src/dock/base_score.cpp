@@ -27,6 +27,7 @@ Base_Score::Base_Score()
     ie_vdwA = NULL;
     ie_vdwB = NULL;
     ie_soft_delta = 0.0;
+    ie_vdw_cutoff_sq = 1e10f;  // large default = no effective cutoff
     nb_int.clear();
     rep_radius_scale = 1.0;
     // consider scaling the repulsive energy during ligand growth
@@ -79,6 +80,11 @@ Base_Score::compute_ligand_internal_energy(DOCKMol & mol)
                                    + ((mol.y[a1] - mol.y[a2])*(mol.y[a1] - mol.y[a2]))
                                    + ((mol.z[a1] - mol.z[a2])*(mol.z[a1] - mol.z[a2]));
 
+                        // Distance cutoff: pairs beyond ie_vdw_cutoff_sq contribute
+                        // negligible 1/r^12 repulsion and are skipped for speed.
+                        // Default 1e10 means no effective cutoff.
+                        if (distancesq < ie_vdw_cutoff_sq) {
+
                         if (ie_soft_delta > 0.0) {
                             // Soft-core: E = A / (r^2 + delta)^6
                             // No singularity at r=0, finite repulsive barrier
@@ -97,12 +103,70 @@ Base_Score::compute_ligand_internal_energy(DOCKMol & mol)
                         else
                             int_vdw_rep += (ie_vdwA[a1]*ie_vdwA[a2]) / pow(distancesq, float(ie_rep_exp/2.0));
 
+                        }  // end distance cutoff
                 }
         }
     }
     ligand_internal_energy = int_vdw_rep;
     mol.internal_energy = ligand_internal_energy;
     return ligand_internal_energy;
+}
+
+
+// +++++++++++++++++++++++++++++++++++++++++
+// Compute VDW repulsion for one non-bonded atom pair.
+// Extracted from the inner loop of compute_ligand_internal_energy so that
+// Minimizer can sum over a reduced subset when only some torsions change.
+float
+Base_Score::compute_pair_internal_energy(const DOCKMol& mol, int a1, int a2) const
+{
+    if (!mol.atom_active_flags[a1] || !mol.atom_active_flags[a2])
+        return 0.0f;
+
+    float distancesq = ((mol.x[a1] - mol.x[a2]) * (mol.x[a1] - mol.x[a2])
+                      + (mol.y[a1] - mol.y[a2]) * (mol.y[a1] - mol.y[a2])
+                      + (mol.z[a1] - mol.z[a2]) * (mol.z[a1] - mol.z[a2]));
+
+    // Distance cutoff: pairs beyond ie_vdw_cutoff_sq contribute negligible
+    // 1/r^12 repulsion and are skipped for speed.
+    if (distancesq >= ie_vdw_cutoff_sq)
+        return 0.0f;
+
+    if (ie_soft_delta > 0.0) {
+        // Soft-core: E = A / (r^2 + delta)^6
+        // No singularity at r=0, finite repulsive barrier
+        float denom = distancesq + ie_soft_delta;
+        float denom_cubed = denom * denom * denom;
+        return (ie_vdwA[a1] * ie_vdwA[a2]) / (denom_cubed * denom_cubed);
+    }
+    else if (ie_rep_exp == 12) {
+        float distance6 = distancesq * distancesq * distancesq;
+        return (ie_vdwA[a1] * ie_vdwA[a2]) / (distance6 * distance6);
+    }
+    else {
+        return (ie_vdwA[a1] * ie_vdwA[a2])
+               / pow(distancesq, (float)(ie_rep_exp / 2.0));
+    }
+}
+
+
+// +++++++++++++++++++++++++++++++++++++++++
+// Sum VDW repulsion energy over a specific subset of nb_int pairs.
+// The \a indices vector contains indices into the nb_int array.
+// The same pair may appear multiple times (caller is responsible for dedup).
+float
+Base_Score::compute_internal_energy_subset(const DOCKMol& mol,
+                                            const std::vector<int>& indices) const
+{
+    if (!use_internal_energy)
+        return 0.0f;
+
+    float total = 0.0f;
+    for (int idx : indices) {
+        total += compute_pair_internal_energy(mol, nb_int[idx].first,
+                                                  nb_int[idx].second);
+    }
+    return total;
 }
 
 /*
@@ -207,6 +271,13 @@ Base_Score::initialize_internal_energy(DOCKMol & mol)
 
    // neighbor list for internal energy
    nb_int.clear();  //clear list of non-bonded interactions
+
+   // Distance-squared cutoff: pairs farther apart than this contribute
+   // negligible 1/r^12 repulsion and are skipped in the inner loop.
+   // 25.0 ≈ 5.0 Å — captures all physically meaningful VDW repulsion.
+   // Set to 1e10 or larger to disable the cutoff entirely.
+   ie_vdw_cutoff_sq = 25.0f;
+
    int a1,a2;      // atom number counters
    INTPair temp;   // to push_back into array nb_int
 

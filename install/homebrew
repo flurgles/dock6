@@ -15,26 +15,26 @@
 # LINK_WITHOUT_FORTRAN_MAIN is the flag for linking without Fortran's main
 # LOAD is the command to invoke the linker
 
-CC=          gcc-11
-CFLAGS=      -O2 -Wl,-ld_classic
-CXX=         g++-11
-CXXFLAGS=    -O2 -std=c++11 -Wl,-ld_classic
+CC=          gcc-16
+CFLAGS=      -O3 -std=gnu17 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -flto -ffast-math
+CXX=         g++-16
+CXXFLAGS=    -O3 -std=c++11 -Wl,-ld_classic -D_DARWIN_C_SOURCE -march=native -flto -ffast-math
 DOCK_SUFFIX=
-FC=          gfortran-11
+FC=          gfortran-16
 FFLAGS=      -O2 -fno-automatic -fno-second-underscore -std=legacy
 LIBS=        -lm -lpthread -Wl,-ld_classic
 LINK_WITHOUT_FORTRAN_MAIN=
-LOAD=        g++-11
+LOAD=        g++-16
 
 # Macro definitions for NAB
 # AR is the library archiver
-# LEX is the lexical analyzer generator; the darwin and xopen defines are
-# workarounds for some macOS 12 header file issues; e.g.:
-# sff.c:1615:19: error: implicitly declaring library function 'strdup' with type 'char *(const char *)
-# see also https://github.com/gphoto/libgphoto2/issues/552
+# LEX is the lexical analyzer generator
 # OCFLAGS is the flags for the C compilers with high optimization
 # RANLIB is the library index generator
 AR=          ar rv
-LEX=         flex -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600
-OCFLAGS=     -O3 -D_ANSI_SOURCE
+LEX=         flex -D_DARWIN_C_SOURCE
+OCFLAGS=     -O3 -D_DARWIN_C_SOURCE -flto -ffast-math
 RANLIB=      ranlib
+
+# YACC for tleap parser generation
+YACC=        /opt/homebrew/opt/bison/bin/bison --yacc

@@ -43,6 +43,11 @@ class           Base_Score {
     int             ie_rep_exp;
     float           ie_diel;
     float           ie_soft_delta;
+    // Distance-squared cutoff for non-bonded pair evaluation.
+    // Pairs with distancesq > ie_vdw_cutoff_sq contribute negligible
+    // 1/r^12 repulsion and are skipped.  Default 1e10 ≈ no cutoff.
+    // Set to e.g. 25.0 (5 Å) during setup to prune far-apart pairs.
+    float           ie_vdw_cutoff_sq;
     float          *ie_vdwA;  //indexed by mol.num_atoms
     float          *ie_vdwB;  //indexed by mol.num_atoms
 
@@ -60,7 +65,13 @@ class           Base_Score {
     };
  
     void            initialize_internal_energy(DOCKMol & mol);
-    float           compute_ligand_internal_energy(DOCKMol & mol);     
+    float           compute_ligand_internal_energy(DOCKMol & mol);
+    // Compute VDW repulsion energy for a single non-bonded atom pair.
+    // Used by the incremental internal-energy optimization in Minimizer.
+    float           compute_pair_internal_energy(const DOCKMol& mol, int a1, int a2) const;
+    // Sum VDW repulsion over a subset of nb_int pairs by index.
+    float           compute_internal_energy_subset(const DOCKMol& mol,
+                                                    const std::vector<int>& indices) const;     
     //float           compute_ligand_internal_energy(DOCKMol & mol, float& , float& , float& );     
 
     //float           compute_ligand_internal_energy_all_atom(DOCKMol & mol);
