@@ -511,7 +511,6 @@ int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
 
     @autoreleasepool {
         size_t xyz_bytes = sizeof(float) * (size_t)num_poses * (size_t)num_atoms * 3;
-        memset([g_buf_xyz contents], 0, xyz_bytes);
         memcpy([g_buf_xyz contents], xyz, xyz_bytes);
 
         id<MTLCommandBuffer>  cmdbuf = [g_cmdq commandBuffer];
@@ -580,7 +579,6 @@ int dock_gpu_batch_score_with_ie(const float *xyz, int num_poses, int num_atoms,
     @autoreleasepool {
 
         size_t xyz_bytes = sizeof(float) * (size_t)num_poses * (size_t)num_atoms * 3;
-        memset([g_buf_xyz contents], 0, xyz_bytes);
         memcpy([g_buf_xyz contents], xyz, xyz_bytes);
 
         id<MTLCommandBuffer>  cmdbuf = [g_cmdq commandBuffer];

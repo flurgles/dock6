@@ -561,7 +561,7 @@ Minimizer::gpu_batch_eval_scores(Base_Score & score,
     if (!dock_gpu_is_active()) return false;
 
     int n = (int)vertices.size();
-    if (n == 0) { fprintf(stderr, "GPU-DOCK-mini: zero vertices\n"); return true; }
+    if (n == 0) return true;
 
     int na = ref_mol.num_atoms;
     float *xyz = new float[n * na * 3];
