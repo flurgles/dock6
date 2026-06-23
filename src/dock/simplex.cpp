@@ -488,7 +488,33 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
 
     double          Econstraint;
 
+    /* GPU batch flag set once per call */
+    bool            use_gpu = dock_gpu_is_active();
+
     float          *old_vertex;
+
+    /* Cleanup lambda to avoid duplicating the 25-line failure exit pattern */
+    auto failure_exit = [&](float opt) -> float {
+        for (x = 0; x < size; x++) vertex[x] = p[ilo][x];
+        if (restrained_min)
+            Econstraint = coefficient_restraint * calc_active_rmsd2(rmsd_ref, ref_mol);
+        else
+            Econstraint = 0.0;
+        optimum = opt;
+        copy_crds(min_mol, ref_mol);
+        scale_vector(new_vec, vertex, trans_step_size, rot_step_size, tors_step_size);
+        vector_to_dockmol(min_mol, new_vec);
+        copy_crds(mol, min_mol);
+        for (x = 0; x < size + 1; x++) { delete[]p[x]; p[x] = NULL; }
+        delete[]p; p = NULL;
+        delete[]y; y = NULL;
+        delete[]pr; pr = NULL;
+        delete[]prr; prr = NULL;
+        delete[]pbar; pbar = NULL;
+        delete[]old_vertex; old_vertex = NULL;
+        delta -= optimum;
+        return optimum;
+    };
     float           temp1,
                     temp2;
 
@@ -612,430 +638,245 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                 }
             }
 
-            // score initial simplex points
-            for (i = 0; i < size + 1; i++) {
-                for (j = 0; j < size; j++){
-                    vertex[j] = p[i][j];
+            // score initial simplex points — GPU batch (or CPU fallback)
+            Econstraint = 0.0;
+            if (use_gpu) {
+                /* Collect all N+1 initial vertices into a batch */
+                std::vector<FLOATVec> init_verts;
+                for (i = 0; i < size + 1; i++) {
+                    FLOATVec v(size);
+                    for (j = 0; j < size; j++) v[j] = p[i][j];
+                    init_verts.push_back(v);
                 }
-                // check if simplex point is valid
-                if (eval_score (score, ref_mol, tmp_mol, vertex, trans_step_size,
-                     rot_step_size, tors_step_size)) {
-                     
-                     if (restrained_min){
-                         Econstraint = coefficient_restraint * calc_active_rmsd2(rmsd_ref,tmp_mol);
-                         //cout << "rmsd2: " << calc_active_rmsd2(rmsd_ref,tmp_mol) << endl;
-                         //cout << "Econstraint: " << Econstraint << endl;
-                     } else{ 
-                         Econstraint = 0.0;
-                     }
-                     y[i] = tmp_mol.current_score + tmp_mol.internal_energy
-                              + Econstraint;
-
-                } else {
-
-                    // store best scoring vertex
-                    for (x = 0; x < size; x++){
-                        vertex[x] = p[ilo][x];
+                if (restrained_min)
+                    Econstraint = coefficient_restraint * calc_active_rmsd2(rmsd_ref, ref_mol);
+                float* init_scores = new float[size + 1];
+                bool gpu_ok = gpu_batch_eval_scores(score, ref_mol, tmp_mol,
+                                                      init_verts, trans_step_size,
+                                                      rot_step_size, tors_step_size,
+                                                      (float)Econstraint, init_scores);
+                if (!gpu_ok) {
+                    delete[] init_scores;
+                    return failure_exit(ref_mol.current_score + ref_mol.internal_energy + Econstraint);
+                }
+                for (i = 0; i < size + 1; i++) y[i] = init_scores[i];
+                delete[] init_scores;
+            } else {
+                /* CPU fallback: score one by one */
+                for (i = 0; i < size + 1; i++) {
+                    for (j = 0; j < size; j++) vertex[j] = p[i][j];
+                    if (eval_score(score, ref_mol, tmp_mol, vertex, trans_step_size,
+                         rot_step_size, tors_step_size)) {
+                         if (restrained_min)
+                             Econstraint = coefficient_restraint * calc_active_rmsd2(rmsd_ref, tmp_mol);
+                         else
+                             Econstraint = 0.0;
+                         y[i] = tmp_mol.current_score + tmp_mol.internal_energy + Econstraint;
+                    } else {
+                         return failure_exit(ref_mol.current_score + ref_mol.internal_energy + Econstraint);
                     }
-                    //optimum = ref_mol.current_score;
-                    if (restrained_min){
-                         Econstraint = coefficient_restraint * calc_active_rmsd2(rmsd_ref,ref_mol);
-                    } else{ 
-                         Econstraint = 0.0;
-                    }
-                    optimum = ref_mol.current_score + ref_mol.internal_energy //trent balius 2008-12-05
-                              + Econstraint;
-
-                    // copy best mol to min_mol, and generate min structure
-                    copy_crds(min_mol, ref_mol);
-                    scale_vector(new_vec, vertex, trans_step_size,
-                                         rot_step_size, tors_step_size);
-                    vector_to_dockmol(min_mol, new_vec);
-                    copy_crds(mol, min_mol);
-
-                    // free arrays
-                    for (x = 0; x < size + 1; x++) {
-                        delete[]p[x];
-                        p[x] = NULL;
-                    }
-
-                    delete[]p;
-                    p = NULL;
-
-                    delete[]y;
-                    y = NULL;
-
-                    delete[]pr;
-                    pr = NULL;
-
-                    delete[]prr;
-                    prr = NULL;
-
-                    delete[]pbar;
-                    pbar = NULL;
-
-                    delete[]old_vertex;
-                    old_vertex = NULL;
-
-                    delta -= optimum;
-                    //cout << "Optimum= " << optimum << endl;
-                    return optimum;
                 }
             }
-
             delta = y[0];
         
         } else {
 
             // Begin a new iteration
-            for (i = 0; i < size; i++){
-                pbar[i] = 0.0;
-            }
+            for (i = 0; i < size; i++) pbar[i] = 0.0;
             // compute vector ave. of all points except the highest
-            for (i = 0; i < size + 1; i++){
-                if (i != ihi){
-                    for (j = 0; j < size; j++){
-                        pbar[j] += p[i][j];
-                    }
+            for (i = 0; i < size + 1; i++) {
+                if (i != ihi) {
+                    for (j = 0; j < size; j++) pbar[j] += p[i][j];
                 }
             }
             // extrapolate by a factor alpha through the face
             for (i = 0; i < size; i++) {
-                pbar[i] /= (float) size;
-                vertex[i] = pr[i] = (1.0 + alpha) * pbar[i] - alpha * p[ihi][i];
+                pbar[i] /= (float)size;
+                pr[i] = (1.0 + alpha) * pbar[i] - alpha * p[ihi][i];
             }
 
-            // evaluate the fxn at the reflected point
-
-            if (eval_score (score, ref_mol, tmp_mol, vertex, trans_step_size,
-                 rot_step_size, tors_step_size)) {
-
-                 if (restrained_min){
-                     Econstraint = coefficient_restraint * calc_active_rmsd2(rmsd_ref,tmp_mol);
-                 } else{
-                     Econstraint = 0.0;
-                 }
-                 ypr = tmp_mol.current_score + tmp_mol.internal_energy
-                              + Econstraint;
-
-            } else {
-                // store best scoring vertex
-                for (x = 0; x < size; x++){
-                    vertex[x] = p[ilo][x];
-                }
-                //optimum = ref_mol.current_score;
-                if (restrained_min){
-                     Econstraint = coefficient_restraint * calc_active_rmsd2(rmsd_ref,ref_mol);
-                } else{ 
-                     Econstraint = 0.0;
-                }
-                optimum = ref_mol.current_score + ref_mol.internal_energy //trent balius 2008-12-05
-                              + Econstraint;
-
-                // copy best mol to min_mol, and generate min structure
-                copy_crds(min_mol, ref_mol);
-                scale_vector(new_vec, vertex, trans_step_size,
-                                     rot_step_size, tors_step_size);
-                vector_to_dockmol(min_mol, new_vec);
-                copy_crds(mol, min_mol);
-
-                // free arrays
-                for (x = 0; x < size + 1; x++) {
-                    delete[]p[x];
-                    p[x] = NULL;
-                }
-
-                delete[]p;
-                p = NULL;
-
-                delete[]y;
-                y = NULL;
-
-                delete[]pr;
-                pr = NULL;
-
-                delete[]prr;
-                prr = NULL;
-
-                delete[]pbar;
-                pbar = NULL;
-
-                delete[]pbar;
-                pbar = NULL;
-
-                delete[]old_vertex;
-                old_vertex = NULL;
-
-                delta -= optimum;
-                //cout << "Optimum= " << optimum << endl;
-                return optimum;
+            /* ---- Pre-compute all candidate vertex vectors for GPU speculative batch ---- */
+            /* Candidates:
+               0: reflected point (pr)  — always needed
+               1: expanded point (prr_exp = (1+alpha)*pr - alpha*pbar)
+               2: contracted-with-pr (prr_cA = beta*pr + (1-beta)*pbar)
+               3: contracted-with-orig (prr_cB = beta*p[ihi] + (1-beta)*pbar)
+            */
+            {
+            int use_speculative = use_gpu;
+            float batch_scores[4];
+            FLOATVec prr_exp(size), prr_cA(size), prr_cB(size);
+            for (i = 0; i < size; i++) {
+                prr_exp[i] = (1.0 + alpha) * pr[i] - alpha * pbar[i];
+                prr_cA[i]  = beta * pr[i] + (1.0 - beta) * pbar[i];
+                prr_cB[i]  = beta * p[ihi][i] + (1.0 - beta) * pbar[i];
             }
 
+            if (use_speculative) {
+                /* GPU: batch-score all 4 candidates */
+                std::vector<FLOATVec> spec_verts;
+                FLOATVec pr_v;
+                pr_v.assign(pr, pr + size);
+                spec_verts.push_back(pr_v);       /* idx 0: reflected */
+                spec_verts.push_back(prr_exp);    /* idx 1: expanded */
+                spec_verts.push_back(prr_cA);     /* idx 2: contracted-with-pr */
+                spec_verts.push_back(prr_cB);     /* idx 3: contracted-with-orig */
+
+                Econstraint = 0.0;
+                if (restrained_min)
+                    Econstraint = coefficient_restraint * calc_active_rmsd2(rmsd_ref, ref_mol);
+
+                bool gpu_ok = gpu_batch_eval_scores(score, ref_mol, tmp_mol,
+                                                      spec_verts, trans_step_size,
+                                                      rot_step_size, tors_step_size,
+                                                      (float)Econstraint, batch_scores);
+                if (!gpu_ok) {
+                    /* GPU failed — fall back to CPU sequential scoring */
+                    use_speculative = 0;
+                }
+            }
+
+            if (!use_speculative) {
+                /* CPU fallback: score reflected point */
+                for (i = 0; i < size; i++) vertex[i] = pr[i];
+                if (eval_score(score, ref_mol, tmp_mol, vertex, trans_step_size,
+                     rot_step_size, tors_step_size)) {
+                     if (restrained_min)
+                         Econstraint = coefficient_restraint * calc_active_rmsd2(rmsd_ref, tmp_mol);
+                     else
+                         Econstraint = 0.0;
+                     batch_scores[0] = tmp_mol.current_score + tmp_mol.internal_energy + (float)Econstraint;
+                } else {
+                     return failure_exit(ref_mol.current_score + ref_mol.internal_energy + Econstraint);
+                }
+            }
+
+            ypr = batch_scores[0];  /* reflected score */
 
             if (ypr <= y[ilo]) {
-
-                // Gives a better result than the best point, so try
-                // extrapolation by alpha
-                for (i = 0; i < size; i++){
-                    vertex[i] = prr[i] =
-                        (1.0 + alpha) * pr[i] - alpha * pbar[i];
-                }
-                // check if new point is valid
-                if (eval_score
-                    (score, ref_mol, tmp_mol, vertex, trans_step_size,
-                     rot_step_size, tors_step_size)) {
-                     if (restrained_min){
-                          Econstraint = coefficient_restraint * calc_active_rmsd2(rmsd_ref,tmp_mol);
-                     } else{ 
-                          Econstraint = 0.0;
-                     }
-                     yprr = tmp_mol.current_score + tmp_mol.internal_energy
-                              + Econstraint;
-
+                /* ---- Expansion path ---- */
+                float yprr_exp;
+                if (!use_speculative) {
+                    /* CPU fallback: score expanded point */
+                    for (i = 0; i < size; i++) vertex[i] = prr_exp[i];
+                    if (eval_score(score, ref_mol, tmp_mol, vertex, trans_step_size,
+                         rot_step_size, tors_step_size)) {
+                         if (restrained_min)
+                             Econstraint = coefficient_restraint * calc_active_rmsd2(rmsd_ref, tmp_mol);
+                         else
+                             Econstraint = 0.0;
+                         yprr_exp = tmp_mol.current_score + tmp_mol.internal_energy + (float)Econstraint;
+                    } else {
+                         return failure_exit(ref_mol.current_score + ref_mol.internal_energy + Econstraint);
+                    }
                 } else {
-
-                    // store best scoring vertex
-                    for (x = 0; x < size; x++){
-                        vertex[x] = p[ilo][x];
-                    }
-                    //optimum = ref_mol.current_score;
-                    if (restrained_min){
-                         Econstraint =  coefficient_restraint * calc_active_rmsd2(rmsd_ref,ref_mol);
-                    } else{ 
-                         Econstraint = 0.0;
-                    }
-                    optimum = ref_mol.current_score + ref_mol.internal_energy //trent balius 2008-12-05
-                              + Econstraint;
-
-                    // copy best mol to min_mol, and generate min structure
-                    copy_crds(min_mol, ref_mol);
-                    scale_vector(new_vec, vertex, trans_step_size,
-                                         rot_step_size, tors_step_size);
-                    vector_to_dockmol(min_mol, new_vec);
-                    copy_crds(mol, min_mol);
-
-                    // free arrays
-                    for (x = 0; x < size + 1; x++) {
-                        delete[]p[x];
-                        p[x] = NULL;
-                    }
-
-                    delete[]p;
-                    p = NULL;
-
-                    delete[]y;
-                    y = NULL;
-
-                    delete[]pr;
-                    pr = NULL;
-
-                    delete[]prr;
-                    prr = NULL;
-
-                    delete[]pbar;
-                    pbar = NULL;
-
-                    delete[]old_vertex;
-                    old_vertex = NULL;
-
-                    delta -= optimum;
-                    //cout << "Optimum= " << optimum << endl;
-                    return optimum;
+                    yprr_exp = batch_scores[1];
                 }
 
-
-                if (yprr < y[ilo]) {
-                    // The additional extrap succeeded, and replaces the high
-                    // point
-                    for (i = 0; i < size; i++){
-                        p[ihi][i] = prr[i];
-                    }
-                    y[ihi] = yprr;
-
+                if (yprr_exp < y[ilo]) {
+                    for (i = 0; i < size; i++) p[ihi][i] = prr_exp[i];
+                    y[ihi] = yprr_exp;
                 } else {
-                    // The additional extrap failed, but still use the
-                    // reflected point
-                    for (i = 0; i < size; i++){
-                        p[ihi][i] = pr[i];
-                    }
+                    for (i = 0; i < size; i++) p[ihi][i] = pr[i];
                     y[ihi] = ypr;
                 }
 
             } else if (ypr >= y[inhi]) {
-
-                // the reflected point is worse than the 2nd highest.  If
-                // better than the highest, replace the highest
+                /* ---- Contraction / Shrink path ---- */
                 replace_flag = false;
 
                 if (ypr < y[ihi]) {
-                    for (i = 0; i < size; i++){
-                        p[ihi][i] = pr[i];
-                    }
+                    for (i = 0; i < size; i++) p[ihi][i] = pr[i];
                     y[ihi] = ypr;
                     replace_flag = true;
                 }
-                // contract simplex in 1-D, then eval fxn
-                for (i = 0; i < size; i++){
-                    vertex[i] = prr[i] =
-                        beta * p[ihi][i] + (1.0 - beta) * pbar[i];
-                }
-                if (eval_score (score, ref_mol, tmp_mol, vertex, trans_step_size,
-                     rot_step_size, tors_step_size)) {
-                     if (restrained_min){
-                          Econstraint = coefficient_restraint * calc_active_rmsd2(rmsd_ref,tmp_mol);
-                     } else {
-                          Econstraint = 0.0;
-                     }
-                     yprr = tmp_mol.current_score + tmp_mol.internal_energy
-                              + Econstraint;
 
+                float yprr_contract;
+                if (!use_speculative) {
+                    /* CPU fallback: score contraction */
+                    for (i = 0; i < size; i++) vertex[i] = prr[i] = beta * p[ihi][i] + (1.0 - beta) * pbar[i];
+                    if (eval_score(score, ref_mol, tmp_mol, vertex, trans_step_size,
+                         rot_step_size, tors_step_size)) {
+                         if (restrained_min)
+                             Econstraint = coefficient_restraint * calc_active_rmsd2(rmsd_ref, tmp_mol);
+                         else
+                             Econstraint = 0.0;
+                         yprr_contract = tmp_mol.current_score + tmp_mol.internal_energy + (float)Econstraint;
+                    } else {
+                         return failure_exit(ref_mol.current_score + ref_mol.internal_energy + Econstraint);
+                    }
                 } else {
-                    // store best scoring vertex
-                    for (x = 0; x < size; x++){
-                        vertex[x] = p[ilo][x];
-                    }
-                    //optimum = ref_mol.current_score;
-                    if (restrained_min){
-                        Econstraint = coefficient_restraint * calc_active_rmsd2(rmsd_ref,ref_mol);
-                    } else{ 
-                        Econstraint = 0.0;
-                    }
-                    optimum = ref_mol.current_score + ref_mol.internal_energy //trent balius 2008-12-05
-                              + Econstraint;
-
-                    // copy best mol to min_mol, and generate min structure
-                    copy_crds(min_mol, ref_mol);
-                    scale_vector(new_vec, vertex, trans_step_size,
-                                         rot_step_size, tors_step_size);
-                    vector_to_dockmol(min_mol, new_vec);
-                    copy_crds(mol, min_mol);
-
-                    // free arrays
-                    for (x = 0; x < size + 1; x++) {
-                        delete[]p[x];
-                        p[x] = NULL;
-                    }
-
-                    delete[]p;
-                    p = NULL;
-
-                    delete[]y;
-                    y = NULL;
-
-                    delete[]pr;
-                    pr = NULL;
-
-                    delete[]prr;
-                    prr = NULL;
-
-                    delete[]pbar;
-                    pbar = NULL;
-
-                    delete[]old_vertex;
-                    old_vertex = NULL;
-
-                    delta -= optimum;
-                    //cout << "Optimum= " << optimum << endl;
-                    return optimum;
+                    /* Pick the right contraction variant based on whether ypr < y[ihi] */
+                    const FLOATVec& contr_vec = (ypr < y[ihi]) ? prr_cA : prr_cB;
+                    yprr_contract = (ypr < y[ihi]) ? batch_scores[2] : batch_scores[3];
+                    /* Copy into prr for compatibility with downstream code */
+                    for (i = 0; i < size; i++) prr[i] = contr_vec[i];
                 }
 
-                if (yprr < y[ihi]) {
-                    // contraction is an improvement, so accept it
-
-                    for (i = 0; i < size; i++){
-                        p[ihi][i] = prr[i];
-                    }
-                    y[ihi] = yprr;
+                if (yprr_contract < y[ihi]) {
+                    for (i = 0; i < size; i++) p[ihi][i] = prr[i];
+                    y[ihi] = yprr_contract;
                     replace_flag = true;
                 }
 
                 if (replace_flag == false) {
-                    // can't elim high point.  contract about low point
-                    for (i = 0; i < size + 1; i++){
+                    /* SHRINK — can't eliminate high point */
+                    /* Collect shrink vertices and batch-score them */
+                    std::vector<FLOATVec> shrink_verts;
+                    for (i = 0; i < size + 1; i++) {
                         if (i != ilo) {
+                            FLOATVec sv(size);
                             for (j = 0; j < size; j++) {
-                                vertex[j] = p[i][j] = pr[j] =
-                                    0.5 * (p[i][j] + p[ilo][j]);
+                                sv[j] = p[i][j] = 0.5 * (p[i][j] + p[ilo][j]);
                             }
+                            shrink_verts.push_back(sv);
+                        }
+                    }
 
-                            // check if low point is valid
-                            if (eval_score (score, ref_mol, tmp_mol, vertex,
-                                 trans_step_size, rot_step_size, tors_step_size)) {
-                                if (restrained_min){
-                                      Econstraint = coefficient_restraint * calc_active_rmsd2(rmsd_ref,tmp_mol);
-                                } else{ 
-                                      Econstraint = 0.0;
-                                }
-                                y[i] = tmp_mol.current_score + tmp_mol.internal_energy
-                                        + Econstraint;
-                            }
-                            else {
-                                // store best scoring vertex
-                                for (x = 0; x < size; x++)
-                                    vertex[x] = p[ilo][x];
-
-                                //optimum = ref_mol.current_score;
-                                if (restrained_min){
-                                     Econstraint = coefficient_restraint * calc_active_rmsd2(rmsd_ref,ref_mol);
-                                }else{ 
-                                     Econstraint = 0.0;
-                                }
-                                
-                                optimum = ref_mol.current_score + ref_mol.internal_energy //trent balius 2008-12-05
-                                                  + Econstraint;
-
-                                // copy best mol to min_mol, and generate min
-                                // structure
-                                copy_crds(min_mol, ref_mol);
-                                scale_vector(new_vec, vertex,
-                                                     trans_step_size,
-                                                     rot_step_size,
-                                                     tors_step_size);
-                                vector_to_dockmol(min_mol, new_vec);
-                                copy_crds(mol, min_mol);
-
-                                // free arrays
-                                for (x = 0; x < size + 1; x++) {
-                                    delete[]p[x];
-                                    p[x] = NULL;
-                                }
-
-                                delete[]p;
-                                p = NULL;
-
-                                delete[]y;
-                                y = NULL;
-
-                                delete[]pr;
-                                pr = NULL;
-
-                                delete[]prr;
-                                prr = NULL;
-
-                                delete[]pbar;
-                                pbar = NULL;
-
-                                delete[]old_vertex;
-                                old_vertex = NULL;
-
-                                delta -= optimum;
-                                //cout << "Optimum= " << optimum << endl;
-                                return optimum;
+                    bool shrink_ok = false;
+                    if (use_gpu) {
+                        Econstraint = 0.0;
+                        if (restrained_min)
+                            Econstraint = coefficient_restraint * calc_active_rmsd2(rmsd_ref, ref_mol);
+                        float *shrink_scores = new float[shrink_verts.size()];
+                        shrink_ok = gpu_batch_eval_scores(score, ref_mol, tmp_mol,
+                                                            shrink_verts, trans_step_size,
+                                                            rot_step_size, tors_step_size,
+                                                            (float)Econstraint, shrink_scores);
+                        if (shrink_ok) {
+                            int si = 0;
+                            for (i = 0; i < size + 1; i++) {
+                                if (i != ilo) y[i] = shrink_scores[si++];
                             }
                         }
-                     
-               }
-            }
-            } else {
-                // orig reflection gives a middling point.  Replace high point
-                // & move on
+                        delete[] shrink_scores;
+                    }
 
-                for (i = 0; i < size; i++){
-                    p[ihi][i] = pr[i];
+                    if (!shrink_ok) {
+                        /* CPU fallback: score shrink vertices one by one */
+                        for (i = 0; i < size + 1; i++) {
+                            if (i != ilo) {
+                                for (j = 0; j < size; j++) vertex[j] = p[i][j];
+                                if (eval_score(score, ref_mol, tmp_mol, vertex,
+                                     trans_step_size, rot_step_size, tors_step_size)) {
+                                    if (restrained_min)
+                                        Econstraint = coefficient_restraint * calc_active_rmsd2(rmsd_ref, tmp_mol);
+                                    else
+                                        Econstraint = 0.0;
+                                    y[i] = tmp_mol.current_score + tmp_mol.internal_energy + (float)Econstraint;
+                                } else {
+                                    return failure_exit(ref_mol.current_score + ref_mol.internal_energy + Econstraint);
+                                }
+                            }
+                        }
+                    }
                 }
+            } else {
+                /* ---- Middling: accept reflected point ---- */
+                for (i = 0; i < size; i++) p[ihi][i] = pr[i];
                 y[ihi] = ypr;
             }
-
+            }  // end speculative-scope block
         }
 
         // ID Best & Worst vertices in current simplex

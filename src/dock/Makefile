@@ -3,6 +3,31 @@
 include ../../install/rules.h
 include ../../install/config.h
 
+# ----------------------------------------------------------------
+# GPU backend detection (follows src/grid/Makefile pattern)
+# ----------------------------------------------------------------
+UNAME_S := $(shell uname -s)
+GPU_BACKEND ?= auto
+
+ifeq ($(GPU_BACKEND),auto)
+  ifeq ($(UNAME_S),Darwin)
+    GPU_BACKEND = metal
+  else
+    GPU_BACKEND = cpu
+  endif
+endif
+
+GPU_OBJS =
+GPU_STUB = score_dock_gpu_stub.o
+GPU_LIBS =
+
+ifeq ($(GPU_BACKEND),metal)
+  GPU_OBJS += score_dock_gpu_metal.o
+  GPU_LIBS += -framework Metal -framework Foundation -lc++
+  DOCKBUILDFLAGS += -DUSE_METAL
+  GPU_STUB =
+endif
+
 BIN= ../../bin
 PROGS= dock6$(DOCK_SUFFIX)
 
@@ -15,7 +40,8 @@ OBJS= amber_typer.o base_grid.o base_mpi.o base_score.o bobyqa.o minimizer.o con
       score_descriptor.o score_footprint.o score_ph4.o score_volume.o \
       score_gist.o score_hbond.o score_internal.o score_multigrid.o score_sasa.o \
       score_solvent.o simplex.o sphere.o trace.o utils.o iso_align.o mem_info.o rdtyper.o \
-      rddrive.o
+      rddrive.o \
+      $(GPU_STUB) $(GPU_OBJS)
 
 all:  $(PROGS)
 
@@ -38,7 +64,7 @@ uninstall:
 
 dock6$(DOCK_SUFFIX):  configured $(OBJS) nab_objects gzstream_lig
 	$(LOAD) $(CFLAGS) -o $@ $(OBJS) nab/*.o gzstream/gzstream.o -lz \
-		$(LIBS) $(DOCKBUILDFLAGS)
+		$(LIBS) $(GPU_LIBS) $(DOCKBUILDFLAGS)
 
 nab_objects:
 	cd nab && make all
@@ -57,6 +83,12 @@ configured:
 	    exit 2 ;\
 	fi ;\
 	)
+
+.SUFFIXES: .mm
+
+# Objective-C++ compilation (Metal host code)
+.mm.o:
+	$(CXX) -c $(filter-out -flto,$(CXXFLAGS)) $(DOCKBUILDFLAGS) -fobjc-arc -o $@ $<
 
 # dependencies generated on hamlet via
 # makedepend -Y *.cpp *.C

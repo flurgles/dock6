@@ -12,6 +12,7 @@
 #include "score_multigrid.h" 
 #include "utils.h"
 #include "trace.h"
+#include "score_dock_gpu.h"
 
 using namespace std;
 
@@ -530,6 +531,15 @@ Multigrid_Energy_Score::initialize(AMBER_TYPER & typer)
           energy_grids[i].get_instance(grid_file_names[i]); 
           init_vdw_energy(typer, energy_grids[i].att_exp, energy_grids[i].rep_exp);
         }
+        // Initialize GPU docking acceleration with first grid
+        if (numgrids >= 1) {
+            Energy_Grid & g = energy_grids[0];
+            dock_gpu_init(g.avdw, g.bvdw, g.es,
+                          g.span[0], g.span[1], g.span[2],
+                          g.origin[0], g.origin[1], g.origin[2],
+                          g.spacing);
+        }
+
         //compute_multigrid(footprint_reference,vdw_ref_array, es_ref_array);
         if (fp_mol || fp_txt )
            submit_footprint_reference(typer);

@@ -12,7 +12,6 @@
 #include "master_score.h"
 #include "simplex.h"
 #include "trace.h"
-
 class Bump_Filter;
 class Master_Score;
 
@@ -945,6 +944,46 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
            // need to use DOCKMol with radii and segments assigned
            // it does not matter which atoms are labeled active
            score.primary_score->initialize_internal_energy(anchor_positions[0].second);
+
+           /* Upload ligand parameters to GPU for combined grid+IE scoring */
+           if (dock_gpu_is_active()) {
+               DOCKMol & amol = anchor_positions[0].second;
+               int na = amol.num_atoms;
+               float *vdwA_arr = new float[na];
+               float *vdwB_arr = new float[na];
+               float *chg_arr  = new float[na];
+               for (int ai = 0; ai < na; ai++) {
+                   int type = amol.amber_at_id[ai];
+                   vdwA_arr[ai] = score.primary_score->vdwA[type];
+                   vdwB_arr[ai] = score.primary_score->vdwB[type];
+                   chg_arr[ai]  = amol.charges[ai];
+               }
+               if (!dock_gpu_set_ligand(vdwA_arr, vdwB_arr, chg_arr, na)) {
+                   fprintf(stderr, "GPU-DOCK: set_ligand failed\n");
+               }
+               delete[] vdwA_arr;
+               delete[] vdwB_arr;
+               delete[] chg_arr;
+
+               /* IE params: nb_int pairs, per-atom ie_vdwA */
+               int np = (int)score.primary_score->nb_int.size();
+               if (np > 0) {
+                   int *nb_flat = new int[np * 2];
+                   for (int pi = 0; pi < np; pi++) {
+                       nb_flat[pi * 2]     = score.primary_score->nb_int[pi].first;
+                       nb_flat[pi * 2 + 1] = score.primary_score->nb_int[pi].second;
+                   }
+                   float *ie_vdwA_arr = new float[na];
+                   for (int ai = 0; ai < na; ai++) {
+                       ie_vdwA_arr[ai] = score.primary_score->ie_vdwA[ai];
+                   }
+                   dock_gpu_set_ligand_ie(ie_vdwA_arr, NULL, nb_flat, np,
+                                           score.primary_score->ie_soft_delta,
+                                           score.primary_score->ie_vdw_cutoff_sq);
+                   delete[] nb_flat;
+                   delete[] ie_vdwA_arr;
+               }
+           }
         }
     }// else do nothing to internal energy (because it is not used when scoring function is not
      // used
@@ -1136,14 +1175,14 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                 else 
                         segment_torsion_drive(seeds[j], l, exp_seeds, 1);
                 // num_grids = 1 when multiple grid docking is turned off
-     
+
                 // score/minimize the new confs
                 for (k = 0; ((k < exp_seeds.size())&&(j==seeds.size()-1)); k++) {
 
                     // sudipto & trent - 11-14-08 - save current conf before minimizing
                     CONFORMER conf_before_min = exp_seeds[k];
                     b4min_seeds.push_back(conf_before_min);
-                             
+
                     if (segment_clash_check(exp_seeds[k].structure, i, l)) {    // i+1
                     // Note: clash-checking not compatible with ir_resecore
                         

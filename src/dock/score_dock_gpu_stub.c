@@ -1,0 +1,61 @@
+/*                                                                    */
+/*                        Copyright UCSF, 2026                        */
+/*                                                                    */
+
+/*
+CPU fallback stub — all functions are no-ops.
+dock_gpu_init() returns 0, so callers fall through to the CPU path.
+*/
+
+#include "score_dock_gpu.h"
+
+int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
+                  int span_x, int span_y, int span_z,
+                  float origin_x, float origin_y, float origin_z,
+                  float spacing)
+{
+    (void)avdw; (void)bvdw; (void)es;
+    (void)span_x; (void)span_y; (void)span_z;
+    (void)origin_x; (void)origin_y; (void)origin_z;
+    (void)spacing;
+    return 0;  /* GPU not available, use CPU fallback */
+}
+
+int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
+                         float *out_scores)
+{
+    (void)xyz; (void)num_poses; (void)num_atoms; (void)out_scores;
+    return 0;  /* not implemented on CPU */
+}
+
+int dock_gpu_set_ligand(const float *vdwA, const float *vdwB,
+                        const float *charges, int num_atoms)
+{
+    (void)vdwA; (void)vdwB; (void)charges; (void)num_atoms;
+    return 0;  /* not implemented on CPU */
+}
+
+int dock_gpu_set_ligand_ie(const float *ie_vdwA, const float *ie_vdwB,
+                            const int *nb_int_pairs, int num_nb_pairs,
+                            float ie_soft_delta, float ie_cutoff_sq)
+{
+    (void)ie_vdwA; (void)ie_vdwB; (void)nb_int_pairs;
+    (void)num_nb_pairs; (void)ie_soft_delta; (void)ie_cutoff_sq;
+    return 0;  /* not implemented on CPU */
+}
+
+int dock_gpu_batch_score_with_ie(const float *xyz, int num_poses, int num_atoms,
+                                  float *out_scores)
+{
+    (void)xyz; (void)num_poses; (void)num_atoms; (void)out_scores;
+    return 0;  /* not implemented on CPU */
+}
+
+void dock_gpu_cleanup(void)
+{
+}
+
+int dock_gpu_is_active(void)
+{
+    return 0;
+}

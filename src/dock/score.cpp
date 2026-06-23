@@ -9,6 +9,7 @@
 #include "grid.h" 
 #include "score.h"
 #include "utils.h"
+#include "score_dock_gpu.h"
 
 using namespace std;
 
@@ -224,6 +225,14 @@ Energy_Score::initialize(AMBER_TYPER & typer)
         energy_grid = new Energy_Grid(); 
         energy_grid->get_instance(grid_file_name);
         init_vdw_energy(typer, energy_grid->att_exp, energy_grid->rep_exp);
+        // Initialize GPU docking acceleration
+        {
+            Energy_Grid & g = *energy_grid;
+            dock_gpu_init(g.avdw, g.bvdw, g.es,
+                          g.span[0], g.span[1], g.span[2],
+                          g.origin[0], g.origin[1], g.origin[2],
+                          g.spacing);
+        }
     } 
 }
 // +++++++++++++++++++++++++++++++++++++++++

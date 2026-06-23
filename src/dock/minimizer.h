@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 #include "utils.h"  // INTVec, TORSION, FLOATVec
+#include "score_dock_gpu.h"
 
 class AMBER_TYPER;
 class Base_Score;
@@ -210,6 +211,14 @@ class Minimizer {
     // Evaluate the scoring function at a given vertex.
     bool            eval_score(Base_Score &, DOCKMol &, DOCKMol &,
                                FLOATVec &, float, float, float);
+
+    // GPU batch scoring: evaluate N vertices in one GPU launch.
+    // Applies vector_to_dockmol for each, packs coordinates, launches.
+    // Returns true on success (scores array filled), false for fallback.
+    // On false with sentinel detection, caller should abort like CPU eval_score failure.
+    bool            gpu_batch_eval_scores(Base_Score &, DOCKMol &, DOCKMol &,
+                                           const std::vector<FLOATVec> &,
+                                           float, float, float, float, float *);
 
     // Scale a normalised vertex vector by the step sizes.
     void            scale_vector(FLOATVec &, FLOATVec &, float, float, float);
