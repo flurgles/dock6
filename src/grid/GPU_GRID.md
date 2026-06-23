@@ -11,8 +11,7 @@ score_grid.c                     ← modified: added GPU dispatch
   → score_grid_gpu.h             ← NEW: abstraction API (forward decls only)
       ├── score_grid_gpu_stub.c  ← NEW: CPU fallback (no GPU → returns 0)
       ├── score_grid_gpu_metal.h ← NEW: Metal internal header (GridParams struct)
-      ├── score_grid_gpu_metal.mm← NEW: Metal implementation (Obj-C++ + embedded shader)
-      └── verify_gpu_grids.sh    ← NEW: batch validation against CPU grids
+      └── score_grid_gpu_metal.mm← NEW: Metal implementation (Obj-C++ + embedded shader)
 ```
 
 **Key design principle:** Any GPU backend (Metal, Vulkan, CUDA) implements
@@ -595,7 +594,7 @@ size — larger boxes with more grid points benefit even more.
 ### Validation (649 systems, SB2025 dataset)
 
 Automated batch validation against existing CPU grids using
-`verify_gpu_grids.sh`:
+`SB2025_Pnc_v2/zzz.scripts/verify_gpu_grids.sh`:
 
 ```
 === Results: 649 passed, 0 failed (out of 649) ===
