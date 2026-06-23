@@ -225,18 +225,151 @@ the grid-only kernel's shader source and using `g_pso` for both.
 
 ---
 
+## Phase 3B: GPU-side Simplex Loop (Jun 23 — Planned)
+
+### The real bottleneck
+
+`gpu_batch_eval_scores()` works end-to-end — flex docking produces correct scores
+(<0.2 kcal/mol vs CPU).  But it is **74× slower** than CPU (266s vs 3.6s on 1A28).
+
+Root cause: every simplex iteration does:
+1. `waitUntilCompleted` — CPU blocks 1–5ms for GPU sync
+2. Score readback — 4 floats from shared memory
+3. Simplex decision — CPU picks the winner
+4. `memcpy` — 2.5 KB of xyz data to GPU buffer
+
+With ~52K dispatches for 1A28 (78 anchors×500 iterations + 26×500), the sync
+overhead alone accounts for ~260 seconds.
+
+**The xyz data upload is not the bottleneck** (only 2.5 KB per dispatch).
+The bottleneck is GPU synchronization — the CPU must `waitUntilCompleted`
+and read back scores after every single simplex iteration.
+
+### The fix: Move ALL simplex logic to GPU
+
+Instead of CPU dispatching → GPU scoring → CPU deciding → repeat, we encode
+ALL 500 simplex iterations into a **single Metal command buffer**.  The GPU
+processes them back-to-back with no CPU intervention.  Only one
+`waitUntilCompleted` at the end.
+
+**Key insight**: each simplex iteration is the same kernel pattern — score 4
+vertices, pick the best, generate the next 4 candidates.  Metal lets us chain
+N dispatches in one command buffer without CPU sync between them.
+
+### Design: `simplex_iteration_kernel`
+
+A single Metal kernel that does ONE simplex iteration:
+```
+Input:   vertex buffer (N+1 × DOF floats)
+         score buffer (N+1 floats)
+         state (best_idx, worst_idx, converged, iteration counter)
+Output:  updated vertex buffer
+         updated score buffer
+         converged flag
+```
+
+Each kernel launch handles:
+1. **Score dirty vertices** — thread per vertex, trilinear + IE
+2. **barrier** → **Find best/worst** — thread 0 compares scores
+3. **barrier** → **Compute centroid** — all threads sum DOF components
+4. **Reflect** — thread 0 computes reflect vertex and scores it
+5. **Decision tree** — thread 0 decides expand/contract/shrink
+6. **Update state** — thread 0 writes new vertex list + iter counter
+
+### DOF-to-xyz on GPU
+
+Currently the CPU converts DOF vectors (6 for rigid + torsions) to xyz
+coordinates before uploading to GPU.  The GPU-side simplex must do this
+conversion internally.
+
+New Metal shader functions:
+- `rotation_matrix(float angle, int axis) → float3x3`
+- `apply_rigid_transform(float3 pos, float3 trans, float3x3 rot) → float3`
+- `apply_torsion(float4 coords, int torsion_idx, float angle) → float4`
+- `dof_to_xyz(device float *dof, device DockMol_params &mol, int num_atoms)`
+
+### Batched command buffer
+
+CPU side:
+```objc
+id<MTLCommandBuffer> cmdbuf = [g_cmdq commandBuffer];
+for (int iter = 0; iter < max_iters; iter++) {
+    id<MTLComputeCommandEncoder> enc = [cmdbuf computeCommandEncoder];
+    [enc setComputePipelineState:simplex_pso];
+    // bind buffers (persistent — no data upload per iteration)
+    [enc dispatchThreads:...];
+    [enc endEncoding];
+}
+[cmdbuf commit];
+[cmdbuf waitUntilCompleted];   // ONE wait for ALL iterations
+
+// Read converged flag + best vertex from shared buffer
+```
+
+No CPU-GPU data transfer between iterations.  No xyz upload per dispatch.
+The DOF vector (6 + ~6 torsions = 12 floats) is already in the vertex buffer.
+
+### Convergence detection
+
+The kernel writes a `converged` flag to shared memory.  CPU reads this after
+the command buffer completes.  If not converged after max_iters, run another
+batch or fall back to CPU.
+
+### Performance estimate (1A28 anchor minimization)
+
+| Metric | Current (CPU-GPU sync) | GPU-side simplex |
+|--------|------------------------|------------------|
+| Per iteration | ~5ms (sync dominated) | ~0.1ms (no sync) |
+| 500 iterations | ~2,500ms | ~50ms |
+| 78 anchors | 195,000ms (195s) | ~3,900ms (3.9s) |
+| + Growth + final | +70s | +0.5s |
+| **Total** | **265s** | **~5s** |
+
+Target: **~5 seconds** vs 3.6s CPU — within 2× of CPU, a 50× improvement
+over current GPU path.
+
+### Risk areas
+
+1. **DOF-to-xyz conversion on GPU** — must reproduce dock6's `vector_to_dockmol()`
+   exactly, including rotation conventions and torsion angle offsets
+2. **Shrink step** — N threads computing N vertices in one dispatch is more
+   complex than the current CPU-side shrink loop
+3. **Thread synchronization** — 7 barriers per iteration × 500 iterations =
+   3500 barriers in a single kernel; need to verify Metal supports this
+4. **Sentinel handling** — outside-grid atoms return `-FLT_MAX`; kernel must
+   detect this and skip further evaluation
+5. **N+1 vertices ≠ exactly DOF count** — flexible DOF has 6 + torsions,
+   rigid has only 6; kernel must handle variable DOF
+
+### Implementation order
+
+1. **Standalone DOF-to-xyz shader test** — write a test kernel that takes a
+   DOF vector and reference molecule, produces xyz coordinates.  Compare with
+   CPU `vector_to_dockmol()` output.
+2. **`simplex_iteration_kernel` — scoring only** — port the existing
+   `batch_score_with_ie_kernel` into the new kernel structure, add DOF-to-xyz
+3. **`simplex_iteration_kernel` — decision logic** — add simplex decision tree
+   (reflect/expand/contract/shrink) on thread 0
+4. **`simplex_iteration_kernel` — convergence** — add convergence check
+5. **CPU side — batched dispatch** — replace `do_minimize()` GPU path with
+   the batched command buffer encoding loop
+6. **Comparison test** — verify scores match CPU (same 1A28 test)
+7. **Benchmark** — measure timing across DT100 systems
+
+---
+
 ## What Works ✅
 
 | Component | Status | Note |
 |-----------|--------|------|
 | GPU init with Metal on Apple Silicon | ✅ | Device detected, grid loaded, IE data uploaded |
-| Grid-only batch scoring kernel | ✅ | Works for 20+ dispatches, used as baseline |
-| Combined grid+IE kernel (standalone) | ✅ | 100 iterations in isolated test program |
-| Dual-path `gpu_batch_eval_scores()` | 🟡 | CPU fallback path works; GPU path hangs |
-| Simplex restructuring (4-way batch) | 🟡 | Code compiles, CPU path verified correct |
-| Shrink batch | 🟡 | Code compiles |
+| Grid-only batch scoring kernel | ✅ | Works for 20+ dispatches |
+| Combined grid+IE batch scoring kernel | ✅ | Verified in full flex docking |
+| GPU flex docking (end-to-end) | ✅ | 1A28, correct scores <0.2 kcal/mol diff |
+| Dual-path `gpu_batch_eval_scores()` | ✅ | GPU path works; CPU fallback for no-IE |
+| Simplex restructuring (4-way batch) | ✅ | Speculative batch + shrink |
+| GPU-side simplex loop | 🟡 | Phase 3B — design complete, implementation pending |
 | Ligand param upload from conf_gen_ag.cpp | ✅ | vdwA/vdwB/charges + ie_vdwA + nb_int |
-| `failure_exit` cleanup lambda | ✅ | 6 copies → 1 |
 | All `make test` with `GPU_BACKEND=cpu` | ✅ | All pass |
 | All `make test` with `GPU_BACKEND=metal` | ✅ | All pass (tests don't exercise flex minimizer) |
 
@@ -244,25 +377,23 @@ the grid-only kernel's shader source and using `g_pso` for both.
 
 ## What Still Needs to Be Done
 
-### Critical: Fix IE kernel hang 🔴
-The top priority.  Grid-only kernel works, IE kernel doesn't.  Standalone test
-works, dock6 integration doesn't.  Need to identify the root cause and fix it.
+### Phase 3B: GPU-side simplex loop
+See detailed plan above.  The key change: encode all 500 iterations in one
+command buffer, eliminate CPU sync overhead.
 
-### When hang is fixed: DT100 benchmarking
+### When Phase 3B is done: DT100 benchmarking
 1. **1A28** (1 torsion, ~53 atoms) — verify score match, measure timing
 2. **1HPS** (20 torsions, ~93 atoms) — expected GPU speedup for score-dominant cases
 3. **All 100 DT100 systems** — aggregate timing via `run_flex_batch.sh`
 4. Compare GPU vs CPU scores — must be bit-identical
 5. Verify against `run_flex_batch.sh` expected output
 
-### After verification
-- **Bobyqa minimizer**: Apply same dual-path `gpu_batch_eval_scores()` pattern
-- **Conjugate-gradient minimizer**: Wire `dock_gpu_set_ligand_ie()` in `conf_gen_cg.cpp`
-- **Multi-grid support** (ir_ensemble, fp_mol): Falls to CPU via returning false
-- **Attractive IE term**: GPU kernel only implements repulsive `-1/r^6`
-- **Non-standard IE exponents**: Falls to CPU
-- **CPU coordinate → GPU upload could be replaced** with GPU-side torsion→coordinate
-  computation (reduces per-batch upload size from ~25 MB to ~KB for torsion angles)
+### Future work
+- **GPU-side BOBYQA minimizer** — same batched-dispatch pattern
+- **Multi-grid scoring** (ir_ensemble, fp_mol) — falls to CPU for now
+- **New optimizer**: Store-only GPU optimizer for force-field-based scoring
+  (grid is just one component; Amber PB/GB scoring is the dominant cost
+  for large systems)
 
 ---
 
@@ -302,6 +433,6 @@ works, dock6 integration doesn't.  Need to identify the root cause and fix it.
 | `GPU_BACKEND` | Platform | Binary type | Status |
 |---------------|----------|-------------|--------|
 | `cpu` | any | CPU-only stub | ✅ All tests pass |
-| `metal` | macOS ARM | Metal GPU | 🟡 Flex docking hangs |
+| `metal` | macOS ARM | Metal GPU | ✅ Flex docking works (74× slower than CPU) |
 | `auto` | macOS ARM | Metal GPU | Same as `metal` |
 | `auto` | Linux | CPU stub | Not tested |
