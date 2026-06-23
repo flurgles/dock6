@@ -3,10 +3,38 @@
 include ../../install/rules.h
 include ../../install/config.h
 
+# ----------------------------------------------------------------
+# Platform and GPU backend detection
+# ----------------------------------------------------------------
+UNAME_S := $(shell uname -s)
+GPU_BACKEND ?= auto
+
+ifeq ($(GPU_BACKEND),auto)
+  ifeq ($(UNAME_S),Darwin)
+    GPU_BACKEND = metal
+  else
+    GPU_BACKEND = cpu
+  endif
+endif
+
+# GPU backend objects and link flags.
+# When a GPU backend is active, the stub is excluded to avoid duplicate symbols.
+GPU_OBJS =
+GPU_STUB = score_grid_gpu_stub.o
+GPU_LIBS =
+
+ifeq ($(GPU_BACKEND),metal)
+  GPU_OBJS += score_grid_gpu_metal.o
+  GPU_LIBS += -framework Metal -framework Foundation -lc++
+  DOCKBUILDFLAGS += -DUSE_METAL
+  GPU_STUB =
+endif
+
 BIN = ../../bin
 PROGS =	grid
 
-OBJS2=	grid.o score.o score_grid.o gridpoint.o define.o \
+OBJS2=	grid.o score.o score_grid.o $(GPU_STUB) $(GPU_OBJS) \
+	gridpoint.o define.o \
 	io.o io_grid.o io_gridf.o mol_prep.o io_receptor.o \
 	io_mol2.o io_pdb.o io_ptr.o io_sph.o \
 	label.o label_node.o label_chem.o label_vdw.o label_flex.o \
@@ -29,8 +57,14 @@ uninstall:
 	cd $(BIN) && /bin/rm -f $(PROGS)
 
 grid: $(OBJS2)
-	$(FC) $(LINK_WITHOUT_FORTRAN_MAIN) $(FFLAGS) $(OBJS2) $(LIBS) -o $@ \
+	$(FC) $(LINK_WITHOUT_FORTRAN_MAIN) $(FFLAGS) $(OBJS2) $(LIBS) $(GPU_LIBS) -o $@ \
 	    $(DOCKBUILDFLAGS)
+
+.SUFFIXES: .mm
+
+# Objective-C++ compilation (Metal host code)
+.mm.o:
+	$(CXX) -c $(CXXFLAGS) $(DOCKBUILDFLAGS) -fobjc-arc -o $@ $<
 
 define.o :	 define.h
 grid.o :	 define.h utility.h mol.h global.h score.h \
@@ -87,7 +121,11 @@ score_dock.o :	 define.h utility.h mol.h global.h dock.h \
 		 search.h label.h score.h score_dock.h simplex.h \
 		 io_ligand.h io_grid.h transform.h
 score_grid.o :	 define.h mol.h global.h search.h label.h \
-		 score.h grid.h score_grid.h
+		 score.h grid.h score_grid.h score_grid_gpu.h
+
+score_grid_gpu_stub.o : score_grid_gpu.h
+
+score_grid_gpu_metal.o : score_grid_gpu.h score_grid_gpu_metal.h
 search.o :	 define.h utility.h global.h search.h
 simplex.o :	 define.h utility.h global.h
 transform.o :	 define.h utility.h mol.h global.h vector.h \

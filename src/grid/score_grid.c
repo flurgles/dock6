@@ -14,6 +14,7 @@ Written by Todd Ewing
 #include "score.h"
 #include "grid.h"
 #include "score_grid.h"
+#include "score_grid_gpu.h"
 
 void make_grids
 (
@@ -86,6 +87,24 @@ void make_grids
      fprintf (global.outfile,"Warning: receptor has less than 10 atoms\n");
      report_increment = 1;
   }
+
+#ifdef USE_METAL
+  /* Try GPU-accelerated path.  gpu_grid_init() returns 0 if GPU is
+     unavailable, in which case we fall through to the CPU loops. */
+  if (gpu_grid_init(energy, receptor, grid, bump, contact, chemical, label))
+  {
+    gpu_grid_upload(energy, receptor, grid, bump, contact, chemical, label);
+    gpu_grid_compute(soft_delta);
+    gpu_grid_download(energy, grid, bump, contact, chemical);
+    gpu_grid_cleanup();
+
+    fprintf (global.outfile, "%-40s: %8d\n",
+      "GPU grid computation finished", 100);
+    fflush (global.outfile);
+    return;
+  }
+#endif
+
   for (atomi = 0; atomi < receptor->total.atoms; atomi++)
   {
     inside_grid = TRUE;
