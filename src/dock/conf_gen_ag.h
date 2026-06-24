@@ -269,6 +269,10 @@ class           AG_Conformer_Search {
     std::string     pruning_cluster_rmsd_type;
     // RMSD type for final pose clustering (same values):
     std::string     final_pose_cluster_rmsd_type;
+    // Cached flag: true if the ligand has exploitable graph symmetry
+    // (computed once in prepare_molecule via WL color refinement).
+    // When false, Hungarian/min pruning fall back to standard RMSD.
+    bool            ligand_mol_symmetric;
     float           calc_layer_rmsd(CONFORMER &, CONFORMER &);  // standard layer-weighted RMSD
     float           calc_layer_rmsd_hungarian(CONFORMER &, CONFORMER &);  // layer-weighted symmetry-corrected Hungarian RMSD
     float           calc_layer_rmsd_min(CONFORMER &, CONFORMER &);  // layer-weighted one-way min RMSD

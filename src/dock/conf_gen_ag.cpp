@@ -191,6 +191,118 @@ AG_Conformer_Search::initialize_internal_energy_null(bool uie)
 }
 
 // +++++++++++++++++++++++++++++++++++++++++
+// Weisfeiler-Lehman (WL) color refinement for molecular graph symmetry detection.
+//
+// WL iteratively refines atom colors by hashing each atom's current color with
+// the sorted colors of its bonded neighbors. After ~3-6 rounds, colors converge
+// to stable "WL orbits" — atoms with the same WL color are indistinguishable in
+// the graph topology and are symmetric (can be permuted without breaking bonds).
+//
+// This is strictly stronger than counting atom types: two C.3 atoms bonded to
+// different substituents get different WL colors even though they share the same
+// DOCK type, correctly ruling out false symmetry. Conversely, D6h benzene ring
+// carbons all converge to one WL color, correctly identifying real symmetry.
+//
+// Returns true if any WL orbit contains 2+ heavy, active atoms — meaning the
+// Hungarian algorithm could find a non-trivial optimal matching for RMSD.
+// When false, Hungarian/min pruning RMSD falls back to standard RMSD since
+// there's no exploitable permutation to find.
+//
+static bool
+mol_has_symmetry(DOCKMol & mol)
+{
+    int i;
+    int N = mol.num_atoms;
+
+    // ----- Step 1: build adjacency for heavy, active atoms -----
+    vector<vector<int>> adj(N);
+    for (i = 0; i < mol.num_bonds; i++) {
+        if (!mol.bond_active_flags[i]) continue;
+        int u = mol.bonds_origin_atom[i];
+        int v = mol.bonds_target_atom[i];
+        if (mol.amber_at_heavy_flag[u] && mol.atom_active_flags[u] &&
+            mol.amber_at_heavy_flag[v] && mol.atom_active_flags[v]) {
+            adj[u].push_back(v);
+            adj[v].push_back(u);
+        }
+    }
+
+    // ----- Step 2: assign initial colors from DOCK atom type -----
+    map<string, int> type_to_color;
+    int next_color = 0;
+    vector<int> cur(N, -1);  // -1 = hydrogen / inactive, skip
+    for (i = 0; i < N; i++) {
+        if (mol.amber_at_heavy_flag[i] && mol.atom_active_flags[i]) {
+            auto it = type_to_color.find(mol.atom_types[i]);
+            if (it == type_to_color.end()) {
+                type_to_color[mol.atom_types[i]] = next_color;
+                cur[i] = next_color;
+                next_color++;
+            } else {
+                cur[i] = it->second;
+            }
+        }
+    }
+
+    // ----- Step 3: WL color refinement -----
+    bool changed = true;
+    int iterations = 0;
+    const int MAX_ITER = N > 0 ? N : 1;
+
+    while (changed && iterations < MAX_ITER) {
+        changed = false;
+        iterations++;
+
+        // Map: (color, sorted_neighbor_colors) -> new_color
+        map<pair<int, vector<int>>, int> refine_map;
+        next_color = 0;
+        vector<int> nxt(N, -1);
+
+        for (i = 0; i < N; i++) {
+            if (cur[i] < 0) continue;
+
+            // Collect neighbor colors
+            vector<int> ncols;
+            for (int nb : adj[i]) {
+                if (cur[nb] >= 0)
+                    ncols.push_back(cur[nb]);
+            }
+            sort(ncols.begin(), ncols.end());
+
+            auto key = pair<int, vector<int>>(cur[i], ncols);
+            auto it = refine_map.find(key);
+            if (it == refine_map.end()) {
+                refine_map[key] = next_color;
+                nxt[i] = next_color;
+                next_color++;
+            } else {
+                nxt[i] = it->second;
+            }
+        }
+
+        // Check convergence
+        for (i = 0; i < N; i++) {
+            if (cur[i] >= 0 && cur[i] != nxt[i]) {
+                changed = true;
+                cur = move(nxt);
+                break;
+            }
+        }
+    }
+
+    // ----- Step 4: any color group with 2+ atoms? -----
+    vector<int> color_counts(next_color, 0);
+    for (i = 0; i < N; i++) {
+        if (cur[i] >= 0) color_counts[cur[i]]++;
+    }
+    for (int c : color_counts) {
+        if (c >= 2) return true;
+    }
+    return false;
+}
+
+
+// +++++++++++++++++++++++++++++++++++++++++
 void
 AG_Conformer_Search::prepare_molecule(DOCKMol & mol)
 {
@@ -232,6 +344,16 @@ AG_Conformer_Search::prepare_molecule(DOCKMol & mol)
 
     anchor_positions.clear();
     anchor_positions.reserve(1000); // can store more than 1000 anchors dynamically
+
+    // Detect graph symmetry via WL color refinement.
+    // When no symmetry exists, Hungarian/min fall back to standard RMSD.
+    ligand_mol_symmetric = mol_has_symmetry(orig);
+
+    if (verbose) {
+        cout << "Ligand graph symmetry detection (WL color refinement): "
+             << (ligand_mol_symmetric ? "SYMMETRIC" : "NONE (no exploitable symmetry)")
+             << endl;
+    }
 }
 
 
@@ -1183,8 +1305,14 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                     for (k = j + 1; k < exp_seeds.size(); k++) {
                        if (!exp_seeds[k].used) {
 
-                            // Dispatch to RMSD function based on pruning_cluster_rmsd_type
-                            if (pruning_cluster_rmsd_type == "hungarian")
+                            // Dispatch to RMSD function based on pruning_cluster_rmsd_type.
+                            // If no graph symmetry detected, Hungarian/min fall back to std
+                            // to avoid paying the Hungarian O(n^4) cost for no benefit.
+                            if ((pruning_cluster_rmsd_type == "hungarian" ||
+                                 pruning_cluster_rmsd_type == "min") &&
+                                (!ligand_mol_symmetric))
+                                rmsd = calc_layer_rmsd(exp_seeds[j], exp_seeds[k]);
+                            else if (pruning_cluster_rmsd_type == "hungarian")
                                 rmsd = calc_layer_rmsd_hungarian(exp_seeds[j], exp_seeds[k]);
                             else if (pruning_cluster_rmsd_type == "min")
                                 rmsd = calc_layer_rmsd_min(exp_seeds[j], exp_seeds[k]);
@@ -1413,8 +1541,13 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                         for (k = j + 1; k < exp_seeds.size(); k++) {
                             if (!exp_seeds[k].used) {
 
-                                // Dispatch to RMSD function based on pruning_cluster_rmsd_type
-                                if (pruning_cluster_rmsd_type == "hungarian")
+                                // Dispatch to RMSD function based on pruning_cluster_rmsd_type.
+                                // Short-circuit: no symmetry → fall back to std (avoids Hungarian cost).
+                                if ((pruning_cluster_rmsd_type == "hungarian" ||
+                                     pruning_cluster_rmsd_type == "min") &&
+                                    (!ligand_mol_symmetric))
+                                    rmsd = calc_layer_rmsd(exp_seeds[j], exp_seeds[k]);
+                                else if (pruning_cluster_rmsd_type == "hungarian")
                                     rmsd = calc_layer_rmsd_hungarian(exp_seeds[j], exp_seeds[k]);
                                 else if (pruning_cluster_rmsd_type == "min")
                                     rmsd = calc_layer_rmsd_min(exp_seeds[j], exp_seeds[k]);
