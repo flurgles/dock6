@@ -1,4 +1,10 @@
 install/config.h
+install/config.h.withlto
+install/clang
+install/homebrew.opt
+install/default.profdata
+install/pgo_build*
+install/pgo_profiles/
 src/dock/gzstream/libgzstream.a
 src/dock/nab/lex.mm_options.c
 src/dock/nab/nab.a
