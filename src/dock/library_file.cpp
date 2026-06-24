@@ -1049,6 +1049,8 @@ Library_File::input_parameters_output(Parameter_Reader & parm, Master_Score & sc
                     exit(0);
                 }
                 num_clusterheads_rescore = atoi(parm.query_param("num_clusterheads_for_rescore", "5").c_str());
+                final_pose_cluster_rmsd_type = parm.query_param(
+                        "final_pose_cluster_rmsd_type", "std", "std hungarian min");
             }
 
         } 
@@ -1117,6 +1119,8 @@ Library_File::input_parameters_output(Parameter_Reader & parm, Master_Score & sc
                          << endl;
                     exit(0);
                 }
+                final_pose_cluster_rmsd_type = parm.query_param(
+                        "final_pose_cluster_rmsd_type", "std", "std hungarian min");
             }
         } 
         score_thres = atof(parm.query_param(
@@ -2817,7 +2821,12 @@ Library_File::cluster_list(){
                 if (cluster_assignments[j] > 0) {
                     double rmsds[3]; 
                     calculate_rmsd(ranked_poses[i].mol, ranked_poses[j].mol,rmsds);
-                    crmsd = rmsds[0];
+                    if (final_pose_cluster_rmsd_type == "hungarian")
+                        crmsd = rmsds[1];
+                    else if (final_pose_cluster_rmsd_type == "min")
+                        crmsd = rmsds[2];
+                    else
+                        crmsd = rmsds[0];
                     // if j-pose is close enough to i-pose, add it to i-cluster
                     if (crmsd < cluster_rmsd_threshold) {
                         ++ cluster_assignments[i];

@@ -10,7 +10,15 @@ using namespace std;
 class Hungarian_RMSD {
 
   public:
-    double  calc_Hungarian_RMSD(DOCKMol &, DOCKMol &);    // calculates hungarian rmsd
+    Hungarian_RMSD() : current_mat_size(0), matrix(NULL), matrix_original(NULL), matrix_case(NULL),
+                      row_count(NULL), column_count(NULL), row_assigned(NULL), column_assigned(NULL),
+                      matrix_match(NULL) {}
+    ~Hungarian_RMSD() { free_buffers(); }
+
+    double  calc_Hungarian_RMSD(DOCKMol &, DOCKMol &);    // calculates hungarian rmsd (standard, unweighted)
+    // Weighted variant: same as above but each atom's contribution is scaled by ref_weights[atom_idx].
+    // Used by pruning layer-weighted RMSD where atoms in later growth layers get higher weight.
+    double  calc_Hungarian_RMSD(DOCKMol &, DOCKMol &, const double *);
     std::pair <double, int>  calc_Hungarian_RMSD_dissimilar(DOCKMol &, DOCKMol &);    // calculates hungarian rmsd for two dissimilar molecules
 
   private:
@@ -19,6 +27,7 @@ class Hungarian_RMSD {
     double  rmsd;			// rmsd, calculated from total_assignment
     int     num_unique;			// number of unique atom types in DOCKMol object
     int     num_type;			// instances of a certain atom type in DOCKMol object
+    int     current_mat_size;		// current allocated size of all matrix/array buffers
 
 
     string  *unique_atom_types;		// list of unique atom types in DOCKMol object passed to this function
@@ -35,8 +44,9 @@ class Hungarian_RMSD {
     int     *matrix_match;		// If matrix_match[i] = j, then worker i is assigned job j
 
 
-    void    initialize();		// Allocate the memory for these matrices
-    void    clear();			// De-allocate the memory of these matrices
+    void    initialize();		// Allocate/reuse memory for matrices; only allocs if num_type > current_mat_size
+    void    clear();			// No-op during per-type iterations (buffers reused).
+    void    free_buffers();		// Actually deallocate all buffers (destructor + initialize realloc path).
 
     void    reset_match();		// Resets all matches to -100 (null value)
     void    reset_row_assigned();	// Resets all of row_assigned to 0

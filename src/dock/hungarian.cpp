@@ -134,6 +134,225 @@ double Hungarian_RMSD::calc_Hungarian_RMSD(DOCKMol & refmol, DOCKMol & mol){
 
 
 // +++++++++++++++++++++++++++++++++++++++++
+// Weighted variant of calc_Hungarian_RMSD.
+// Same symmetry-corrected Hungarian algorithm, but each pairwise cost is scaled by
+// ref_weights[refmol_atom_j] (the layer weight of the reference atom).
+// The RMSD is normalized by sum(ref_weights) instead of heavy_count.
+// Used by AG_Conformer_Search::calc_layer_rmsd_hungarian() for layer-weighted
+// pruning, where atoms added in later growth layers carry higher weight.
+//
+// Optimization: Instead of scanning all atoms for each type group (O(N) per type),
+// this version pre-builds a type-to-indices map (one O(N) pass).  The cost matrix
+// for each type is then built by directly iterating the pre-computed index lists,
+// eliminating all string::compare() calls from the inner loops.
+//
+// Further optimization: For type groups with only 1 atom, the Hungarian assignment
+// is trivial (just the distance), so we skip the algorithm entirely.
+//
+double Hungarian_RMSD::calc_Hungarian_RMSD(DOCKMol & refmol, DOCKMol & mol, const double* ref_weights){
+
+    if (refmol.num_atoms != mol.num_atoms){
+         fprintf(stderr, "DEBUG HUNG: num_atoms mismatch %d vs %d\n", refmol.num_atoms, mol.num_atoms);		// check to make sure reference molecule
+         rmsd =  -1000.0;  		  		// and pose molecule have same # of atoms
+         return rmsd;					// if not - return an invalid rmsd
+    }
+
+    MAX = 2147483647;			// A large double used to find minimum values
+    total_assignment = 0;		// the 'cost' of the solved matrix
+    rmsd = 0;				// the rmsd computed from cost
+    double total_weight = 0.0;		// sum of per-atom weights for normalization
+
+    // ----- Optimization: Pre-build type-to-atom-index lists -----
+    // Instead of the O(N * num_unique) string-compare loop to discover types
+    // followed by O(N) per-type scans, we build a map of type -> atom indices
+    // in a single O(N) pass.  Both mol and refmol indices are stored so
+    // cost-matrix construction can iterate directly without string compares.
+    //
+    // Use a simple parallel-arrays scheme (avoid std::map overhead in tight loop):
+    //   type_names[0..num_unique-1]  — the type strings
+    //   mol_idx[z]                   — vector of atom indices in mol of type z
+    //   ref_idx[z]                   — vector of atom indices in refmol of type z
+    //
+    string* type_names = new string[refmol.num_atoms];
+    int* type_for_atom_mol = new int[refmol.num_atoms];   // for each mol atom, which type index?
+    int* type_for_atom_ref = new int[refmol.num_atoms];   // for each refmol atom, which type index?
+    // We'll discover types from the mol perspective (same as original algorithm).
+
+    // Phase 1: Discover unique types from mol (same logic as original, but also
+    //           record type_for_atom_mol[] for O(1) lookup during index assembly).
+    num_unique = 0;
+    for (int i=0; i<refmol.num_atoms; i++) {
+        type_for_atom_mol[i] = -1;
+        if (mol.atom_types[i].compare("H") != 0) {
+            int t = 0;
+            while (t < num_unique && mol.atom_types[i].compare(type_names[t]) != 0)
+                t++;
+            if (t == num_unique) {
+                type_names[num_unique] = mol.atom_types[i];
+                num_unique++;
+            }
+            type_for_atom_mol[i] = t;
+        }
+    }
+
+    // Phase 2: Count atoms of each type in both mol and refmol.
+    //          Also determine refmol type indices.
+    int* mol_count  = new int[num_unique]();
+    int* ref_count  = new int[num_unique]();
+    for (int i=0; i<refmol.num_atoms; i++) {
+        if (type_for_atom_mol[i] >= 0)
+            mol_count[type_for_atom_mol[i]]++;
+        if (refmol.atom_types[i].compare("H") != 0) {
+            // Find which type index this refmol atom belongs to
+            int t = 0;
+            while (t < num_unique && refmol.atom_types[i].compare(type_names[t]) != 0)
+                t++;
+            if (t == num_unique) {
+                // This shouldn't happen if both molecules have same types, but handle gracefully
+                cout << "Warning: refmol atom type " << refmol.atom_types[i]
+                     << " not found in mol" << endl;
+                type_for_atom_ref[i] = -1;
+            } else {
+                type_for_atom_ref[i] = t;
+                ref_count[t]++;
+            }
+        } else {
+            type_for_atom_ref[i] = -1;
+        }
+    }
+
+    // Phase 3: Build per-type index lists using parallel arrays.
+    //          We pre-allocate based on counts, then populate with a second pass.
+    int** mol_type_indices  = new int*[num_unique];
+    int** ref_type_indices  = new int*[num_unique];
+    int*  mol_type_pos      = new int[num_unique]();  // current insert position
+    int*  ref_type_pos      = new int[num_unique]();
+    for (int z=0; z<num_unique; z++) {
+        mol_type_indices[z] = new int[mol_count[z]];
+        ref_type_indices[z] = new int[ref_count[z]];
+    }
+    for (int i=0; i<refmol.num_atoms; i++) {
+        int t;
+        t = type_for_atom_mol[i];
+        if (t >= 0) mol_type_indices[t][mol_type_pos[t]++] = i;
+        t = type_for_atom_ref[i];
+        if (t >= 0) ref_type_indices[t][ref_type_pos[t]++] = i;
+    }
+
+    // ----- Main type loop -----
+    // For each unique type, build the cost matrix and run Hungarian.
+    for (int z=0; z<num_unique; z++){
+
+        int n_mol = mol_count[z];
+        int n_ref = ref_count[z];
+
+        if (n_mol != n_ref){
+            cout <<"Warning: atom type " <<type_names[z] <<" has " <<n_mol <<" in the reference and "
+                 <<n_ref <<" in the mol object " <<endl;
+            goto cleanup_and_return;
+        }
+
+        num_type = n_mol;
+
+        // Optimization: For type groups with only 1 atom, the Hungarian algorithm
+        // is trivial — the optimal assignment is just the single distance.
+        // Skip the full algorithm and compute directly.
+        if (num_type == 1) {
+            int i = mol_type_indices[z][0];
+            int j = ref_type_indices[z][0];
+            double d2 = ((mol.x[i] - refmol.x[j]) * (mol.x[i] - refmol.x[j]) +
+                         (mol.y[i] - refmol.y[j]) * (mol.y[i] - refmol.y[j]) +
+                         (mol.z[i] - refmol.z[j]) * (mol.z[i] - refmol.z[j]));
+            total_assignment += d2 * ref_weights[j];
+            total_weight     += ref_weights[j];
+            continue;
+        }
+
+        initialize();		// Reuse existing buffers (only allocs if num_type > current_mat_size)
+
+        // Build the cost matrix using pre-computed atom index lists.
+        // Rows = mol atoms, columns = refmol atoms (both of type z).
+        // No string compares needed — we iterate the index vectors directly.
+        //
+        // Use static scratch for col_to_refmol_idx to avoid per-type heap alloc.
+        // Grows only if num_type exceeds current capacity.
+        static int* s_col_to_refmol_idx = NULL;
+        static int  s_col_capacity = 0;
+        if (num_type > s_col_capacity) {
+            delete[] s_col_to_refmol_idx;
+            s_col_to_refmol_idx = new int[num_type];
+            s_col_capacity = num_type;
+        }
+        int* col_to_refmol_idx = s_col_to_refmol_idx;
+        for (int ci = 0; ci < num_type; ci++) {
+            int i = mol_type_indices[z][ci];
+            for (int cj = 0; cj < num_type; cj++) {
+                int j = ref_type_indices[z][cj];
+                col_to_refmol_idx[cj] = j;
+                matrix[ci][cj] = ((mol.x[i] - refmol.x[j]) * (mol.x[i] - refmol.x[j]) +
+                                  (mol.y[i] - refmol.y[j]) * (mol.y[i] - refmol.y[j]) +
+                                  (mol.z[i] - refmol.z[j]) * (mol.z[i] - refmol.z[j]));
+                // Scale by ref_weights — atoms in later growth layers get higher weight
+                matrix[ci][cj] *= ref_weights[j];
+            }
+        }
+
+        hungarian();					// Hungarian algorithm assigns worker-job pairs for matrix[][],
+        						// results saved in matrix_match[]
+        double assignment = sum_assignment();	// Sum of original costs from matching
+        total_assignment += assignment;
+
+        // Sum weights of matched refmol atoms for proper RMSD normalization
+        for (int r = 0; r < num_type; r++) {
+            int c = matrix_match[r];
+            total_weight += ref_weights[col_to_refmol_idx[c]];
+        }
+        clear(); 				// no-op; buffers reused
+
+    } // end for each unique type
+
+    // Normalize by sum of weights instead of heavy_count
+    if (total_weight > 0.0)
+        rmsd = sqrt( (total_assignment/total_weight) );
+    else
+        rmsd = 0.0;
+
+    // ----- Cleanup temporary arrays -----
+    delete[] type_names;
+    delete[] type_for_atom_mol;
+    delete[] type_for_atom_ref;
+    delete[] mol_count;
+    delete[] ref_count;
+    delete[] mol_type_pos;
+    delete[] ref_type_pos;
+    for (int z=0; z<num_unique; z++) {
+        delete[] mol_type_indices[z];
+        delete[] ref_type_indices[z];
+    }
+    delete[] mol_type_indices;
+    delete[] ref_type_indices;
+    return rmsd;
+
+cleanup_and_return:
+    delete[] type_names;
+    delete[] type_for_atom_mol;
+    delete[] type_for_atom_ref;
+    delete[] mol_count;
+    delete[] ref_count;
+    delete[] mol_type_pos;
+    delete[] ref_type_pos;
+    for (int z=0; z<num_unique; z++) {
+        delete[] mol_type_indices[z];
+        delete[] ref_type_indices[z];
+    }
+    delete[] mol_type_indices;
+    delete[] ref_type_indices;
+    return -1000.0;
+
+} // end Hungarian_RMSD::calc_Hungarian_RMSD(DOCKMol&, DOCKMol&, const double*)
+
+
+// +++++++++++++++++++++++++++++++++++++++++
 // Function to calculate hungarian RMSD for two dissimilar molecules. The return values are the
 // symmetry-corrected RMSD for the matched atoms as a double and the number of unmatched-atoms 
 // as an int.
@@ -512,9 +731,17 @@ pair <double, int> Hungarian_RMSD::calc_Hungarian_RMSD_dissimilar(DOCKMol & refm
 // This function allocates the memory required for arrays
 //
 void Hungarian_RMSD::initialize(){
-   
-    // Citation for Hungarian Score
-    //cout << "To cite Hungarian RMSD use: \n Allen, W. J.; Rizzo, R. C. Implementation of the Hungarian Algorithm to Account for Ligand Symmetry and Similarity in Structure-Based Design, J. Chem. Inf. Model., 2014, 54, 518-529 \n" << endl;
+
+    // OPTIMIZATION: Buffer reuse.  Only allocate when num_type exceeds our
+    // current capacity.  Otherwise reuse existing buffers — the caller
+    // overwrites matrix[][] before each use, and algorithm steps call their
+    // own reset_*() functions on flag arrays before consuming them.
+    if (num_type <= current_mat_size)
+        return;
+
+    // Free existing buffers before re-growing
+    free_buffers();
+    current_mat_size = num_type;
 
     // Allocate the memory for the 2D arrays 
     matrix           =  new double* [num_type];		// cost matrix
@@ -945,11 +1172,25 @@ double Hungarian_RMSD::sum_assignment_dissimilar(int num_matched){
 
 
 // +++++++++++++++++++++++++++++++++++++++++
-// De-allocate the memory of each array at the end of each round of atom types
+// During normal per-type iterations, clear() is intentionally a no-op.
+// Buffers persist across type iterations and across conformer-pair
+// comparisons, dramatically reducing allocation overhead when this
+// is called thousands of times during pruning.
 //
 void Hungarian_RMSD::clear(){
+    // No-op — buffers are reused.
+    // The destructor or free_buffers() reclaims memory when done.
+}
 
-    for (int i=0; i<num_type; i++){
+
+// +++++++++++++++++++++++++++++++++++++++++
+// Actually deallocate all internal buffers.  Called by the destructor
+// and by initialize() when the buffer needs to grow past capacity.
+//
+void Hungarian_RMSD::free_buffers(){
+    if (current_mat_size == 0 && matrix == NULL) return;
+
+    for (int i=0; i<current_mat_size; i++){
         delete[] matrix[i];
         delete[] matrix_original[i];
         delete[] matrix_case[i];
@@ -960,10 +1201,20 @@ void Hungarian_RMSD::clear(){
     delete[] matrix_case;
 
     delete[] row_count;
-    delete[] column_count;	
+    delete[] column_count;
     delete[] row_assigned;
-    delete[] column_assigned;	
+    delete[] column_assigned;
     delete[] matrix_match;
+
+    matrix  = NULL;
+    matrix_original = NULL;
+    matrix_case     = NULL;
+    row_count       = NULL;
+    column_count    = NULL;
+    row_assigned    = NULL;
+    column_assigned = NULL;
+    matrix_match    = NULL;
+    current_mat_size = 0;
 }
 
 

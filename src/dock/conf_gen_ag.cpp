@@ -9,6 +9,7 @@
 #include "amber_typer.h"
 #include "conf_gen_ag.h"
 #include "fingerprint.h"
+#include "hungarian.h"
 #include "master_score.h"
 #include "simplex.h"
 #include "trace.h"
@@ -100,7 +101,14 @@ AG_Conformer_Search::input_parameters(Parameter_Reader & parm)
                     << endl;
                 exit(0);
             }
-            
+
+            // RMSD type for pruning clustering during anchor+growth:
+            //   "std"      — standard layer-weighted heavy-atom RMSD (default)
+            //   "hungarian" — symmetry-corrected via Hungarian algorithm, layer-weighted
+            //   "min"      — one-way minimum RMSD, layer-weighted
+            // For final pose clustering, see final_pose_cluster_rmsd_type in library_file.cpp.
+            pruning_cluster_rmsd_type = parm.query_param("pruning_cluster_rmsd_type", "std", "std hungarian min");
+
             anchor_score_cutoff = 1000.0;
             num_growth_poses = INT_MAX;
             anchor_score_cutoff = atof(parm.query_param("pruning_orient_score_cutoff", "1000.0").c_str());
@@ -862,6 +870,118 @@ AG_Conformer_Search::calc_layer_rmsd(CONFORMER & a, CONFORMER & b)
 }
 
 
+// +++++++++++++++++++++++++++++++++++++++++
+// Layer-weighted symmetry-corrected (Hungarian) RMSD for pruning clustering.
+// Same layer-weighting scheme as calc_layer_rmsd(), but uses the Hungarian
+// algorithm to find the optimal 1-to-1 matching of symmetry-equivalent atoms
+// (same DOCK atom type) before computing distances. This prevents artificially
+// high RMSD when chemically equivalent atoms (e.g., phenyl ring carbons) are
+// permuted between conformers.
+//
+// Builds a per-atom weight array from growth layer information, then delegates
+// to Hungarian_RMSD::calc_Hungarian_RMSD(DOCKMol&, DOCKMol&, const double*)
+// which handles the weighted symmetry-corrected matching.
+//
+float
+AG_Conformer_Search::calc_layer_rmsd_hungarian(CONFORMER & a, CONFORMER & b)
+{
+    int             i, j, k;
+    int             atom;
+
+    // Build per-atom weight array: weight[atom_idx] = layer_index + 1
+    // Same layer traversal as calc_layer_rmsd() to ensure consistent weighting
+    double* weights = new double[a.structure.num_atoms]();
+
+    for (i = 0; i < layers.size(); i++) {
+        for (j = 0; j < layers[i].segments.size(); j++) {
+            for (k = 0; k < layer_segments[layers[i].segments[j]].atoms.size(); k++) {
+                atom = layer_segments[layers[i].segments[j]].atoms[k];
+                weights[atom] = (double)(i + 1);
+            }
+        }
+    }
+
+    // Delegate to weighted Hungarian RMSD on the DOCKMol structures
+    // The Hungarian_RMSD class handles per-type cost matrix construction,
+    // Hungarian algorithm, and weighted normalization internally.
+    Hungarian_RMSD hr;
+    double rmsd = hr.calc_Hungarian_RMSD(a.structure, b.structure, weights);
+
+    delete[] weights;
+    return (float)rmsd;
+}
+
+
+// +++++++++++++++++++++++++++++++++++++++++
+// Layer-weighted one-way minimum RMSD for pruning clustering.
+// For each heavy, active atom in conformer A, finds the closest same-type atom
+// in conformer B (one-way matching). This gives a lower-bound RMSD that is
+// not symmetric (calc_layer_rmsd_min(A,B) != calc_layer_rmsd_min(B,A)), but
+// is computationally cheaper than the full Hungarian algorithm.
+//
+// Atoms in later growth layers carry higher weight, matching the weighting
+// scheme used by calc_layer_rmsd() and calc_layer_rmsd_hungarian().
+//
+float
+AG_Conformer_Search::calc_layer_rmsd_min(CONFORMER & a, CONFORMER & b)
+{
+    int             i, j, k;
+    int             atom, m;
+    float           rmsd = 0.0;
+    float           total_weight = 0.0;
+
+    // For each heavy, active atom in A (grouped by layer), find the closest
+    // same-DOCK-type atom in B. Weight the contribution by (layer_index + 1)
+    // so that atoms added in later growth layers are more influential.
+    for (i = 0; i < layers.size(); i++) {
+        for (j = 0; j < layers[i].segments.size(); j++) {
+            for (k = 0; k < layer_segments[layers[i].segments[j]].atoms.size(); k++) {
+
+                atom = layer_segments[layers[i].segments[j]].atoms[k];
+
+                if (a.structure.atom_active_flags[atom]
+                    && a.structure.amber_at_heavy_flag[atom]) {
+
+                    float mindist2 = 1.0e20;
+
+                    // Search all heavy, active atoms in B for the closest
+                    // match of the same DOCK atom type
+                    for (m = 0; m < b.structure.num_atoms; m++) {
+                        if (b.structure.atom_active_flags[m]
+                            && b.structure.amber_at_heavy_flag[m]
+                            && a.structure.atom_types[atom] == b.structure.atom_types[m]) {
+
+                            float d2 =
+                                (a.structure.x[atom] - b.structure.x[m]) *
+                                (a.structure.x[atom] - b.structure.x[m]) +
+                                (a.structure.y[atom] - b.structure.y[m]) *
+                                (a.structure.y[atom] - b.structure.y[m]) +
+                                (a.structure.z[atom] - b.structure.z[m]) *
+                                (a.structure.z[atom] - b.structure.z[m]);
+
+                            if (d2 < mindist2)
+                                mindist2 = d2;
+                        }
+                    }
+
+                    if (mindist2 < 1.0e20) {
+                        rmsd += mindist2 * (float)(i + 1);
+                        total_weight += (float)(i + 1);
+                    }
+                }
+            }
+        }
+    }
+
+    if (total_weight > 0.0)
+        rmsd = sqrt(rmsd / total_weight);
+    else
+        rmsd = 0.0;
+
+    return rmsd;
+}
+
+
 // +++++++++++++++++++++++++++++++++++++++++/
 float
 AG_Conformer_Search::calc_active_rmsd(CONFORMER & ref, CONFORMER & conf)
@@ -1063,7 +1183,13 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                     for (k = j + 1; k < exp_seeds.size(); k++) {
                        if (!exp_seeds[k].used) {
 
-                            rmsd = calc_layer_rmsd(exp_seeds[j], exp_seeds[k]);
+                            // Dispatch to RMSD function based on pruning_cluster_rmsd_type
+                            if (pruning_cluster_rmsd_type == "hungarian")
+                                rmsd = calc_layer_rmsd_hungarian(exp_seeds[j], exp_seeds[k]);
+                            else if (pruning_cluster_rmsd_type == "min")
+                                rmsd = calc_layer_rmsd_min(exp_seeds[j], exp_seeds[k]);
+                            else
+                                rmsd = calc_layer_rmsd(exp_seeds[j], exp_seeds[k]);
                             rmsd = MAX(rmsd, 0.001);
 
                             if ((float) k / rmsd > RMSD_CUTOFF) {
@@ -1287,7 +1413,13 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                         for (k = j + 1; k < exp_seeds.size(); k++) {
                             if (!exp_seeds[k].used) {
 
-                                rmsd = calc_layer_rmsd(exp_seeds[j], exp_seeds[k]);
+                                // Dispatch to RMSD function based on pruning_cluster_rmsd_type
+                                if (pruning_cluster_rmsd_type == "hungarian")
+                                    rmsd = calc_layer_rmsd_hungarian(exp_seeds[j], exp_seeds[k]);
+                                else if (pruning_cluster_rmsd_type == "min")
+                                    rmsd = calc_layer_rmsd_min(exp_seeds[j], exp_seeds[k]);
+                                else
+                                    rmsd = calc_layer_rmsd(exp_seeds[j], exp_seeds[k]);
                                 rmsd = MAX(rmsd, 0.001);
 
                                 if ((float) k / rmsd > RMSD_CUTOFF) {

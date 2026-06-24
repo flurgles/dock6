@@ -260,7 +260,18 @@ class           AG_Conformer_Search {
     bool            next_anchor(DOCKMol &);     // 
     void            extend_layers(int, int, int);       // 
     bool            submit_anchor_orientation(DOCKMol &, bool); // 
-    float           calc_layer_rmsd(CONFORMER &, CONFORMER &);  // 
+    // RMSD type for pruning clustering: "std" (standard layer-weighted heavy-atom),
+    // "hungarian" (symmetry-corrected with Hungarian algorithm, layer-weighted),
+    // or "min" (one-way minimum RMSD, layer-weighted).
+    // RMSD type for pruning clustering: "std" (standard layer-weighted heavy-atom),
+    // "hungarian" (symmetry-corrected with Hungarian algorithm, layer-weighted),
+    // or "min" (one-way minimum RMSD, layer-weighted).
+    std::string     pruning_cluster_rmsd_type;
+    // RMSD type for final pose clustering (same values):
+    std::string     final_pose_cluster_rmsd_type;
+    float           calc_layer_rmsd(CONFORMER &, CONFORMER &);  // standard layer-weighted RMSD
+    float           calc_layer_rmsd_hungarian(CONFORMER &, CONFORMER &);  // layer-weighted symmetry-corrected Hungarian RMSD
+    float           calc_layer_rmsd_min(CONFORMER &, CONFORMER &);  // layer-weighted one-way min RMSD
     float           calc_active_rmsd(CONFORMER &, CONFORMER &);  // 2008-11-17 trent balius add  
     void            grow_periphery(Master_Score &, Minimizer &, Bump_Filter &);
     void            conf_header(CONFORMER &, std::string, Master_Score &);

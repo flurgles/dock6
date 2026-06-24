@@ -122,6 +122,7 @@ class           Library_File:public Base_MPI {
     bool            cluster_ranked_poses;
     INTVec          cluster_assignments;  // maps ranked_poses to cluster size;
     float           cluster_rmsd_threshold;
+    std::string     final_pose_cluster_rmsd_type;
     int             num_clusterheads_rescore;
     int             num_poses_written; //Owen 3/20
 

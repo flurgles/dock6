@@ -24,5 +24,7 @@ src/tleap/helptext.c
 src/tleap/parser.c
 src/tleap/utilMakeHelp
 .pi/
+projects-memory/
 CLAUDE.md
 *.DS_Store
+src/dock/dock6.gpu
