@@ -11,11 +11,10 @@
 # for GPU-accelerated scoring and simplex minimization.
 # Produces dock6.gpu as the executable.
 #
-# NOTE: -flto (link-time optimization) can strip Metal/Objective-C
-# symbols at link time, causing GPU initialization failure.  If you
-# need LTO for CPU performance, test dock6.gpu carefully (look for
-# the "Metal GPU ready" message at startup).  Remove -flto from
-# CFLAGS/CXXFLAGS if GPU is not detected.
+# NOTE: Do NOT add -flto to CFLAGS/CXXFLAGS — it strips Metal/Objective-C
+# symbols at link time, causing GPU initialization failure.  The
+# Makefile already filters -flto from .mm compilation, but LTO at the
+# link step still kills the Metal symbols.
 
 # CC is the C compiler
 # CFLAGS is the flags for the C compiler
