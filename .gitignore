@@ -28,3 +28,8 @@ projects-memory/
 CLAUDE.md
 *.DS_Store
 src/dock/dock6.gpu
+package.json
+package-lock.json
+log.md
+project.log
+.gitignore
