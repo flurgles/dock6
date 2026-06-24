@@ -14,7 +14,6 @@ class Hungarian_RMSD {
     std::pair <double, int>  calc_Hungarian_RMSD_dissimilar(DOCKMol &, DOCKMol &);    // calculates hungarian rmsd for two dissimilar molecules
 
   private:
-    int     NUM;			// Number of atoms in DOCKMol object
     double  MAX;			// A large int used to find minimum values
     double  total_assignment;		// The sum of assignments for all atom types
     double  rmsd;			// rmsd, calculated from total_assignment

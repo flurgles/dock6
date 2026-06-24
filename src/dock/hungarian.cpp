@@ -11,19 +11,18 @@ double Hungarian_RMSD::calc_Hungarian_RMSD(DOCKMol & refmol, DOCKMol & mol){
          return rmsd;					// if not - return an invalid rmsd
     }
 
-    NUM = mol.num_atoms;		// number of atoms in the molecule
     MAX = 2147483647;			// A large double used to find minimum values
     total_assignment = 0;		// the 'cost' of the solved matrix
     rmsd = 0;				// the rmsd computed from cost
 
-    unique_atom_types = new string [NUM];	// A list of unique atom types in mol
+    unique_atom_types = new string [refmol.num_atoms];	// A list of unique atom types in mol
     num_unique = 0;				// the number of unique atom types
 
     // Compile a list of unique atom types that occur in mol - ignoring hydrogen
     bool unique_flag = true;
-    for (int i=0; i<NUM; i++){						// for each atom in mol
+    for (int i=0; i<refmol.num_atoms; i++){					// for each atom in mol
       if (mol.atom_types[i].compare("H") != 0){				// (ignore hydrogens)
-        for (int j=0; j<num_unique+1; j++){				// for every entry in unique_atom_types
+        for (int j=0; j<num_unique; j++){				// for every entry in unique_atom_types
             if (mol.atom_types[i].compare(unique_atom_types[j]) == 0){	// if that atom type has already been
                 unique_flag = false;					// added to the list, then break the 
                 break;							// inner for-loop
@@ -44,7 +43,7 @@ double Hungarian_RMSD::calc_Hungarian_RMSD(DOCKMol & refmol, DOCKMol & mol){
 
         num_type = 0;		// the number of times unique_atom_types[z] occurs in mol
 
-        for (int i=0; i<NUM; i++){					// for every atom in mol, check the atom type
+        for (int i=0; i<refmol.num_atoms; i++){					// for every atom in mol, check the atom type
             if (mol.atom_types[i].compare(unique_atom_types[z]) == 0){  // and increment num_type if it matches the
                 num_type++;						// atom type for this iteration of the loop (z)
             }
@@ -54,7 +53,7 @@ double Hungarian_RMSD::calc_Hungarian_RMSD(DOCKMol & refmol, DOCKMol & mol){
 
         int num_type2 = 0;    // temporary counter for the next check
 
-        for (int i=0; i<NUM; i++){                                         // for every atom in refmol,
+        for (int i=0; i<refmol.num_atoms; i++){                                         // for every atom in refmol,
             if (refmol.atom_types[i].compare(unique_atom_types[z]) == 0){  // if the atom type is equal to 'z',
                 num_type2++;                                               // then increment the counter
             }
@@ -74,11 +73,11 @@ double Hungarian_RMSD::calc_Hungarian_RMSD(DOCKMol & refmol, DOCKMol & mol){
         int count_i = -1;	// counter for forming matrix[][]
         int count_j = -1;	// counter for forming matrix[][]
 
-        for (int i=0; i<NUM; i++){							// for each atom in mol,
+        for (int i=0; i<refmol.num_atoms; i++){						// for each atom in mol,
             if (mol.atom_types[i].compare(unique_atom_types[z]) == 0){			// if the atom_type matches,
                 count_i++;								// move to the appropriate row
                 count_j = -1;								// in matrix[][]
-                for (int j=0; j<NUM; j++){						// then for each atom in refmol,
+                for (int j=0; j<refmol.num_atoms; j++){						// then for each atom in refmol,
                     if (refmol.atom_types[j].compare(unique_atom_types[z]) == 0){	// if the atom type matches,
                         count_j++;							// move to the appropriate column
                         matrix[count_i][count_j] = ((mol.x[i] - refmol.x[j])*(mol.x[i] - refmol.x[j])) +	// in matrix[][] and enter the 
@@ -115,7 +114,7 @@ double Hungarian_RMSD::calc_Hungarian_RMSD(DOCKMol & refmol, DOCKMol & mol){
 
     int heavy_count = 0;			// number of heavy atoms in mol
 
-    for (int i=0; i<NUM; i++){ 			// for each atom in mol,
+    for (int i=0; i<refmol.num_atoms; i++){ 		// for each atom in mol,
         if (mol.amber_at_heavy_flag[i]){ 	// if the atom is a 'heavy atom' (not hydrogen), then
             heavy_count++;			// increment the counter 'heavy_count'
         }
@@ -164,7 +163,7 @@ pair <double, int> Hungarian_RMSD::calc_Hungarian_RMSD_dissimilar(DOCKMol & refm
         // CS:2016-06-23, Adjusted to count active atoms only
         if (refmol.atom_active_flags[i] == true){
             if (refmol.atom_types[i].compare("H") != 0){
-              for (int j=0; j<num_unique_refmol+1; j++){
+              for (int j=0; j<num_unique_refmol; j++){
                   if (refmol.atom_types[i].compare(unique_atom_types_refmol[j]) == 0){
                      unique_flag = false; 
                      break;
@@ -187,7 +186,7 @@ pair <double, int> Hungarian_RMSD::calc_Hungarian_RMSD_dissimilar(DOCKMol & refm
         // CS:2016-06-23, Adjusted to count active atoms only
         if (mol.atom_active_flags[i] == true){
             if (mol.atom_types[i].compare("H") != 0){
-               for (int j=0; j<num_unique_mol+1; j++){
+               for (int j=0; j<num_unique_mol; j++){
                    if (mol.atom_types[i].compare(unique_atom_types_mol[j]) == 0){
                        unique_flag = false; 
                        break;
@@ -334,7 +333,6 @@ pair <double, int> Hungarian_RMSD::calc_Hungarian_RMSD_dissimilar(DOCKMol & refm
         // Initialize the matrices based on num_type
         //cout <<"num_type when initializing = " <<num_type <<endl;
         initialize();
-        NUM = 1000;
 
 
         // Populate 'matrix[][]' with distances (needs to be done slightly different depending on
@@ -552,7 +550,7 @@ void Hungarian_RMSD::hungarian(){
 
     // This while loop will end when every worker is assigned a job
     int count_cycles = 0;
-    while (count_cycles < (NUM*NUM)){
+    while (count_cycles < (num_type*num_type)){
 
         // Step 2: Attempt to assign one job to each worker - if number of assignments is less
         // than number of workers, go to Step 3, else skip to end.
