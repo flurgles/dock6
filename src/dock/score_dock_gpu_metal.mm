@@ -76,6 +76,7 @@ static const char* shader_src = \
 "    constant GridParams&   gp           [[buffer(7)]],\n"
 "    constant int&          num_atoms    [[buffer(8)]],\n"
 "    device float*          out_scores   [[buffer(9)]],\n"
+"    device const int*     active_flags [[buffer(10)]],\n"
 "    uint                   tid          [[thread_position_in_grid]])\n"
 "{\n"
 "    int atoms_per_pose = num_atoms;\n"
@@ -94,7 +95,9 @@ static const char* shader_src = \
 "        float bvdw = trilinear(grid_bvdw, gp, x, y, z);\n"
 "        float es = trilinear(grid_es, gp, x, y, z);\n"
 "\n"
-"        score += vdwA[a] * vdw - vdwB[a] * bvdw + charges[a] * es;\n"
+"        if (active_flags[a]) {\n"
+"            score += vdwA[a] * vdw - vdwB[a] * bvdw + charges[a] * es;\n"
+"        }\n"
 "    }\n"
 "\n"
 "    out_scores[tid] = score;\n"
@@ -179,6 +182,7 @@ static const char* shader_src = \
 "    device const int*      nb_int         [[buffer(11)]],\n"
 "    constant IEParams&     iep            [[buffer(12)]],\n"
 "    constant int&          num_nb_pairs   [[buffer(13)]],\n"
+"    device const int*     active_flags   [[buffer(14)]],\n"
 "    uint                   tid            [[thread_position_in_grid]])\n"
 "{\n"
 "    int atoms_per_pose = num_atoms;\n"
@@ -195,15 +199,17 @@ static const char* shader_src = \
 "        float y = xyz[o3 + 1];\n"
 "        float z = xyz[o3 + 2];\n"
 "\n"
-"        if (!inside_grid(gp, x, y, z)) {\n"
-"            has_outside_atom = true;\n"
+"        if (active_flags[a]) {\n"
+"            if (!inside_grid(gp, x, y, z)) {\n"
+"                has_outside_atom = true;\n"
+"            }\n"
+"\n"
+"            float vdw = trilinear(grid_avdw, gp, x, y, z);\n"
+"            float bvdw = trilinear(grid_bvdw, gp, x, y, z);\n"
+"            float es = trilinear(grid_es, gp, x, y, z);\n"
+"\n"
+"            grid_score += vdwA[a] * vdw - vdwB[a] * bvdw + charges[a] * es;\n"
 "        }\n"
-"\n"
-"        float vdw = trilinear(grid_avdw, gp, x, y, z);\n"
-"        float bvdw = trilinear(grid_bvdw, gp, x, y, z);\n"
-"        float es = trilinear(grid_es, gp, x, y, z);\n"
-"\n"
-"        grid_score += vdwA[a] * vdw - vdwB[a] * bvdw + charges[a] * es;\n"
 "    }\n"
 "\n"
 "    /* ---- Internal energy ---- */\n"
@@ -462,9 +468,11 @@ static float score_xyz(thread const float *xyz, int num_atoms,
                         device const float *charges,
                         constant GridParams &gp,
                         device const float *ie_vdwA, device const int *nb_int,
-                        constant IEParams &iep, int nnp) {
+                        constant IEParams &iep, int nnp,
+                        device const int *active_flags) {
     float grid_score = 0.0;
     for (int a = 0; a < num_atoms; a++) {
+        if (!active_flags[a]) continue;
         float x = xyz[a*3], y = xyz[a*3+1], z = xyz[a*3+2];
         if (!inside_grid(gp, x, y, z)) return -3.40282347e+38;
         float vdw = trilinear(gavdw, gp, x, y, z);
@@ -556,7 +564,8 @@ kernel void simplex_iteration_kernel(
     dof_to_xyz(pr, *mol, xyz);
     float score_refl = score_xyz(xyz, na, gavdw, gbvdw, ges,
                                   vdwA, vdwB, charges, gp,
-                                  ie_vdwA, nb_int, iep, num_nb_pairs);
+                                  ie_vdwA, nb_int, iep, num_nb_pairs,
+                                  mol->active_flags);
     if (score_refl < -1e30) { state[0] = -1; return; }
 
     /* 5. Decision tree */
@@ -568,7 +577,8 @@ kernel void simplex_iteration_kernel(
         dof_to_xyz(prr, *mol, xyz);
         float score_exp = score_xyz(xyz, na, gavdw, gbvdw, ges,
                                      vdwA, vdwB, charges, gp,
-                                     ie_vdwA, nb_int, iep, num_nb_pairs);
+                                     ie_vdwA, nb_int, iep, num_nb_pairs,
+                                     mol->active_flags);
         if (score_exp < -1e30) { state[0] = -1; return; }
 
         if (score_exp < score_refl) {
@@ -600,7 +610,8 @@ kernel void simplex_iteration_kernel(
         dof_to_xyz(prr, *mol, xyz);
         float score_con = score_xyz(xyz, na, gavdw, gbvdw, ges,
                                      vdwA, vdwB, charges, gp,
-                                     ie_vdwA, nb_int, iep, num_nb_pairs);
+                                     ie_vdwA, nb_int, iep, num_nb_pairs,
+                                     mol->active_flags);
         if (score_con < -1e30) { state[0] = -1; return; }
 
         if (score_con < scores[ihi]) {
@@ -623,7 +634,8 @@ kernel void simplex_iteration_kernel(
                     dof_to_xyz(local_dof, *mol, xyz);
                     float s = score_xyz(xyz, na, gavdw, gbvdw, ges,
                                          vdwA, vdwB, charges, gp,
-                                         ie_vdwA, nb_int, iep, num_nb_pairs);
+                                         ie_vdwA, nb_int, iep, num_nb_pairs,
+                                         mol->active_flags);
                     if (s < -1e30) { state[0] = -1; return; }
                     scores[i] = s;
                 }
@@ -669,6 +681,7 @@ static id<MTLBuffer> g_buf_nb_int     = nil;
 static id<MTLBuffer> g_buf_xyz        = nil;
 static id<MTLBuffer> g_buf_scores     = nil;
 /* Persistent constant buffers (allocated once, reused per dispatch) */
+static id<MTLBuffer> g_buf_active_flags = nil;  /* int active_flags[num_atoms] */
 static id<MTLBuffer> g_buf_params     = nil;  /* DockGridParams */
 static id<MTLBuffer> g_buf_natoms     = nil;  /* int num_atoms */
 static id<MTLBuffer> g_buf_iep        = nil;  /* IEParams */
@@ -856,6 +869,7 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
         g_buf_natoms = alloc_buffer(sizeof(int), "natoms");
         g_buf_iep    = alloc_buffer(32, "iep"); /* holds IEParams struct */
         g_buf_nnp    = alloc_buffer(sizeof(int), "nnp");
+        g_buf_active_flags = alloc_buffer(sizeof(int) * GPU_MAX_ATOMS, "active_flags");
 
         /* Allocate per-batch buffers */
         g_buf_xyz    = alloc_buffer(sizeof(float) * 3 * GPU_MAX_ATOMS * GPU_MAX_POSES, "xyz");
@@ -864,7 +878,8 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
         if (!g_buf_vdwA || !g_buf_vdwB || !g_buf_charges ||
             !g_buf_ie_vdwA || !g_buf_nb_int ||
             !g_buf_xyz || !g_buf_scores ||
-            !g_buf_params || !g_buf_natoms || !g_buf_iep || !g_buf_nnp) {
+            !g_buf_params || !g_buf_natoms || !g_buf_iep || !g_buf_nnp ||
+            !g_buf_active_flags) {
             fprintf(stderr, "GPU-DOCK: per-batch buffer allocation failed\n");
             dock_gpu_cleanup();
             return 0;
@@ -980,6 +995,7 @@ int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
         [enc setBuffer:g_buf_natoms offset:0 atIndex:8];
 
         [enc setBuffer:g_buf_scores offset:0 atIndex:9];
+        [enc setBuffer:g_buf_active_flags offset:0 atIndex:10];
 
         MTLSize threadsPerGrid  = MTLSizeMake(num_poses, 1, 1);
         NSUInteger tg = MIN(g_pso.maxTotalThreadsPerThreadgroup, (NSUInteger)256);
@@ -1005,7 +1021,7 @@ int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
 
 
 int dock_gpu_batch_score_with_ie(const float *xyz, int num_poses, int num_atoms,
-                                  float *out_scores)
+                                  const int *active_flags, float *out_scores)
 {
     if (!g_initialized || !g_device) { return 0; }
     if (g_num_nb_pairs == 0) {
@@ -1053,6 +1069,10 @@ int dock_gpu_batch_score_with_ie(const float *xyz, int num_poses, int num_atoms,
         [enc setBuffer:g_buf_iep       offset:0 atIndex:12];
         write_nnp(g_num_nb_pairs);
         [enc setBuffer:g_buf_nnp       offset:0 atIndex:13];
+        if (active_flags) {
+            memcpy([g_buf_active_flags contents], active_flags, sizeof(int) * (size_t)num_atoms);
+        }
+        [enc setBuffer:g_buf_active_flags offset:0 atIndex:14];
 
         MTLSize threadsPerGrid  = MTLSizeMake(num_poses, 1, 1);
         NSUInteger tg = MIN(g_pso_ie.maxTotalThreadsPerThreadgroup, (NSUInteger)256);
@@ -1087,6 +1107,7 @@ void dock_gpu_cleanup(void)
         g_buf_charges    = nil;
         g_buf_ie_vdwA    = nil;
         g_buf_nb_int     = nil;
+        g_buf_active_flags = nil;
         g_buf_xyz        = nil;
         g_buf_scores     = nil;
         g_buf_vertex_dof = nil;

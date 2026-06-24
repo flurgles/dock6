@@ -72,7 +72,7 @@ int dock_gpu_set_ligand_ie(const float *ie_vdwA, const float *ie_vdwB,
    Requires dock_gpu_set_ligand_ie() to have been called.
    Returns 1 on success, 0 on error. */
 int dock_gpu_batch_score_with_ie(const float *xyz, int num_poses, int num_atoms,
-                                  float *out_scores);
+                                  const int *active_flags, float *out_scores);
 
 /* Upload per-atom scoring parameters (constant per ligand).
    vdwA, vdwB, charges: arrays of length num_atoms.

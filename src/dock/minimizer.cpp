@@ -565,6 +565,10 @@ Minimizer::gpu_batch_eval_scores(Base_Score & score,
 
     int na = ref_mol.num_atoms;
     float *xyz = new float[n * na * 3];
+    int *active_flags = new int[na];
+    for (int a = 0; a < na; a++) {
+        active_flags[a] = ref_mol.atom_active_flags[a] ? 1 : 0;
+    }
 
     /* For each vertex: apply vector_to_dockmol, extract coordinates */
     for (int vi = 0; vi < n; vi++) {
@@ -583,8 +587,9 @@ Minimizer::gpu_batch_eval_scores(Base_Score & score,
     }
 
     /* Launch GPU batch with internal energy */
-    int ok = dock_gpu_batch_score_with_ie(xyz, n, na, scores);
+    int ok = dock_gpu_batch_score_with_ie(xyz, n, na, active_flags, scores);
     delete[] xyz;
+    delete[] active_flags;
 
     if (!ok) {
         /* No IE data loaded — fall back to CPU */

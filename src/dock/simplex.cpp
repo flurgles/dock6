@@ -756,7 +756,6 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                     float *score_flat = new float[nv];
                     for (i = 0; i < nv; i++) score_flat[i] = y[i];
 
-                    /* Run GPU simplex */
                     dock_gpu_simplex_init();
                     gpu_simplex_ok = dock_gpu_simplex_minimize(
                         ref_xyz_flat, active_flat, na,

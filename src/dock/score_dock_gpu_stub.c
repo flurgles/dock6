@@ -45,9 +45,9 @@ int dock_gpu_set_ligand_ie(const float *ie_vdwA, const float *ie_vdwB,
 }
 
 int dock_gpu_batch_score_with_ie(const float *xyz, int num_poses, int num_atoms,
-                                  float *out_scores)
+                                  const int *active_flags, float *out_scores)
 {
-    (void)xyz; (void)num_poses; (void)num_atoms; (void)out_scores;
+    (void)xyz; (void)num_poses; (void)num_atoms; (void)active_flags; (void)out_scores;
     return 0;  /* not implemented on CPU */
 }
 
