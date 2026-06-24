@@ -1,6 +1,5 @@
 install/config.h
 install/config.h.withlto
-install/clang
 install/homebrew.opt
 install/default.profdata
 install/pgo_build*
