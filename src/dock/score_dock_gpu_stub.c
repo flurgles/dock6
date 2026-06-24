@@ -59,3 +59,42 @@ int dock_gpu_is_active(void)
 {
     return 0;
 }
+
+
+void dock_gpu_simplex_init(void)
+{
+}
+
+
+int dock_gpu_simplex_minimize(const float *ref_xyz,
+                               const int *active_flags,
+                               int num_atoms, int num_active_atoms,
+                               int num_torsions,
+                               const int *torsion_a1,
+                               const int *torsion_a2,
+                               const int *torsion_a3,
+                               const int *torsion_a4,
+                               const int *child_idx_flat,
+                               const int *child_starts,
+                               const int *child_counts,
+                               float *dof, float *scores,
+                               int dof_size, int nverts,
+                               int max_iterations,
+                               float score_converge)
+{
+    (void)ref_xyz; (void)active_flags;
+    (void)num_atoms; (void)num_active_atoms;
+    (void)num_torsions;
+    (void)torsion_a1; (void)torsion_a2;
+    (void)torsion_a3; (void)torsion_a4;
+    (void)child_idx_flat; (void)child_starts; (void)child_counts;
+    (void)dof; (void)scores;
+    (void)dof_size; (void)nverts;
+    (void)max_iterations; (void)score_converge;
+    return 0;  /* not implemented on CPU */
+}
+
+
+void dock_gpu_simplex_cleanup(void)
+{
+}

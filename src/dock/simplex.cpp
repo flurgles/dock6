@@ -678,7 +678,140 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                 }
             }
             delta = y[0];
-        
+
+            /* ---- GPU-side simplex: run all iterations on GPU ---- */
+            if (use_gpu) {
+                /* Extract molecule reference data for GPU */
+                float *ref_xyz_flat = new float[ref_mol.num_atoms * 3];
+                int *active_flat     = new int[ref_mol.num_atoms];
+                int na = ref_mol.num_atoms;
+                int nv = size + 1;
+                for (i = 0; i < na; i++) {
+                    ref_xyz_flat[i*3]   = ref_mol.x[i];
+                    ref_xyz_flat[i*3+1] = ref_mol.y[i];
+                    ref_xyz_flat[i*3+2] = ref_mol.z[i];
+                    active_flat[i] = ref_mol.atom_active_flags[i] ? 1 : 0;
+                }
+
+                /* Torsion definitions */
+                int nt = (int)torsions.size();
+                int *ta1 = new int[nt], *ta2 = new int[nt];
+                int *ta3 = new int[nt], *ta4 = new int[nt];
+                int *tbn = new int[nt];
+                for (i = 0; i < nt; i++) {
+                    ta1[i] = torsions[i].atom1;
+                    ta2[i] = torsions[i].atom2;
+                    ta3[i] = torsions[i].atom3;
+                    ta4[i] = torsions[i].atom4;
+                    tbn[i] = torsions[i].bond_num;
+                }
+
+                /* Child atom lists for each torsion */
+                bool has_dir_torsions = false;
+                int *child_starts = NULL;
+                int *child_counts = NULL;
+                int *child_idx_flat = NULL;
+                for (i = 0; i < nt; i++) {
+                    if (bond_vectors[tbn[i]] != -1) { has_dir_torsions = true; break; }
+                }
+
+                bool gpu_simplex_ok = false;
+                if (!has_dir_torsions) {
+                    /* Build child index flat arrays */
+                    child_starts = new int[nt];
+                    child_counts = new int[nt];
+                    int total_children = 0;
+                    /* First pass: count children */
+                    for (i = 0; i < nt; i++) {
+                        int bond_idx = ref_mol.get_bond(ta2[i], ta3[i]);
+                        int cl_idx;
+                        if (ta2[i] < ta3[i])
+                            cl_idx = 2 * bond_idx;
+                        else
+                            cl_idx = 2 * bond_idx + 1;
+                        child_counts[i] = (int)ref_mol.atom_child_list[cl_idx].size();
+                        total_children += child_counts[i];
+                    }
+                    /* Second pass: fill flat array */
+                    child_idx_flat = new int[total_children > 0 ? total_children : 1];
+                    int off = 0;
+                    for (i = 0; i < nt; i++) {
+                        child_starts[i] = off;
+                        int bond_idx = ref_mol.get_bond(ta2[i], ta3[i]);
+                        int cl_idx;
+                        if (ta2[i] < ta3[i])
+                            cl_idx = 2 * bond_idx;
+                        else
+                            cl_idx = 2 * bond_idx + 1;
+                        for (j = 0; j < child_counts[i]; j++)
+                            child_idx_flat[off++] = ref_mol.atom_child_list[cl_idx][j];
+                    }
+
+                    /* Pack initial p[][] and y[] into flat arrays */
+                    float *dof_flat = new float[nv * size];
+                    for (i = 0; i < nv; i++) {
+                        for (j = 0; j < size; j++)
+                            dof_flat[i * size + j] = p[i][j];
+                    }
+                    float *score_flat = new float[nv];
+                    for (i = 0; i < nv; i++) score_flat[i] = y[i];
+
+                    /* Run GPU simplex */
+                    dock_gpu_simplex_init();
+                    gpu_simplex_ok = dock_gpu_simplex_minimize(
+                        ref_xyz_flat, active_flat, na,
+                        ref_mol.num_active_atoms, nt,
+                        ta1, ta2, ta3, ta4,
+                        child_idx_flat, child_starts, child_counts,
+                        dof_flat, score_flat, size, nv,
+                        max_iterations, score_converge);
+
+                    if (gpu_simplex_ok) {
+                        /* Read back results into p[][] and y[] */
+                        for (i = 0; i < nv; i++) {
+                            for (j = 0; j < size; j++)
+                                p[i][j] = dof_flat[i * size + j];
+                            y[i] = score_flat[i];
+                        }
+
+                        /* Find best vertex */
+                        ilo = 0;
+                        for (i = 1; i < nv; i++) {
+                            if (y[i] < y[ilo]) ilo = i;
+                        }
+                        ihi = 0;
+                        for (i = 1; i < nv; i++) {
+                            if (y[i] > y[ihi]) ihi = i;
+                        }
+
+                        /* Update iteration count to appear converged */
+                        iteration = max_iterations + 1;
+                    }
+
+                    delete[] dof_flat;
+                    delete[] score_flat;
+                    delete[] child_idx_flat;
+                    child_idx_flat = NULL;  /* prevent double-free in outer cleanup */
+                }
+
+                delete[] ref_xyz_flat;
+                delete[] active_flat;
+                delete[] ta1; delete[] ta2; delete[] ta3; delete[] ta4;
+                delete[] tbn;
+                delete[] child_starts;
+                delete[] child_counts;
+                delete[] child_idx_flat;  /* NULL-safe if inner block ran */
+
+                if (!gpu_simplex_ok) {
+                    /* GPU simplex failed — continue to CPU path */
+                    use_gpu = false;
+                } else {
+                    /* GPU succeeded — skip the CPU loop */
+                    goto end_of_simplex;
+                }
+            }
+
+            /* ---- CPU path: fallback (original code below) ---- */
         } else {
 
             // Begin a new iteration
@@ -923,6 +1056,7 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
     } while ((iteration++ < max_iterations)
              && (fabs(y[ihi] - y[ilo]) > score_converge));
 
+end_of_simplex:
     // store best scoring vertex
     for (i = 0; i < size; i++){
         vertex[i] = p[ilo][i];

@@ -89,6 +89,52 @@ void dock_gpu_cleanup(void);
 /* Returns 1 if GPU is active and ready for batch scoring. */
 int dock_gpu_is_active(void);
 
+
+/* ------------------------------------------------------------------ */
+/*  GPU-side Simplex Minimization API                                  */
+/* ------------------------------------------------------------------ */
+
+/* Initialize GPU simplex: compile simplex kernel, allocate state buffers.
+   Called automatically inside dock_gpu_simplex_minimize if not already
+   initialized.  Safe to call multiple times (no-op after first). */
+void dock_gpu_simplex_init(void);
+
+/* Run GPU-side simplex minimization for a single anchor/conformation.
+
+   ref_xyz:  reference molecule coords, float[num_atoms][3] flat.
+   active_flags: int[num_atoms] (1=active for COM calculation).
+   torsion_a1..a4: int[num_torsions] — torsion atom indices.
+   child_idx_flat: int[total_children] — flattened child atom indices.
+   child_starts, child_counts: int[num_torsions] — offset/count into child_idx_flat.
+   dof:  initial DOF vectors, float[nverts][dof_size] flat.
+   scores: initial scores, float[nverts].
+   dof_size: dimension of each DOF vector (6 + num_torsions).
+   nverts: number of simplex vertices (dof_size + 1).
+   max_iterations: maximum simplex iterations.
+   score_converge: convergence threshold (|worst - best| < score_converge).
+
+   Output:
+   dof:  final vertex DOF (ilo), overwrites input.
+   scores: final scores, overwrites input.
+   Returns 1 on success, 0 on fallback-to-CPU. */
+int dock_gpu_simplex_minimize(const float *ref_xyz,
+                               const int *active_flags,
+                               int num_atoms, int num_active_atoms,
+                               int num_torsions,
+                               const int *torsion_a1,
+                               const int *torsion_a2,
+                               const int *torsion_a3,
+                               const int *torsion_a4,
+                               const int *child_idx_flat,
+                               const int *child_starts,
+                               const int *child_counts,
+                               float *dof, float *scores,
+                               int dof_size, int nverts,
+                               int max_iterations,
+                               float score_converge);
+
+void dock_gpu_simplex_cleanup(void);
+
 #ifdef __cplusplus
 }
 #endif
