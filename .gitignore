@@ -18,4 +18,6 @@ install/test/solvgrid_generation/solvmapsev
 src/tleap/helptext.c
 src/tleap/parser.c
 src/tleap/utilMakeHelp
+.pi/
+CLAUDE.md
 *.DS_Store
