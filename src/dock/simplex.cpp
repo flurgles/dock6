@@ -5,6 +5,7 @@
 #include "minimizer.h"
 #include "simplex.h"
 #include "conf_gen_ag.h"
+#include "score_dock_gpu.h"
 
 using namespace std;
 
@@ -17,6 +18,7 @@ using namespace std;
 #include "minimizer.h"
 #include "simplex.h"
 #include "conf_gen_ag.h"
+#include "score_dock_gpu.h"
 
 using namespace std;
 
@@ -655,12 +657,27 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                                                       init_verts, trans_step_size,
                                                       rot_step_size, tors_step_size,
                                                       (float)Econstraint, init_scores);
-                if (!gpu_ok) {
+                if (gpu_ok) {
+                    for (i = 0; i < size + 1; i++) y[i] = init_scores[i];
                     delete[] init_scores;
-                    return failure_exit(ref_mol.current_score + ref_mol.internal_energy + Econstraint);
+                } else {
+                    /* GPU batch scoring failed (e.g. IE data not uploaded
+                       for rigid path) — fall back to CPU scoring */
+                    delete[] init_scores;
+                    for (i = 0; i < size + 1; i++) {
+                        for (j = 0; j < size; j++) vertex[j] = p[i][j];
+                        if (eval_score(score, ref_mol, tmp_mol, vertex, trans_step_size,
+                             rot_step_size, tors_step_size)) {
+                             if (restrained_min)
+                                 Econstraint = coefficient_restraint * calc_active_rmsd2(rmsd_ref, tmp_mol);
+                             else
+                                 Econstraint = 0.0;
+                             y[i] = tmp_mol.current_score + tmp_mol.internal_energy + Econstraint;
+                        } else {
+                             return failure_exit(ref_mol.current_score + ref_mol.internal_energy + Econstraint);
+                        }
+                    }
                 }
-                for (i = 0; i < size + 1; i++) y[i] = init_scores[i];
-                delete[] init_scores;
             } else {
                 /* CPU fallback: score one by one */
                 for (i = 0; i < size + 1; i++) {
@@ -756,14 +773,58 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                     float *score_flat = new float[nv];
                     for (i = 0; i < nv; i++) score_flat[i] = y[i];
 
+                    /* Upload ligand atom parameters to GPU */
+                    {
+                        float *gpu_vdwA = new float[na];
+                        float *gpu_vdwB = new float[na];
+                        float *gpu_chg  = new float[na];
+                        for (int ai = 0; ai < na; ai++) {
+                            int type = ref_mol.amber_at_id[ai];
+                            gpu_vdwA[ai] = score.vdwA[type];
+                            gpu_vdwB[ai] = score.vdwB[type];
+                            gpu_chg[ai]  = ref_mol.charges[ai];
+                        }
+
+                        dock_gpu_set_ligand(gpu_vdwA, gpu_vdwB, gpu_chg, na);
+                        delete[] gpu_vdwA;
+                        delete[] gpu_vdwB;
+                        delete[] gpu_chg;
+                    }
+                    /* Upload IE data to GPU if internal energy is active
+                       and not skipped by rigid anchor minimization. */
+                    if (!skip_internal_energy && score.use_internal_energy && (int)score.nb_int.size() > 0) {
+                        float *gpu_ie_vdwA = new float[na];
+                        for (int ai = 0; ai < na; ai++) {
+                            gpu_ie_vdwA[ai] = score.ie_vdwA[ai]; /* per-atom, not per-type */
+                        }
+                        int np = (int)score.nb_int.size();
+                        int *gpu_nb_flat = new int[np * 2];
+                        for (int pi = 0; pi < np; pi++) {
+                            gpu_nb_flat[pi*2]   = score.nb_int[pi].first;
+                            gpu_nb_flat[pi*2+1] = score.nb_int[pi].second;
+                        }
+                        dock_gpu_set_ligand_ie(gpu_ie_vdwA, NULL, gpu_nb_flat, np,
+                                               score.ie_soft_delta,
+                                               score.ie_vdw_cutoff_sq);
+                        delete[] gpu_ie_vdwA;
+                        delete[] gpu_nb_flat;
+                    }
+
                     dock_gpu_simplex_init();
+                    float eff_trans = trans_step_size / (float)(current_cycle + 1);
+                    float eff_rot   = rot_step_size   / (current_cycle + 1);
+                    float eff_tors  = tors_step_size  / (current_cycle + 1);
+
+
                     gpu_simplex_ok = dock_gpu_simplex_minimize(
                         ref_xyz_flat, active_flat, na,
                         ref_mol.num_active_atoms, nt,
                         ta1, ta2, ta3, ta4,
                         child_idx_flat, child_starts, child_counts,
+                        torsion_scale_factors.data(),
                         dof_flat, score_flat, size, nv,
-                        max_iterations, score_converge);
+                        max_iterations, score_converge,
+                        eff_trans, eff_rot, eff_tors);
 
                     if (gpu_simplex_ok) {
                         /* Read back results into p[][] and y[] */
@@ -782,7 +843,6 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                         for (i = 1; i < nv; i++) {
                             if (y[i] > y[ihi]) ihi = i;
                         }
-
                         /* Update iteration count to appear converged */
                         iteration = max_iterations + 1;
                     }

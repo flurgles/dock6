@@ -77,10 +77,14 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
                                const int *child_idx_flat,
                                const int *child_starts,
                                const int *child_counts,
+                               const int *torsion_scale_factors,
                                float *dof, float *scores,
                                int dof_size, int nverts,
                                int max_iterations,
-                               float score_converge)
+                               float score_converge,
+                               float trans_step_size,
+                               float rot_step_size,
+                               float tors_step_size)
 {
     (void)ref_xyz; (void)active_flags;
     (void)num_atoms; (void)num_active_atoms;
@@ -88,9 +92,11 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
     (void)torsion_a1; (void)torsion_a2;
     (void)torsion_a3; (void)torsion_a4;
     (void)child_idx_flat; (void)child_starts; (void)child_counts;
+    (void)torsion_scale_factors;
     (void)dof; (void)scores;
     (void)dof_size; (void)nverts;
     (void)max_iterations; (void)score_converge;
+    (void)trans_step_size; (void)rot_step_size; (void)tors_step_size;
     return 0;  /* not implemented on CPU */
 }
 

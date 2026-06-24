@@ -218,6 +218,7 @@ static const char* shader_src = \
 "        for (int p = 0; p < num_nb_pairs; p++) {\n"
 "            int a1 = nb_int[p * 2];\n"
 "            int a2 = nb_int[p * 2 + 1];\n"
+"            if (!active_flags[a1] || !active_flags[a2]) continue;\n"
 "\n"
 "            int o1 = base + a1 * 3;\n"
 "            int o2 = base + a2 * 3;\n"
@@ -276,6 +277,10 @@ struct MolData {
     int   num_atoms;
     int   num_active_atoms;
     int   num_torsions;
+    float trans_step;
+    float rot_step;
+    float tors_step;
+    float torsion_scale_factors[MAX_TORSIONS];
     int   torsion_a1[MAX_TORSIONS];
     int   torsion_a2[MAX_TORSIONS];
     int   torsion_a3[MAX_TORSIONS];
@@ -444,14 +449,18 @@ static void dof_to_xyz(thread const float *dof, device const MolData &mol,
         xyz[i*3+1] = mol.ref_xyz[i][1];
         xyz[i*3+2] = mol.ref_xyz[i][2];
     }
-    float3 trans = {dof[0], dof[1], dof[2]};
-    float3 quat = {dof[3], dof[4], dof[5]};
+    float3 trans = {dof[0] * mol.trans_step,
+                    dof[1] * mol.trans_step,
+                    dof[2] * mol.trans_step};
+    float3 quat  = {dof[3] * mol.rot_step,
+                    dof[4] * mol.rot_step,
+                    dof[5] * mol.rot_step};
     float3x3 rmat;
     quat_to_rmat(rmat, quat);
     float3 com = compute_com(mol);
     rigid_transform(xyz, na, com, trans, rmat);
     for (int t = 0; t < mol.num_torsions; t++) {
-        float delta_deg = dof[6 + t];
+        float delta_deg = dof[6 + t] * mol.tors_step / mol.torsion_scale_factors[t];
         if (fabs(delta_deg) < 1e-10) continue;
         float cur_deg = dihedral_degrees(xyz, mol.torsion_a1[t], mol.torsion_a2[t],
                                           mol.torsion_a3[t], mol.torsion_a4[t]);
@@ -484,6 +493,7 @@ static float score_xyz(thread const float *xyz, int num_atoms,
     if (nnp > 0) {
         for (int p = 0; p < nnp; p++) {
             int a1 = nb_int[p*2], a2 = nb_int[p*2+1];
+            if (!active_flags[a1] || !active_flags[a2]) continue;
             float dx = xyz[a1*3]-xyz[a2*3];
             float dy = xyz[a1*3+1]-xyz[a2*3+1];
             float dz = xyz[a1*3+2]-xyz[a2*3+2];
@@ -1161,10 +1171,14 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
                                const int *child_idx_flat,
                                const int *child_starts,
                                const int *child_counts,
+                               const int *torsion_scale_factors,
                                float *dof, float *scores,
                                int dof_size, int nverts,
                                int max_iterations,
-                               float score_converge)
+                               float score_converge,
+                               float trans_step_size,
+                               float rot_step_size,
+                               float tors_step_size)
 {
     if (!g_initialized || !g_pso_simplex) return 0;
 
@@ -1188,6 +1202,8 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
             size_t mol_size = sizeof(float) * GPU_MAX_ATOMS * 3
                             + sizeof(int) * GPU_MAX_ATOMS
                             + 3 * sizeof(int)
+                            + 3 * sizeof(float)
+                            + sizeof(float) * GPU_MAX_TORSIONS
                             + sizeof(int) * GPU_MAX_TORSIONS * 4
                             + sizeof(int) * GPU_MAX_TORSIONS * GPU_MAX_ATOMS
                             + sizeof(int) * GPU_MAX_TORSIONS;
@@ -1211,6 +1227,10 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
             int   num_atoms;
             int   num_active_atoms;
             int   num_torsions;
+            float trans_step;
+            float rot_step;
+            float tors_step;
+            float torsion_scale_factors[50];
             int   torsion_a1[50];
             int   torsion_a2[50];
             int   torsion_a3[50];
@@ -1231,8 +1251,12 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
         md.num_atoms = num_atoms;
         md.num_active_atoms = num_active_atoms;
         md.num_torsions = num_torsions;
+        md.trans_step = trans_step_size;
+        md.rot_step   = rot_step_size;
+        md.tors_step  = tors_step_size;
 
         for (i = 0; i < num_torsions && i < 50; i++) {
+            md.torsion_scale_factors[i] = (float)torsion_scale_factors[i];
             md.torsion_a1[i] = torsion_a1[i];
             md.torsion_a2[i] = torsion_a2[i];
             md.torsion_a3[i] = torsion_a3[i];
@@ -1262,6 +1286,7 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
         /* Scores go into the first nverts floats of g_buf_simplex_state */
         float *sdst = (float *)g_buf_simplex_state.contents;
         for (i = 0; i < nverts; i++) sdst[i] = scores[i];
+
 
         /* State = {converged, iter, n, max_iter} */
         int *statep = (int *)g_buf_simplex_state.contents;
@@ -1331,6 +1356,8 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
             }
             scores[i] = final_scores[i];
         }
+
+
 
         /* Success */
         return 1;

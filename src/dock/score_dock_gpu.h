@@ -128,10 +128,14 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
                                const int *child_idx_flat,
                                const int *child_starts,
                                const int *child_counts,
+                               const int *torsion_scale_factors,
                                float *dof, float *scores,
                                int dof_size, int nverts,
                                int max_iterations,
-                               float score_converge);
+                               float score_converge,
+                               float trans_step_size,
+                               float rot_step_size,
+                               float tors_step_size);
 
 void dock_gpu_simplex_cleanup(void);
 

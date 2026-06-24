@@ -118,7 +118,6 @@ Minimizer::minimize(Base_Score & score, DOCKMol & mol,
         // loop over simplex cycles
         while ((current_cycle < max_cycles)
                && ((distance > cycle_converge) || (current_cycle == 0))) {
- 
             // call simplex minimizer
             do_minimize(score, mol, vertex, max_iterations, score_converge,
                              trans_step_size, rot_step_size, tors_step_size);
