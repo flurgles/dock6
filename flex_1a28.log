@@ -1,6 +1,0 @@
-=== Flex tests for 1A28 ===
-1A28,flex_simplex,FAILED,0,SUCCESS
-1A28,flex_bobyqa_default,FAILED,0,SUCCESS
-1A28,flex_bobyqa_block_diag,FAILED,0,SUCCESS
-1A28,flex_bobyqa_full_quad,FAILED,0,SUCCESS
-=== Done with flex tests for 1A28 ===

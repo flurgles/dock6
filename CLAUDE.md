@@ -94,6 +94,11 @@ The build is controlled by `install/config.h` (created by `./configure`, manuall
 Located in `install/test/` with per-feature directories. Run with `make test` from `install/`.
 
 ## Important Notes
+- **Always pass `-v` flag** for all dock6 runs — output contains timing data, pruning stats, and scoring messages needed for analysis. This applies to dock6, grid, and all related binaries. NEVER run dock6 without `-v` — without it, output lacks timing, pruning, and scoring details needed for analysis. Same for DOCK 4.0.1 grid binary.
+- **GPU builds: `-flto` can strip Metal/Objective-C symbols** — disable LTO if dock6.clang or grid binary is missing Metal framework linkage. Symbol `dock_gpu_init` will be missing from binary even if `.mm` compiles. Fix: remove `-flto` from CFLAGS/CXXFLAGS.
+- **Be patient with computational code** — don't jump to "hang" conclusions. DOCK6 flex docking, grid generation, and GPU dispatches can take over an hour. Wait/check `ps aux` before assuming a hang.
+- **GPU pre-pruning is useless** — scoring un-minimized conformers doesn't predict post-minimization rankings. Any pre-pruning threshold risks throwing away poses that would have minimized to good ones. Only prune AFTER minimization, or run full minimization on GPU.
+- **DOCK 4.0.1 grid binary quirks**: absolute `-i` path → exit 70 (crash). Must `cd` to output dir + use relative filenames in .in file. vdw.defn/chem.defn either symlinked from shared location or in CWD. grid_soft_delta parameter required in .in file.
 - **Never edit config templates** (`install/gnu`, `install/homebrew`); edit `install/config.h` instead
 - The main `dock6` executable links NO Fortran code; Fortran is only in separate utilities
 - NAB library provides Amber scoring support
@@ -110,4 +115,4 @@ Use context-mode (`ctx_execute`, `ctx_execute_file`, `ctx_search`, `ctx_stats`) 
 5. **`ctx_index` + `ctx_search`** for docs/repos you'll query repeatedly — never re-read raw.
 6. **NEVER** `bash` + `grep | head -100` or `cat large.log` — use `ctx_execute` with processing code.
 7. **Bash whitelist only**: `edit`, `write`, `git add/commit/push`, `cd`, `ls`, `mkdir`, `echo`, `mv`, `cp`, `rm`.
-8. **Monitor**: `ctx_stats` every 5-10 turns; if "entered context" > 100KB, compress immediately.
+8. **Monitor**: `ctx_stats` every 5-10 turns; if "entered context" > 80KB, compress immediately.

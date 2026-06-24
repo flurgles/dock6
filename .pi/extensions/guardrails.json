@@ -21,6 +21,34 @@
       {
         "kind": "directory",
         "path": "~/.pi/agent"
+      },
+      {
+        "kind": "directory",
+        "path": "/@<TRIPOS>ATOM"
+      },
+      {
+        "kind": "directory",
+        "path": "/dev"
+      },
+      {
+        "kind": "directory",
+        "path": ""
+      },
+      {
+        "kind": "directory",
+        "path": "/opt"
+      },
+      {
+        "kind": "directory",
+        "path": "/Users"
+      },
+      {
+        "kind": "directory",
+        "path": "/Library/Developer"
+      },
+      {
+        "kind": "directory",
+        "path": "/Applications"
       }
     ]
   },
