@@ -224,6 +224,7 @@ constexpr sampler grid_sampler(filter::linear, address::clamp_to_edge);
 #define MAX_ATOMS 512
 #define MAX_TORSIONS 50
 #define DOF_MAX (6 + MAX_TORSIONS)
+#define MAX_SIMPLEX_THREADS 256
 
 struct GridParams {
     float origin_x, origin_y, origin_z;
@@ -446,9 +447,9 @@ static float score_grid(
 }
 
 /* Parallel IE scoring — called by ALL threads. Each thread processes
- * (nnp / tg_size) pairs via strided loop, then each thread writes its
- * partial sum to tg_sums[tid]. Thread 0 sums all partials after barrier.
- * This avoids platform-dependent SIMD group query functions.
+ * (nnp / tg_size) pairs via strided loop, then SIMD-group reduction via
+ * simd_sum + one write per SIMD group. This eliminates TGM bank conflicts
+ * (256 threads → 8 SIMD groups → 8 writes instead of 256).
  */
 static float ie_score_parallel(
     device const float *xyz, int nnp,
@@ -456,7 +457,8 @@ static float ie_score_parallel(
     constant IEParams &iep,
     device const int *active_flags,
     uint tid, int tg_size,
-    threadgroup float *tg_sums) {
+    threadgroup float *tg_sums,
+    int sg_size) {
     float partial = 0.0;
     if (nnp > 0) {
         for (int p = tid; p < nnp; p += tg_size) {
@@ -473,11 +475,16 @@ static float ie_score_parallel(
             }
         }
     }
-    tg_sums[tid] = partial;
+    /* SIMD-group reduction — 1 write per SIMD group instead of 1 per thread */
+    float simd_val = simd_sum(partial);
+    if (simd_is_first()) {
+        tg_sums[tid / sg_size] = simd_val;
+    }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if (tid == 0) {
         float total = 0.0;
-        for (int i = 0; i < tg_size; i++) total += tg_sums[i];
+        int num_sg = tg_size / sg_size;
+        for (int s = 0; s < num_sg; s++) total += tg_sums[s];
         return total;
     }
     return 0.0;
@@ -507,6 +514,7 @@ kernel void simplex_iteration_kernel(
     constant IEParams&     iep           [[buffer(12)]],
     constant int&          num_nb_pairs  [[buffer(13)]],
     constant int&          tg_size       [[buffer(14)]],
+    constant int&          sg_size_buf   [[buffer(15)]],
     uint tid                       [[thread_position_in_grid]])
 {
     int n = state[2];       /* DOF size */
@@ -523,12 +531,12 @@ kernel void simplex_iteration_kernel(
     threadgroup float tg_pr[DOF_MAX];
     threadgroup float tg_prr[DOF_MAX];
     threadgroup float tg_grid_refl;
-    threadgroup float tg_grid_second;
+    float grid_score_second;  /* per-thread local; only thread 0 uses it */
     threadgroup int tg_ilo, tg_ihi, tg_inhi;
     threadgroup int tg_widx;
     threadgroup int tg_action;   /* 0=accept, 1=expand, 2=contract, 3=shrink */
     threadgroup int tg_repl_flag;
-    threadgroup float tg_ie_sums[256]; /* per-thread partial IE sums (up to max threads) */
+    threadgroup float tg_ie_sums[MAX_SIMPLEX_THREADS / 16]; /* SIMD-group-reduced IE sums */
 
     for (int iter = 0; iter < state[3]; iter++) {
         if (state[0]) return;  /* ALL threads — safe exit */
@@ -569,7 +577,7 @@ kernel void simplex_iteration_kernel(
 
         float ie_refl = ie_score_parallel(xyz_dev, nnp, ie_vdwA, nb_int, iep,
                                            mol->active_flags,
-                                           tid, tg_size, tg_ie_sums);
+                                           tid, tg_size, tg_ie_sums, sg_size_buf);
 
         /* ===== Decision tree — set up next action ===== */
         if (tid == 0) {
@@ -584,10 +592,10 @@ kernel void simplex_iteration_kernel(
                     for (int j = 0; j < dof_max; j++)
                         tg_prr[j] = tg_centroid[j] + gamma * (tg_pr[j] - tg_centroid[j]);
                     dof_to_xyz(tg_prr, *mol, xyz_dev);
-                    tg_grid_second = score_grid(xyz_dev, na, grid_avdw, grid_bvdw, grid_es,
+                    grid_score_second = score_grid(xyz_dev, na, grid_avdw, grid_bvdw, grid_es,
                                                  vdwA, vdwB, charges, gp,
                                                  mol->active_flags);
-                    if (tg_grid_second < -1e30) {
+                    if (grid_score_second < -1e30) {
                         state[5] = -1; state[0] = 1; tg_action = 0;
                     } else {
                         tg_action = 1;
@@ -603,10 +611,10 @@ kernel void simplex_iteration_kernel(
                             tg_prr[j] = tg_centroid[j] + beta * (vertex_dof[tg_widx + j] - tg_centroid[j]);
                     }
                     dof_to_xyz(tg_prr, *mol, xyz_dev);
-                    tg_grid_second = score_grid(xyz_dev, na, grid_avdw, grid_bvdw, grid_es,
+                    grid_score_second = score_grid(xyz_dev, na, grid_avdw, grid_bvdw, grid_es,
                                                  vdwA, vdwB, charges, gp,
                                                  mol->active_flags);
-                    if (tg_grid_second < -1e30) {
+                    if (grid_score_second < -1e30) {
                         state[5] = -1; state[0] = 1; tg_action = 0;
                     } else {
                         tg_action = 2;
@@ -625,10 +633,10 @@ kernel void simplex_iteration_kernel(
             threadgroup_barrier(mem_flags::mem_device);
             float ie_second = ie_score_parallel(xyz_dev, nnp, ie_vdwA, nb_int, iep,
                                                   mol->active_flags,
-                                                  tid, tg_size, tg_ie_sums);
+                                                  tid, tg_size, tg_ie_sums, sg_size_buf);
 
             if (tid == 0 && state[5] >= 0) {
-                float total_second = tg_grid_second + ie_second;
+                float total_second = grid_score_second + ie_second;
                 float total_refl = tg_grid_refl + ie_refl;
 
                 if (tg_action == 1) {
@@ -668,7 +676,8 @@ kernel void simplex_iteration_kernel(
         /* ===== Shrink loop (if contract failed) ===== */
         if (tg_action == 3) {
             for (int si = 0; si < nverts; si++) {
-                if (tid == 0 && si != tg_ilo) {
+                if (si == tg_ilo) continue;  /* skip best vertex — unchanged */
+                if (tid == 0) {
                     int wi = si * dof_max;
                     for (int j = 0; j < dof_max; j++) {
                         float old = vertex_dof[wi + j];
@@ -676,17 +685,17 @@ kernel void simplex_iteration_kernel(
                     }
                     for (int j = 0; j < dof_max; j++) tg_pr[j] = vertex_dof[wi + j];
                     dof_to_xyz(tg_pr, *mol, xyz_dev);
-                    tg_grid_second = score_grid(xyz_dev, na, grid_avdw, grid_bvdw, grid_es,
+                    grid_score_second = score_grid(xyz_dev, na, grid_avdw, grid_bvdw, grid_es,
                                                  vdwA, vdwB, charges, gp,
                                                  mol->active_flags);
-                    if (tg_grid_second < -1e30) { state[5] = -1; state[0] = 1; }
+                    if (grid_score_second < -1e30) { state[5] = -1; state[0] = 1; }
                 }
                 threadgroup_barrier(mem_flags::mem_device);
                 float ie_s = ie_score_parallel(xyz_dev, nnp, ie_vdwA, nb_int, iep,
                                                 mol->active_flags,
-                                                tid, tg_size, tg_ie_sums);
+                                                tid, tg_size, tg_ie_sums, sg_size_buf);
                 if (tid == 0 && state[5] >= 0) {
-                    scores[si] = tg_grid_second + ie_s;
+                    scores[si] = grid_score_second + ie_s;
                 }
             }
             tg_action = 0;  /* shrink complete */
@@ -719,7 +728,9 @@ static id<MTLCommandQueue>         g_cmdq       = nil;
 static id<MTLComputePipelineState> g_pso        = nil;  /* grid-only kernel */
 static id<MTLComputePipelineState> g_pso_ie    = nil;  /* grid+IE kernel */
 static id<MTLComputePipelineState> g_pso_simplex = nil; /* simplex kernel */
+#define MAX_SIMPLEX_THREADS_C 256
 static int g_simplex_threads         = 128;  /* threads per dispatch for parallel IE */
+static int g_simplex_simd_width      = 32;   /* SIMD group width (device-dependent) */
 
 /* GPU buffers (shared memory) */
 static id<MTLBuffer> g_buf_grid_avdw  = nil;
@@ -907,9 +918,10 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
         {
             NSUInteger max_tg = [g_pso_simplex maxTotalThreadsPerThreadgroup];
             NSUInteger sw = [g_pso_simplex threadExecutionWidth];
-            g_simplex_threads = (int)MIN(max_tg, (NSUInteger)256);
+            g_simplex_threads = (int)MIN(max_tg, (NSUInteger)MAX_SIMPLEX_THREADS_C);
             /* Round down to multiple of simd width */
             g_simplex_threads = (g_simplex_threads / (int)sw) * (int)sw;
+            g_simplex_simd_width = (int)sw;
             fprintf(stderr, "GPU-DOCK: simplex threads=%d (max_tg=%lu, simd=%lu)\n",
                     g_simplex_threads, (unsigned long)max_tg, (unsigned long)sw);
         }
@@ -1451,12 +1463,14 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
         write_nnp(g_num_nb_pairs);
         [enc setBuffer:g_buf_nnp            offset:0 atIndex:13];
 
-        /* Write tg_size for parallel IE */
+        /* Write tg_header: [tg_size, simd_group_size] */
         {
             int *hdr = (int *)[g_buf_tg_header contents];
             hdr[0] = g_simplex_threads;
+            hdr[1] = g_simplex_simd_width;
         }
         [enc setBuffer:g_buf_tg_header      offset:0 atIndex:14];
+        [enc setBuffer:g_buf_tg_header      offset:sizeof(int) atIndex:15];
 
         MTLSize gridSize = MTLSizeMake(g_simplex_threads, 1, 1);
         MTLSize tgSize   = MTLSizeMake(g_simplex_threads, 1, 1);
