@@ -137,6 +137,32 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
                                float rot_step_size,
                                float tors_step_size);
 
+/* Batch dispatch: N conformers in one command buffer (C1) */
+int dock_gpu_simplex_minimize_batch(
+    int N,
+    const float *ref_xyz,
+    const int *active_flags,
+    int num_atoms, int num_active_atoms,
+    int num_torsions,
+    const int *torsion_a1,
+    const int *torsion_a2,
+    const int *torsion_a3,
+    const int *torsion_a4,
+    const int *child_idx_flat,
+    const int *child_starts,
+    const int *child_counts,
+    const int *torsion_scale_factors,
+    float *dof_batch,
+    float *scores_batch,
+    int *state_batch,
+    int N_valid,
+    int dof_size, int nverts,
+    int max_iterations,
+    float score_converge,
+    float trans_step_size,
+    float rot_step_size,
+    float tors_step_size);
+
 void dock_gpu_simplex_cleanup(void);
 
 #ifdef __cplusplus
