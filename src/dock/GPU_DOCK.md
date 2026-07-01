@@ -709,3 +709,44 @@ Post-texture IE:Grid operation ratio = 5.4×.
 | `metal` | macOS ARM | Metal GPU | 🟡 Flex docking works (7× overhead on 1-torsion, 3.4× on 5-torsion with SIMD-IE) |
 | `auto` | macOS ARM | Metal GPU | Same as `metal` |
 | `auto` | Linux | CPU stub | Not tested |
+
+---
+## Journal
+
+### 2026-07-01 — B1/B2/B3: shader unification, upload guard, scratch buffer reuse
+
+**B1 — Unified Shader Source** ✅
+- Merged `batch_score_kernel` and `batch_score_with_ie_kernel` into the
+  simplex raw string `shader_src_all` (was `shader_src_simplex`).
+- Old `shader_src` (escaped C string, ~120 lines) kept as dead code comment.
+- ObjC init now compiles ONE library from `shader_src_all` and extracts all
+  three PSOs from it.  No more `lib_simplex`.
+- Net: 1 compilation instead of 2, no duplicated helpers.
+- Tested 1A28: 19.55s, -75.847122 (unchanged).
+
+**B2 — Upload Ligand Data Once** ✅
+- `dock_gpu_set_ligand()` and `dock_gpu_set_ligand_ie()` moved behind a
+  `static bool s_ligand_uploaded` guard inside
+  `Simplex_Minimizer::do_minimize()`.
+- The ligand's per-atom VDW A/B, charges, IE vdW A, and NB pair list are
+  constant for a given molecule across all conformations.  Prior code
+  re-uploaded on every call (383× for 1A28's 31 conf × cycles).
+- `dock_gpu_simplex_init()` also called once.
+- Net effect: ~383× fewer memcpy uploads to GPU.
+
+**B3 — Reusable Scratch Buffers** ✅
+- Replaced ~22 new[]/delete[] pairs per minimization call with 9 `static
+  std::vector<>` instances that grow on demand and reuse capacity.
+- Vectors: s_ref_xyz, s_active, s_ta1-4, s_tbn, s_child_starts/counts/idx,
+  s_dof, s_score, and upload temps (gpu_vdwA/B, gpu_chg, gpu_ie_vdwA,
+  gpu_nb_flat) use local std::vector.
+- Zero heap allocations on repeated calls after warm-up.
+
+---
+### Remaining Issues
+
+- **1J4H Δ=1.19** : Score divergence between GPU (-61.319) and CPU (-62.506)
+  on the 10-torsion system.  Prime suspect: `inside_grid` 1-voxel safety
+  margin causing premature abort on boundary atoms.  Comment added (A2).
+- **C1** (🔴🔴 core): 1 simplex = 1 threadgroup = 1 CPU↔GPU sync.
+- **C2-C6**: SIMD-optimized shrink, batch upload reduction, etc.
