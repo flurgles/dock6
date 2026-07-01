@@ -107,9 +107,9 @@ static const char* shader_src = \
 "    float gx = (x - p.origin_x) / p.spacing;\n"
 "    float gy = (y - p.origin_y) / p.spacing;\n"
 "    float gz = (z - p.origin_z) / p.spacing;\n"
-"    return (gx >= 1.0 && gx <= (float)(p.span_x - 2) &&\n"
-"            gy >= 1.0 && gy <= (float)(p.span_y - 2) &&\n"
-"            gz >= 1.0 && gz <= (float)(p.span_z - 2));\n"
+"    return (gx > 1.0 && gx < (float)(p.span_x - 1) &&\n"
+"            gy > 1.0 && gy < (float)(p.span_y - 1) &&\n"
+"            gz > 1.0 && gz < (float)(p.span_z - 1));\n"
 "}\n"
 "\n"
 "/* Trilinear interpolation */\n"
@@ -192,18 +192,19 @@ static const char* shader_src = \
 "    float grid_score = 0.0;\n"
 "    bool has_outside_atom = false;\n"
 "\n"
-"    /* ---- Grid score ---- */\n"
+"    /* ---- Grid score (short-circuit on outside-grid) ---- */\n"
 "    for (int a = 0; a < atoms_per_pose; a++) {\n"
 "        int o3 = base + a * 3;\n"
 "        float x = xyz[o3];\n"
 "        float y = xyz[o3 + 1];\n"
 "        float z = xyz[o3 + 2];\n"
 "\n"
-"        if (active_flags[a]) {\n"
-"            if (!inside_grid(gp, x, y, z)) {\n"
-"                has_outside_atom = true;\n"
-"            }\n"
+"        if (active_flags[a] && !inside_grid(gp, x, y, z)) {\n"
+"            out_scores[tid] = -3.40282347e+38;  /* -FLT_MAX */\n"
+"            return;\n"
+"        }\n"
 "\n"
+"        if (active_flags[a]) {\n"
 "            float vdw = trilinear(grid_avdw, gp, x, y, z);\n"
 "            float bvdw = trilinear(grid_bvdw, gp, x, y, z);\n"
 "            float es = trilinear(grid_es, gp, x, y, z);\n"
@@ -235,12 +236,7 @@ static const char* shader_src = \
 "        }\n"
 "    }\n"
 "\n"
-"    /* If any atom is outside the grid, return sentinel (matches CPU -MIN_FLOAT) */\n"
-"    if (has_outside_atom) {\n"
-"        out_scores[tid] = -3.40282347e+38;  /* -FLT_MAX */\n"
-"    } else {\n"
-"        out_scores[tid] = grid_score + ie_score;\n"
-"    }\n"
+"    out_scores[tid] = grid_score + ie_score;\n"
 "}\n"
 ;
 
@@ -256,6 +252,7 @@ using namespace metal;
 #define PI 3.14159265358979323846f
 #define MAX_ATOMS 512
 #define MAX_TORSIONS 50
+#define DOF_MAX (6 + MAX_TORSIONS)
 
 struct GridParams {
     float origin_x, origin_y, origin_z;
@@ -293,9 +290,9 @@ static bool inside_grid(constant GridParams &p, float x, float y, float z) {
     float gx = (x - p.origin_x) / p.spacing;
     float gy = (y - p.origin_y) / p.spacing;
     float gz = (z - p.origin_z) / p.spacing;
-    return (gx >= 1.0 && gx <= (float)(p.span_x - 2) &&
-            gy >= 1.0 && gy <= (float)(p.span_y - 2) &&
-            gz >= 1.0 && gz <= (float)(p.span_z - 2));
+    return (gx > 1.0 && gx < (float)(p.span_x - 1) &&
+            gy > 1.0 && gy < (float)(p.span_y - 1) &&
+            gz > 1.0 && gz < (float)(p.span_z - 1));
 }
 
 static float trilinear(device const float *grid, constant GridParams &p,
@@ -460,7 +457,7 @@ static void dof_to_xyz(thread const float *dof, device const MolData &mol,
     float3 com = compute_com(mol);
     rigid_transform(xyz, na, com, trans, rmat);
     for (int t = 0; t < mol.num_torsions; t++) {
-        float delta_deg = dof[6 + t] * mol.tors_step / mol.torsion_scale_factors[t];
+        float delta_deg = dof[6 + t] * mol.tors_step;
         if (fabs(delta_deg) < 1e-10) continue;
         float cur_deg = dihedral_degrees(xyz, mol.torsion_a1[t], mol.torsion_a2[t],
                                           mol.torsion_a3[t], mol.torsion_a4[t]);
@@ -530,145 +527,148 @@ kernel void simplex_iteration_kernel(
 {
     if (tid > 0) return;
 
-    int converged = state[0];
-    if (converged) return;
-    int iter = state[1];
     int n = state[2];       /* DOF size */
     int nverts = n + 1;     /* number of vertices */
     float alpha = 1.0, beta = 0.5, gamma = 2.0;
     int i, j;
 
-    state[1] = iter + 1;
-
-    /* 1. Find best (ilo), worst (ihi), second-worst (inhi) */
-    int ilo = 0, ihi = 1, inhi = 0;
-    if (scores[0] > scores[1]) { ihi = 0; inhi = 1; }
-    else { ihi = 1; inhi = 0; }
-    for (i = 0; i < nverts; i++) {
-        if (scores[i] < scores[ilo]) ilo = i;
-        if (scores[i] > scores[ihi]) { inhi = ihi; ihi = i; }
-        else if (i != ihi && scores[i] > scores[inhi]) inhi = i;
-    }
-
-    /* 2. Compute centroid */
-    float centroid[56];  /* DOF_MAX */
-    int dof_max = (n < 56) ? n : 56;
-    for (j = 0; j < dof_max; j++) centroid[j] = 0.0;
-    for (i = 0; i < nverts; i++) {
-        if (i != ihi) {
-            for (j = 0; j < dof_max; j++)
-                centroid[j] += vertex_dof[i * dof_max + j];
-        }
-    }
-    for (j = 0; j < dof_max; j++) centroid[j] /= (float)n;
-
-    /* 3. Reflect: pr = centroid + alpha*(centroid - worst) */
-    float pr[56];
-    int widx = ihi * dof_max;
-    for (j = 0; j < dof_max; j++)
-        pr[j] = centroid[j] + alpha * (centroid[j] - vertex_dof[widx + j]);
-
-    /* 4. Score reflect */
+    /* Allocate DOF arrays once, reuse across iterations */
+    float centroid[DOF_MAX];
+    float pr[DOF_MAX];
+    float prr[DOF_MAX];
     float xyz[MAX_ATOMS * 3];
     int na = mol->num_atoms;
-    dof_to_xyz(pr, *mol, xyz);
-    float score_refl = score_xyz(xyz, na, gavdw, gbvdw, ges,
-                                  vdwA, vdwB, charges, gp,
-                                  ie_vdwA, nb_int, iep, num_nb_pairs,
-                                  mol->active_flags);
-    if (score_refl < -1e30) { state[0] = -1; return; }
+    int dof_max = (n < DOF_MAX) ? n : DOF_MAX;
 
-    /* 5. Decision tree */
-    if (score_refl <= scores[ilo]) {
-        /* Expand */
-        float prr[56];
+    /* Single kernel dispatch handles all iterations (avoids CPU-CPU sync per iter) */
+    for (int iter = 0; iter < state[3]; iter++) {
+        if (state[0]) return;  /* converged or error */
+        state[1] = iter + 1;
+
+        /* 1. Find best (ilo), worst (ihi), second-worst (inhi) */
+        int ilo = 0, ihi = 1, inhi = 0;
+        if (scores[0] > scores[1]) { ihi = 0; inhi = 1; }
+        else { ihi = 1; inhi = 0; }
+        for (i = 0; i < nverts; i++) {
+            if (scores[i] < scores[ilo]) ilo = i;
+            if (scores[i] > scores[ihi]) { inhi = ihi; ihi = i; }
+            else if (i != ihi && scores[i] > scores[inhi]) inhi = i;
+        }
+
+        /* 2. Compute centroid */
+        for (j = 0; j < dof_max; j++) centroid[j] = 0.0;
+        for (i = 0; i < nverts; i++) {
+            if (i != ihi) {
+                for (j = 0; j < dof_max; j++)
+                    centroid[j] += vertex_dof[i * dof_max + j];
+            }
+        }
+        for (j = 0; j < dof_max; j++) centroid[j] /= (float)n;
+
+        /* 3. Reflect: pr = centroid + alpha*(centroid - worst) */
+        int widx = ihi * dof_max;
         for (j = 0; j < dof_max; j++)
-            prr[j] = centroid[j] + gamma * (pr[j] - centroid[j]);
-        dof_to_xyz(prr, *mol, xyz);
-        float score_exp = score_xyz(xyz, na, gavdw, gbvdw, ges,
-                                     vdwA, vdwB, charges, gp,
-                                     ie_vdwA, nb_int, iep, num_nb_pairs,
-                                     mol->active_flags);
-        if (score_exp < -1e30) { state[0] = -1; return; }
+            pr[j] = centroid[j] + alpha * (centroid[j] - vertex_dof[widx + j]);
 
-        if (score_exp < score_refl) {
-            for (j = 0; j < dof_max; j++) vertex_dof[widx + j] = prr[j];
-            scores[ihi] = score_exp;
-        } else {
-            for (j = 0; j < dof_max; j++) vertex_dof[widx + j] = pr[j];
-            scores[ihi] = score_refl;
-        }
-    } else if (score_refl >= scores[inhi]) {
-        /* Contract or shrink */
-        int replace_flag = 0;
+        /* 4. Score reflect */
+        dof_to_xyz(pr, *mol, xyz);
+        float score_refl = score_xyz(xyz, na, gavdw, gbvdw, ges,
+                                      vdwA, vdwB, charges, gp,
+                                      ie_vdwA, nb_int, iep, num_nb_pairs,
+                                      mol->active_flags);
+        if (score_refl < -1e30) { state[0] = 1; state[5] = -1; return; }
 
-        if (score_refl < scores[ihi]) {
-            for (j = 0; j < dof_max; j++) vertex_dof[widx + j] = pr[j];
-            scores[ihi] = score_refl;
-            replace_flag = 1;
-        }
-
-        float prr[56];
-        if (replace_flag) {
+        /* 5. Decision tree */
+        if (score_refl <= scores[ilo]) {
+            /* Expand */
             for (j = 0; j < dof_max; j++)
-                prr[j] = centroid[j] + beta * (pr[j] - centroid[j]);
-        } else {
-            for (j = 0; j < dof_max; j++)
-                prr[j] = centroid[j] + beta * (vertex_dof[widx + j] - centroid[j]);
-        }
-
-        dof_to_xyz(prr, *mol, xyz);
-        float score_con = score_xyz(xyz, na, gavdw, gbvdw, ges,
-                                     vdwA, vdwB, charges, gp,
-                                     ie_vdwA, nb_int, iep, num_nb_pairs,
-                                     mol->active_flags);
-        if (score_con < -1e30) { state[0] = -1; return; }
-
-        if (score_con < scores[ihi]) {
-            for (j = 0; j < dof_max; j++) vertex_dof[widx + j] = prr[j];
-            scores[ihi] = score_con;
-            replace_flag = 1;
-        }
-
-        if (!replace_flag) {
-            /* Shrink */
-            for (i = 0; i < nverts; i++) {
-                if (i != ilo) {
-                    for (j = 0; j < dof_max; j++) {
-                        float old = vertex_dof[i * dof_max + j];
-                        vertex_dof[i * dof_max + j] = 0.5 * (old + vertex_dof[ilo * dof_max + j]);
-                    }
-                    float local_dof[64];
-                    for (j = 0; j < dof_max; j++)
-                        local_dof[j] = vertex_dof[i * dof_max + j];
-                    dof_to_xyz(local_dof, *mol, xyz);
-                    float s = score_xyz(xyz, na, gavdw, gbvdw, ges,
+                prr[j] = centroid[j] + gamma * (pr[j] - centroid[j]);
+            dof_to_xyz(prr, *mol, xyz);
+            float score_exp = score_xyz(xyz, na, gavdw, gbvdw, ges,
                                          vdwA, vdwB, charges, gp,
                                          ie_vdwA, nb_int, iep, num_nb_pairs,
                                          mol->active_flags);
-                    if (s < -1e30) { state[0] = -1; return; }
-                    scores[i] = s;
+            if (score_exp < -1e30) { state[0] = 1; state[5] = -1; return; }
+
+            if (score_exp < score_refl) {
+                for (j = 0; j < dof_max; j++) vertex_dof[widx + j] = prr[j];
+                scores[ihi] = score_exp;
+            } else {
+                for (j = 0; j < dof_max; j++) vertex_dof[widx + j] = pr[j];
+                scores[ihi] = score_refl;
+            }
+        } else if (score_refl >= scores[inhi]) {
+            /* Contract or shrink */
+            int replace_flag = 0;
+
+            if (score_refl < scores[ihi]) {
+                for (j = 0; j < dof_max; j++) vertex_dof[widx + j] = pr[j];
+                scores[ihi] = score_refl;
+                replace_flag = 1;
+            }
+
+            if (replace_flag) {
+                for (j = 0; j < dof_max; j++)
+                    prr[j] = centroid[j] + beta * (pr[j] - centroid[j]);
+            } else {
+                for (j = 0; j < dof_max; j++)
+                    prr[j] = centroid[j] + beta * (vertex_dof[widx + j] - centroid[j]);
+            }
+
+            dof_to_xyz(prr, *mol, xyz);
+            float score_con = score_xyz(xyz, na, gavdw, gbvdw, ges,
+                                         vdwA, vdwB, charges, gp,
+                                         ie_vdwA, nb_int, iep, num_nb_pairs,
+                                         mol->active_flags);
+            if (score_con < -1e30) { state[0] = 1; state[5] = -1; return; }
+
+            if (score_con < scores[ihi]) {
+                for (j = 0; j < dof_max; j++) vertex_dof[widx + j] = prr[j];
+                scores[ihi] = score_con;
+                replace_flag = 1;
+            }
+
+            if (!replace_flag) {
+                /* Shrink */
+                float local_dof[DOF_MAX];
+                for (i = 0; i < nverts; i++) {
+                    if (i != ilo) {
+                        for (j = 0; j < dof_max; j++) {
+                            float old = vertex_dof[i * dof_max + j];
+                            vertex_dof[i * dof_max + j] = 0.5 * (old + vertex_dof[ilo * dof_max + j]);
+                        }
+                        for (j = 0; j < dof_max; j++)
+                            local_dof[j] = vertex_dof[i * dof_max + j];
+                        dof_to_xyz(local_dof, *mol, xyz);
+                        float s = score_xyz(xyz, na, gavdw, gbvdw, ges,
+                                             vdwA, vdwB, charges, gp,
+                                             ie_vdwA, nb_int, iep, num_nb_pairs,
+                                             mol->active_flags);
+                        if (s < -1e30) { state[0] = 1; state[5] = -1; return; }
+                        scores[i] = s;
+                    }
                 }
             }
+        } else {
+            /* Accept reflect */
+            for (j = 0; j < dof_max; j++) vertex_dof[widx + j] = pr[j];
+            scores[ihi] = score_refl;
         }
-    } else {
-        /* Accept reflect */
-        for (j = 0; j < dof_max; j++) vertex_dof[widx + j] = pr[j];
-        scores[ihi] = score_refl;
-    }
 
-    /* 6. Check convergence */
-    ilo = 0; ihi = 0;
-    for (i = 0; i < nverts; i++) {
-        if (scores[i] < scores[ilo]) ilo = i;
-        if (scores[i] > scores[ihi]) ihi = i;
+        /* 6. Check convergence */
+        ilo = 0; ihi = 0;
+        for (i = 0; i < nverts; i++) {
+            if (scores[i] < scores[ilo]) ilo = i;
+            if (scores[i] > scores[ihi]) ihi = i;
+        }
+        float diff = fabs(scores[ihi] - scores[ilo]);
+        float converge_tol = as_type<float>(state[4]);
+        if (converge_tol < 1e-10) converge_tol = 0.001;
+        state[0] = (diff < converge_tol) ? 1 : 0;
     }
-    float diff = fabs(scores[ihi] - scores[ilo]);
-    float converge_tol = as_type<float>(state[4]);
-    if (converge_tol < 1e-10) converge_tol = 0.001;
-    state[0] = (diff < converge_tol || iter >= state[3]) ? 1 : 0;
 }
 )shader";
+
 
 
 /* ================================================================== */
@@ -706,6 +706,7 @@ static id<MTLBuffer> g_buf_mol_data    = nil;
 
 /* Cached simplex params */
 static int  g_simplex_ready = 0;
+static int  g_buf_simplex_allocated = 0;
 
 /* Cached grid params */
 static DockGridParams g_params;
@@ -1133,6 +1134,7 @@ void dock_gpu_cleanup(void)
         g_initialized    = 0;
         g_active         = 0;
         g_simplex_ready  = 0;
+        g_buf_simplex_allocated = 0;
         g_num_atoms      = 0;
         g_num_nb_pairs   = 0;
         g_ie_soft_delta  = 0.0;
@@ -1188,16 +1190,15 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
         int i, j;
 
         /* ---- Allocate simplex buffers on first use ---- */
-        static int buf_allocated = 0;
         int dof_pad = dof_size;
         if (dof_pad < 6) dof_pad = 6;
         if (dof_pad > GPU_DOF_MAX) dof_pad = GPU_DOF_MAX;
 
-        if (!buf_allocated) {
+        if (!g_buf_simplex_allocated) {
             size_t buf_size = (size_t)nverts * (size_t)dof_pad * sizeof(float);
             g_buf_vertex_dof = alloc_buffer(buf_size, "simplex_vertex_dof");
 
-            size_t state_size = (size_t)nverts * sizeof(float) + 5 * sizeof(int);
+            size_t state_size = (size_t)nverts * sizeof(float) + 6 * sizeof(int);
             g_buf_simplex_state = alloc_buffer(state_size, "simplex_state");
 
             /* MolData buffer: fixed size struct */
@@ -1215,11 +1216,11 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
                 fprintf(stderr, "GPU-DOCK: simplex buffer allocation failed\n");
                 return 0;
             }
-            buf_allocated = 1;
+            g_buf_simplex_allocated = 1;
         }
 
         /* ---- Upload molecule reference data to MolData buffer ---- */
-        int dof_max = (dof_size < 56) ? dof_size : 56;
+        int dof_max = (dof_size < GPU_DOF_MAX) ? dof_size : GPU_DOF_MAX;
         if (dof_max < 6) dof_max = 6;
 
         /* Build MolData from raw arrays */
@@ -1302,6 +1303,7 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
             union { float f; int i; } u;
             u.f = score_converge;
             statep[4] = u.i;
+        statep[5] = 0;
         }
 
         /* ---- Encode all iterations in one command buffer ---- */
@@ -1316,7 +1318,7 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
 
             /* Bind all 17 buffers */
             [enc setBuffer:g_buf_vertex_dof    offset:0 atIndex:0];
-            /* scores + state share a buffer: scores[0..nverts-1], state[nverts..nverts+3] */
+            /* scores + state share a buffer: scores[0..nverts-1], state[nverts..nverts+5] */
             [enc setBuffer:g_buf_simplex_state  offset:0 atIndex:1];
             [enc setBuffer:g_buf_simplex_state  offset:(nverts * sizeof(float)) atIndex:2];
             [enc setBuffer:g_buf_mol_data       offset:0 atIndex:3];
@@ -1353,7 +1355,7 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
         /* Check for outside-grid sentinel (-1) */
         statep = (int *)g_buf_simplex_state.contents;
         statep += nverts;
-        if (statep[0] == -1) {
+        if (statep[5] == -1) {
             return 0;
         }
 
@@ -1386,7 +1388,8 @@ void dock_gpu_simplex_cleanup(void)
         g_buf_vertex_dof    = nil;
         g_buf_simplex_state = nil;
         g_buf_mol_data      = nil;
-        g_simplex_ready     = 0;
+        g_simplex_ready        = 0;
+        g_buf_simplex_allocated = 0;
     }
 }
 
