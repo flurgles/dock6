@@ -815,3 +815,107 @@ reducing overhead on multi-conformer growth steps.
   single-threaded via thread 0).
 - **C3** (🟡): Async double-buffered CPU↔GPU dispatch to overlap computation
   and data transfer.
+
+## GPU Code Review — July 1, 2026 (post-C1)
+
+After C1 + C5 + C6 + B1-B3, did a comprehensive review from a shader-developer
+perspective. 6 issues found — 2 critical, 2 medium (1 fixed, 1 deferred), 2
+minor.
+
+### Issues
+
+| # | Severity | Issue | Status |
+|---|----------|-------|--------|
+| **R1** | 🔴 Critical | 12-byte heap buffer overflow in MolData allocation | **FIXED** |
+| **R2** | 🟡 High | Missing `threadgroup_barrier` in simplex iter loop | **FIXED** |
+| **R3** | 🟡 Latent | B2 upload-once guard breaks multi-ligand workflows | **FIXED** |
+| **C4** | 🟢 Minor | Misleading `scr_base_out` variable name | **FIXED** |
+| R4 | 🟢 Minor | `tg_ie_sums` overprovisioned (acceptable) | Deferred |
+| R5 | 🟢 Minor | Dead `shader_src` and `g_buf_simplex_state` | Deferred |
+| C2 | 🟢 Latent | `torsion_scale_factors` not divided in GPU | Documented |
+
+### R1 — Heap buffer overflow (FIXED)
+
+The `mol_size` calculation in `dock_gpu_init()` was missing 12 bytes worth
+of fields (`trans_step`, `rot_step`, `tors_step`). The Metal `MolData` struct
+includes them, the local C++ struct mirror includes them, but the manual
+`mol_size = sizeof(float) * ... + ... + ...` formula omitted them. The
+`memcpy(g_buf_mol_data.contents, &md, sizeof(md))` wrote 12 bytes past
+the end of the allocated buffer on every simplex dispatch.
+
+**Fix**: Added `+ 3 * sizeof(float)` for the missing step fields.
+Even better would be `sizeof(MolData)` directly, but the local struct
+is defined inside the dispatch function so the manual calc remains.
+
+**Test impact**: No regression. 1A28 still bit-exact, 1C8K / 1J4H scores
+match pre-fix.
+
+### R2 — Missing iteration barrier (FIXED)
+
+The simplex kernel's iter loop has `if (state[conf_state_off]) return;` at
+the top of each iter. The state[conf_state_off] is written by tid=0 at
+the convergence check (end of iter). Without a barrier between, the
+read by all threads at the top of the next iter may be stale.
+
+**Impact** (theoretical): up to `max_iterations - actual_converge` wasted
+iterations per dispatch. In practice, Metal's memory model may have
+been more relaxed than feared — tests show no measurable speedup, but
+the fix is correctness-by-construction.
+
+**Fix**: Added `threadgroup_barrier(mem_flags::mem_device)` after the
+convergence check, before the iter loop's increment.
+
+### R3 — B2 upload-once for multi-ligand (FIXED)
+
+`static bool s_ligand_uploaded = false;` was set to true forever after
+the first ligand upload. dock6's `while (c_library.get_mol(...))` loop
+processes multiple ligands per invocation, and a second ligand with
+the same num_atoms would silently get the first ligand's vdw A/B/charges.
+
+**Fix**: Compute a 64-bit signature from vdwA + vdwB + charges +
+nb_int pair list, and re-upload only when the signature changes. Single-
+ligand workflows unchanged (one upload, many reuses). Multi-ligand
+workflows now correct.
+
+**Note**: The C-side `dock_gpu_set_ligand` skip guard based on
+`g_set_ligand_num_atoms == num_atoms` is also weak, but the
+sig check in simplex.cpp now forces a re-upload when needed,
+which then triggers a proper upload in the C-side.
+
+### Performance opportunities identified
+
+- **PO1**: Grid scoring single-threaded (256 threads idle during one
+  thread's score). Low priority — texture cache hides latency.
+- **PO2**: dof_to_xyz single-threaded. Low priority — fast.
+- **PO4**: Shrink loop serial. Medium priority — separate kernel could
+  halve iteration time on shrink-heavy paths.
+- **PO5**: Command buffer is synchronous (`waitUntilCompleted`). This
+  is C3 — async double-buffering, deferred.
+- **PO7**: B2 sig check could use content hash. Done (R3 fix).
+
+### Correctness items
+
+- **C1** (already known): `inside_grid` 1-voxel margin diverges from
+  CPU. Documented, deferred.
+- **C2**: `torsion_scale_factors` not divided in GPU `dof_to_xyz`.
+  Currently safe (always 1) but latent if initialization changes.
+  Add static_assert or runtime check before dispatch.
+- **C3**: `as_type<float>(int)` for `score_converge` is standard
+  Metal type-punning, no fix needed.
+
+### Recommended next steps
+
+1. **R4 — Cleanup**: Remove dead `shader_src` and `g_buf_simplex_state`
+   symbols (~175 lines of code).
+2. **PO4 — Performance**: Move shrink to a separate kernel.
+3. **C2 — Safety**: Add runtime check for `torsion_scale_factors == 1.0`
+   in MolData to prevent silent corruption if initialization changes.
+4. **R1 — Proactive**: Replace manual mol_size with `sizeof(MolData)`
+   to prevent future drift.
+
+### Files reviewed
+
+- `src/dock/score_dock_gpu_metal.mm` (1910 lines)
+- `src/dock/simplex.cpp` (1417 lines)
+- `src/dock/conf_gen_ag.cpp` (growth loop, ~120 lines)
+- `src/dock/score_dock_gpu.h` (public API)
