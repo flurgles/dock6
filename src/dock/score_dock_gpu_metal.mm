@@ -46,6 +46,8 @@ static const char* shader_src = \
 "#include <metal_stdlib>\n"
 "using namespace metal;\n"
 "\n"
+"constexpr sampler grid_sampler(filter::linear, address::clamp_to_edge);\n"
+"\n"
 "struct GridParams {\n"
 "    float origin_x, origin_y, origin_z;\n"
 "    int   span_x, span_y, span_z;\n"
@@ -60,23 +62,23 @@ static const char* shader_src = \
 "    int   _pad;\n"
 "};\n"
 "\n"
-"/* Forward declaration for trilinear (defined below) */\n"
-"static float trilinear(device const float *grid,\n"
+"/* Trilinear interpolation via hardware 3D texture sampling */\n"
+"static float trilinear(texture3d<float> grid,\n"
 "                       constant GridParams &p,\n"
 "                       float x, float y, float z);\n"
 "\n"
 "kernel void batch_score_kernel(\n"
 "    device const float*    xyz          [[buffer(0)]],\n"
-"    device const float*    grid_avdw    [[buffer(1)]],\n"
-"    device const float*    grid_bvdw    [[buffer(2)]],\n"
-"    device const float*    grid_es      [[buffer(3)]],\n"
-"    device const float*    vdwA         [[buffer(4)]],\n"
-"    device const float*    vdwB         [[buffer(5)]],\n"
-"    device const float*    charges      [[buffer(6)]],\n"
-"    constant GridParams&   gp           [[buffer(7)]],\n"
-"    constant int&          num_atoms    [[buffer(8)]],\n"
-"    device float*          out_scores   [[buffer(9)]],\n"
-"    device const int*     active_flags [[buffer(10)]],\n"
+"    texture3d<float>       grid_avdw    [[texture(0)]],\n"
+"    texture3d<float>       grid_bvdw    [[texture(1)]],\n"
+"    texture3d<float>       grid_es      [[texture(2)]],\n"
+"    device const float*    vdwA         [[buffer(1)]],\n"
+"    device const float*    vdwB         [[buffer(2)]],\n"
+"    device const float*    charges      [[buffer(3)]],\n"
+"    constant GridParams&   gp           [[buffer(4)]],\n"
+"    constant int&          num_atoms    [[buffer(5)]],\n"
+"    device float*          out_scores   [[buffer(6)]],\n"
+"    device const int*     active_flags [[buffer(7)]],\n"
 "    uint                   tid          [[thread_position_in_grid]])\n"
 "{\n"
 "    int atoms_per_pose = num_atoms;\n"
@@ -112,8 +114,8 @@ static const char* shader_src = \
 "            gz > 1.0 && gz < (float)(p.span_z - 1));\n"
 "}\n"
 "\n"
-"/* Trilinear interpolation */\n"
-"static float trilinear(device const float *grid,\n"
+"/* Hardware trilinear via 3D texture sampler */\n"
+"static float trilinear(texture3d<float> grid,\n"
 "                       constant GridParams &p,\n"
 "                       float x, float y, float z)\n"
 "{\n"
@@ -121,68 +123,35 @@ static const char* shader_src = \
 "    float gy = (y - p.origin_y) / p.spacing;\n"
 "    float gz = (z - p.origin_z) / p.spacing;\n"
 "\n"
-"    /* Bounds-check is done before calling trilinear in the kernel */\n"
-"    /* Fallback: clamp and return 0 for safety */\n"
+"    /* Bounds-check (keep for safety; inside_grid catches most) */\n"
 "    if (gx < 0.0 || gy < 0.0 || gz < 0.0 ||\n"
 "        gx >= (float)(p.span_x - 1) ||\n"
 "        gy >= (float)(p.span_y - 1) ||\n"
 "        gz >= (float)(p.span_z - 1))\n"
 "        return 0.0;\n"
 "\n"
-"    int ix = (int)gx;\n"
-"    int iy = (int)gy;\n"
-"    int iz = (int)gz;\n"
-"    float fx = gx - (float)ix;\n"
-"    float fy = gy - (float)iy;\n"
-"    float fz = gz - (float)iz;\n"
-"    float fx1 = 1.0 - fx;\n"
-"    float fy1 = 1.0 - fy;\n"
-"    float fz1 = 1.0 - fz;\n"
-"\n"
-"    int sx = p.span_x;\n"
-"    int sy = p.span_y;\n"
-"\n"
-"    int i000 = iz * sx * sy + iy * sx + ix;\n"
-"    int i001 = i000 + sx * sy;\n"
-"    int i010 = i000 + sx;\n"
-"    int i011 = i010 + sx * sy;\n"
-"    int i100 = i000 + 1;\n"
-"    int i101 = i100 + sx * sy;\n"
-"    int i110 = i100 + sx;\n"
-"    int i111 = i110 + sx * sy;\n"
-"\n"
-"    float c000 = grid[i000], c001 = grid[i001];\n"
-"    float c010 = grid[i010], c011 = grid[i011];\n"
-"    float c100 = grid[i100], c101 = grid[i101];\n"
-"    float c110 = grid[i110], c111 = grid[i111];\n"
-"\n"
-"    float c00 = c000 * fx1 + c100 * fx;\n"
-"    float c01 = c001 * fx1 + c101 * fx;\n"
-"    float c10 = c010 * fx1 + c110 * fx;\n"
-"    float c11 = c011 * fx1 + c111 * fx;\n"
-"\n"
-"    float c0 = c00 * fy1 + c10 * fy;\n"
-"    float c1 = c01 * fy1 + c11 * fy;\n"
-"\n"
-"    return c0 * fz1 + c1 * fz;\n"
+"    float3 norm = float3(gx / (float)(p.span_x - 1),\n"
+"                          gy / (float)(p.span_y - 1),\n"
+"                          gz / (float)(p.span_z - 1));\n"
+"    return grid.sample(grid_sampler, norm).x;\n"
 "}\n"
 "\n"
 "kernel void batch_score_with_ie_kernel(\n"
 "    device const float*    xyz            [[buffer(0)]],\n"
-"    device const float*    grid_avdw      [[buffer(1)]],\n"
-"    device const float*    grid_bvdw      [[buffer(2)]],\n"
-"    device const float*    grid_es        [[buffer(3)]],\n"
-"    device const float*    vdwA           [[buffer(4)]],\n"
-"    device const float*    vdwB           [[buffer(5)]],\n"
-"    device const float*    charges        [[buffer(6)]],\n"
-"    constant GridParams&   gp             [[buffer(7)]],\n"
-"    constant int&          num_atoms      [[buffer(8)]],\n"
-"    device float*          out_scores     [[buffer(9)]],\n"
-"    device const float*    ie_vdwA        [[buffer(10)]],\n"
-"    device const int*      nb_int         [[buffer(11)]],\n"
-"    constant IEParams&     iep            [[buffer(12)]],\n"
-"    constant int&          num_nb_pairs   [[buffer(13)]],\n"
-"    device const int*     active_flags   [[buffer(14)]],\n"
+"    texture3d<float>       grid_avdw      [[texture(0)]],\n"
+"    texture3d<float>       grid_bvdw      [[texture(1)]],\n"
+"    texture3d<float>       grid_es        [[texture(2)]],\n"
+"    device const float*    vdwA           [[buffer(1)]],\n"
+"    device const float*    vdwB           [[buffer(2)]],\n"
+"    device const float*    charges        [[buffer(3)]],\n"
+"    constant GridParams&   gp             [[buffer(4)]],\n"
+"    constant int&          num_atoms      [[buffer(5)]],\n"
+"    device float*          out_scores     [[buffer(6)]],\n"
+"    device const float*    ie_vdwA        [[buffer(7)]],\n"
+"    device const int*      nb_int         [[buffer(8)]],\n"
+"    constant IEParams&     iep            [[buffer(9)]],\n"
+"    constant int&          num_nb_pairs   [[buffer(10)]],\n"
+"    device const int*     active_flags   [[buffer(11)]],\n"
 "    uint                   tid            [[thread_position_in_grid]])\n"
 "{\n"
 "    int atoms_per_pose = num_atoms;\n"
@@ -249,6 +218,8 @@ static const char* shader_src_simplex = R"shader(
 #include <metal_stdlib>
 using namespace metal;
 
+constexpr sampler grid_sampler(filter::linear, address::clamp_to_edge);
+
 #define PI 3.14159265358979323846f
 #define MAX_ATOMS 512
 #define MAX_TORSIONS 50
@@ -295,7 +266,7 @@ static bool inside_grid(constant GridParams &p, float x, float y, float z) {
             gz > 1.0 && gz < (float)(p.span_z - 1));
 }
 
-static float trilinear(device const float *grid, constant GridParams &p,
+static float trilinear(texture3d<float> grid, constant GridParams &p,
                         float x, float y, float z) {
     float gx = (x - p.origin_x) / p.spacing;
     float gy = (y - p.origin_y) / p.spacing;
@@ -305,25 +276,10 @@ static float trilinear(device const float *grid, constant GridParams &p,
         gy >= (float)(p.span_y - 1) ||
         gz >= (float)(p.span_z - 1))
         return 0.0;
-    int ix = (int)gx, iy = (int)gy, iz = (int)gz;
-    float fx = gx - (float)ix, fy = gy - (float)iy, fz = gz - (float)iz;
-    float fx1 = 1.0 - fx, fy1 = 1.0 - fy, fz1 = 1.0 - fz;
-    int sx = p.span_x, sy = p.span_y;
-    int i000 = iz * sx * sy + iy * sx + ix;
-    int i001 = i000 + sx * sy, i010 = i000 + sx, i011 = i010 + sx * sy;
-    int i100 = i000 + 1, i101 = i100 + sx * sy;
-    int i110 = i100 + sx, i111 = i110 + sx * sy;
-    float c000 = grid[i000], c001 = grid[i001];
-    float c010 = grid[i010], c011 = grid[i011];
-    float c100 = grid[i100], c101 = grid[i101];
-    float c110 = grid[i110], c111 = grid[i111];
-    float c00 = c000 * fx1 + c100 * fx;
-    float c01 = c001 * fx1 + c101 * fx;
-    float c10 = c010 * fx1 + c110 * fx;
-    float c11 = c011 * fx1 + c111 * fx;
-    float c0 = c00 * fy1 + c10 * fy;
-    float c1 = c01 * fy1 + c11 * fy;
-    return c0 * fz1 + c1 * fz;
+    float3 norm = float3(gx / (float)(p.span_x - 1),
+                          gy / (float)(p.span_y - 1),
+                          gz / (float)(p.span_z - 1));
+    return grid.sample(grid_sampler, norm).x;
 }
 
 static void quat_to_rmat(thread float3x3 &m, float3 qin) {
@@ -468,8 +424,8 @@ static void dof_to_xyz(thread const float *dof, device const MolData &mol,
 }
 
 static float score_xyz(thread const float *xyz, int num_atoms,
-                        device const float *gavdw, device const float *gbvdw,
-                        device const float *ges,
+                        texture3d<float> grid_avdw, texture3d<float> grid_bvdw,
+                        texture3d<float> grid_es,
                         device const float *vdwA, device const float *vdwB,
                         device const float *charges,
                         constant GridParams &gp,
@@ -481,9 +437,9 @@ static float score_xyz(thread const float *xyz, int num_atoms,
         if (!active_flags[a]) continue;
         float x = xyz[a*3], y = xyz[a*3+1], z = xyz[a*3+2];
         if (!inside_grid(gp, x, y, z)) return -3.40282347e+38;
-        float vdw = trilinear(gavdw, gp, x, y, z);
-        float bvdw = trilinear(gbvdw, gp, x, y, z);
-        float es = trilinear(ges, gp, x, y, z);
+        float vdw = trilinear(grid_avdw, gp, x, y, z);
+        float bvdw = trilinear(grid_bvdw, gp, x, y, z);
+        float es = trilinear(grid_es, gp, x, y, z);
         grid_score += vdwA[a]*vdw - vdwB[a]*bvdw + charges[a]*es;
     }
     float ie_score = 0.0;
@@ -507,27 +463,27 @@ static float score_xyz(thread const float *xyz, int num_atoms,
 
 /* Single-thread simplex kernel. Each dispatch handles all iterations
  * internally (avoids CPU-GPU sync per iteration).
- * Multi-vertex speculative scoring: all 4 candidates (reflect, expand,
- * contract-A, contract-B) computed each iteration; decision tree picks winner.
+ * Uses 3D texture samplers for hardware-accelerated trilinear interpolation
+ * on the precomputed VDW and ES grids.
  */
 kernel void simplex_iteration_kernel(
     device float*    vertex_dof    [[buffer(0)]],
     device float*    scores        [[buffer(1)]],
     device int*      state         [[buffer(2)]],
     device const MolData *mol      [[buffer(3)]],
-    device const float* gavdw      [[buffer(4)]],
-    device const float* gbvdw      [[buffer(5)]],
-    device const float* ges        [[buffer(6)]],
-    device const float* vdwA       [[buffer(7)]],
-    device const float* vdwB       [[buffer(8)]],
-    device const float* charges    [[buffer(9)]],
-    constant GridParams &gp        [[buffer(10)]],
-    constant int& num_atoms_buf    [[buffer(11)]],
-    device float* out_scores       [[buffer(12)]],
-    device const float* ie_vdwA    [[buffer(13)]],
-    device const int* nb_int       [[buffer(14)]],
-    constant IEParams& iep         [[buffer(15)]],
-    constant int& num_nb_pairs     [[buffer(16)]],
+    texture3d<float>       grid_avdw     [[texture(0)]],
+    texture3d<float>       grid_bvdw     [[texture(1)]],
+    texture3d<float>       grid_es       [[texture(2)]],
+    device const float*    vdwA          [[buffer(4)]],
+    device const float*    vdwB          [[buffer(5)]],
+    device const float*    charges       [[buffer(6)]],
+    constant GridParams &  gp            [[buffer(7)]],
+    constant int&          num_atoms_buf [[buffer(8)]],
+    device float*          out_scores    [[buffer(9)]],
+    device const float*    ie_vdwA       [[buffer(10)]],
+    device const int*      nb_int        [[buffer(11)]],
+    constant IEParams&     iep           [[buffer(12)]],
+    constant int&          num_nb_pairs  [[buffer(13)]],
     uint tid                       [[thread_position_in_grid]])
 {
     if (tid > 0) return;
@@ -576,7 +532,7 @@ kernel void simplex_iteration_kernel(
 
         /* 4. Score reflect */
         dof_to_xyz(pr, *mol, xyz);
-        float score_refl = score_xyz(xyz, na, gavdw, gbvdw, ges,
+        float score_refl = score_xyz(xyz, na, grid_avdw, grid_bvdw, grid_es,
                                       vdwA, vdwB, charges, gp,
                                       ie_vdwA, nb_int, iep, num_nb_pairs,
                                       mol->active_flags);
@@ -588,7 +544,7 @@ kernel void simplex_iteration_kernel(
             for (j = 0; j < dof_max; j++)
                 prr[j] = centroid[j] + gamma * (pr[j] - centroid[j]);
             dof_to_xyz(prr, *mol, xyz);
-            float score_exp = score_xyz(xyz, na, gavdw, gbvdw, ges,
+            float score_exp = score_xyz(xyz, na, grid_avdw, grid_bvdw, grid_es,
                                          vdwA, vdwB, charges, gp,
                                          ie_vdwA, nb_int, iep, num_nb_pairs,
                                          mol->active_flags);
@@ -620,7 +576,7 @@ kernel void simplex_iteration_kernel(
             }
 
             dof_to_xyz(prr, *mol, xyz);
-            float score_con = score_xyz(xyz, na, gavdw, gbvdw, ges,
+            float score_con = score_xyz(xyz, na, grid_avdw, grid_bvdw, grid_es,
                                          vdwA, vdwB, charges, gp,
                                          ie_vdwA, nb_int, iep, num_nb_pairs,
                                          mol->active_flags);
@@ -644,7 +600,7 @@ kernel void simplex_iteration_kernel(
                         for (j = 0; j < dof_max; j++)
                             local_dof[j] = vertex_dof[i * dof_max + j];
                         dof_to_xyz(local_dof, *mol, xyz);
-                        float s = score_xyz(xyz, na, gavdw, gbvdw, ges,
+                        float s = score_xyz(xyz, na, grid_avdw, grid_bvdw, grid_es,
                                              vdwA, vdwB, charges, gp,
                                              ie_vdwA, nb_int, iep, num_nb_pairs,
                                              mol->active_flags);
@@ -689,6 +645,10 @@ static id<MTLComputePipelineState> g_pso_simplex = nil; /* simplex kernel */
 static id<MTLBuffer> g_buf_grid_avdw  = nil;
 static id<MTLBuffer> g_buf_grid_bvdw  = nil;
 static id<MTLBuffer> g_buf_grid_es    = nil;
+/* Grid data also stored as 3D textures for hardware trilinear filtering */
+static id<MTLTexture> g_tex_grid_avdw  = nil;
+static id<MTLTexture> g_tex_grid_bvdw  = nil;
+static id<MTLTexture> g_tex_grid_es    = nil;
 static id<MTLBuffer> g_buf_vdwA       = nil;
 static id<MTLBuffer> g_buf_vdwB       = nil;
 static id<MTLBuffer> g_buf_charges    = nil;
@@ -874,6 +834,42 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
         memcpy([g_buf_grid_bvdw contents], bvdw, grid_bytes);
         memcpy([g_buf_grid_es   contents], es,   grid_bytes);
 
+        /* Create 3D textures for hardware-accelerated trilinear interpolation */
+        {
+            MTLTextureDescriptor *tdesc = [[MTLTextureDescriptor alloc] init];
+            tdesc.textureType = MTLTextureType3D;
+            tdesc.pixelFormat = MTLPixelFormatR32Float;
+            tdesc.width  = (NSUInteger)span_x;
+            tdesc.height = (NSUInteger)span_y;
+            tdesc.depth  = (NSUInteger)span_z;
+            tdesc.mipmapLevelCount = 1;
+            tdesc.usage = MTLTextureUsageShaderRead;
+            tdesc.storageMode = MTLStorageModeShared;
+
+            g_tex_grid_avdw = [g_device newTextureWithDescriptor:tdesc];
+            g_tex_grid_bvdw = [g_device newTextureWithDescriptor:tdesc];
+            g_tex_grid_es   = [g_device newTextureWithDescriptor:tdesc];
+
+            if (!g_tex_grid_avdw || !g_tex_grid_bvdw || !g_tex_grid_es) {
+                fprintf(stderr, "GPU-DOCK: texture allocation failed\n");
+                dock_gpu_cleanup();
+                return 0;
+            }
+
+            MTLRegion region = MTLRegionMake3D(0, 0, 0, (NSUInteger)span_x,
+                                                (NSUInteger)span_y,
+                                                (NSUInteger)span_z);
+            NSUInteger bpr = (NSUInteger)span_x * sizeof(float);
+            NSUInteger bpi = (NSUInteger)span_x * (NSUInteger)span_y * sizeof(float);
+
+            [g_tex_grid_avdw replaceRegion:region mipmapLevel:0 slice:0 withBytes:avdw
+                                bytesPerRow:bpr bytesPerImage:bpi];
+            [g_tex_grid_bvdw replaceRegion:region mipmapLevel:0 slice:0 withBytes:bvdw
+                                bytesPerRow:bpr bytesPerImage:bpi];
+            [g_tex_grid_es   replaceRegion:region mipmapLevel:0 slice:0 withBytes:es
+                                bytesPerRow:bpr bytesPerImage:bpi];
+        }
+
         /* Allocate ligand parameter buffers (populated by dock_gpu_set_ligand later) */
         g_buf_vdwA    = alloc_buffer(sizeof(float) * GPU_MAX_ATOMS, "vdwA");
         g_buf_vdwB    = alloc_buffer(sizeof(float) * GPU_MAX_ATOMS, "vdwB");
@@ -1000,19 +996,20 @@ int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
         [enc setComputePipelineState:g_pso];
 
         [enc setBuffer:g_buf_xyz        offset:0 atIndex:0];
-        [enc setBuffer:g_buf_grid_avdw  offset:0 atIndex:1];
-        [enc setBuffer:g_buf_grid_bvdw  offset:0 atIndex:2];
-        [enc setBuffer:g_buf_grid_es    offset:0 atIndex:3];
-        [enc setBuffer:g_buf_vdwA       offset:0 atIndex:4];
-        [enc setBuffer:g_buf_vdwB       offset:0 atIndex:5];
-        [enc setBuffer:g_buf_charges    offset:0 atIndex:6];
+        /* Grid data via 3D textures for hardware trilinear filtering */
+        [enc setTexture:g_tex_grid_avdw  atIndex:0];
+        [enc setTexture:g_tex_grid_bvdw  atIndex:1];
+        [enc setTexture:g_tex_grid_es    atIndex:2];
+        [enc setBuffer:g_buf_vdwA       offset:0 atIndex:1];
+        [enc setBuffer:g_buf_vdwB       offset:0 atIndex:2];
+        [enc setBuffer:g_buf_charges    offset:0 atIndex:3];
 
-        [enc setBuffer:g_buf_params offset:0 atIndex:7];
+        [enc setBuffer:g_buf_params offset:0 atIndex:4];
         write_natoms(num_atoms);
-        [enc setBuffer:g_buf_natoms offset:0 atIndex:8];
+        [enc setBuffer:g_buf_natoms offset:0 atIndex:5];
 
-        [enc setBuffer:g_buf_scores offset:0 atIndex:9];
-        [enc setBuffer:g_buf_active_flags offset:0 atIndex:10];
+        [enc setBuffer:g_buf_scores offset:0 atIndex:6];
+        [enc setBuffer:g_buf_active_flags offset:0 atIndex:7];
 
         MTLSize threadsPerGrid  = MTLSizeMake(num_poses, 1, 1);
         NSUInteger tg = MIN(g_pso.maxTotalThreadsPerThreadgroup, (NSUInteger)256);
@@ -1070,26 +1067,27 @@ int dock_gpu_batch_score_with_ie(const float *xyz, int num_poses, int num_atoms,
 
         /* Bind buffers — must match shader buffer layout */
         [enc setBuffer:g_buf_xyz        offset:0 atIndex:0];
-        [enc setBuffer:g_buf_grid_avdw  offset:0 atIndex:1];
-        [enc setBuffer:g_buf_grid_bvdw  offset:0 atIndex:2];
-        [enc setBuffer:g_buf_grid_es    offset:0 atIndex:3];
-        [enc setBuffer:g_buf_vdwA       offset:0 atIndex:4];
-        [enc setBuffer:g_buf_vdwB       offset:0 atIndex:5];
-        [enc setBuffer:g_buf_charges    offset:0 atIndex:6];
-        [enc setBuffer:g_buf_params     offset:0 atIndex:7];
+        /* Grid data via 3D textures for hardware trilinear filtering */
+        [enc setTexture:g_tex_grid_avdw  atIndex:0];
+        [enc setTexture:g_tex_grid_bvdw  atIndex:1];
+        [enc setTexture:g_tex_grid_es    atIndex:2];
+        [enc setBuffer:g_buf_vdwA       offset:0 atIndex:1];
+        [enc setBuffer:g_buf_vdwB       offset:0 atIndex:2];
+        [enc setBuffer:g_buf_charges    offset:0 atIndex:3];
+        [enc setBuffer:g_buf_params     offset:0 atIndex:4];
         write_natoms(num_atoms);
-        [enc setBuffer:g_buf_natoms    offset:0 atIndex:8];
-        [enc setBuffer:g_buf_scores    offset:0 atIndex:9];
-        [enc setBuffer:g_buf_ie_vdwA   offset:0 atIndex:10];
-        [enc setBuffer:g_buf_nb_int    offset:0 atIndex:11];
+        [enc setBuffer:g_buf_natoms    offset:0 atIndex:5];
+        [enc setBuffer:g_buf_scores    offset:0 atIndex:6];
+        [enc setBuffer:g_buf_ie_vdwA   offset:0 atIndex:7];
+        [enc setBuffer:g_buf_nb_int    offset:0 atIndex:8];
         write_iep(g_ie_soft_delta, g_ie_cutoff_sq, g_num_nb_pairs);
-        [enc setBuffer:g_buf_iep       offset:0 atIndex:12];
+        [enc setBuffer:g_buf_iep       offset:0 atIndex:9];
         write_nnp(g_num_nb_pairs);
-        [enc setBuffer:g_buf_nnp       offset:0 atIndex:13];
+        [enc setBuffer:g_buf_nnp       offset:0 atIndex:10];
         if (active_flags) {
             memcpy([g_buf_active_flags contents], active_flags, sizeof(int) * (size_t)num_atoms);
         }
-        [enc setBuffer:g_buf_active_flags offset:0 atIndex:14];
+        [enc setBuffer:g_buf_active_flags offset:0 atIndex:11];
 
         MTLSize threadsPerGrid  = MTLSizeMake(num_poses, 1, 1);
         NSUInteger tg = MIN(g_pso_ie.maxTotalThreadsPerThreadgroup, (NSUInteger)256);
@@ -1119,6 +1117,9 @@ void dock_gpu_cleanup(void)
         g_buf_grid_avdw  = nil;
         g_buf_grid_bvdw  = nil;
         g_buf_grid_es    = nil;
+        g_tex_grid_avdw  = nil;
+        g_tex_grid_bvdw  = nil;
+        g_tex_grid_es    = nil;
         g_buf_vdwA       = nil;
         g_buf_vdwB       = nil;
         g_buf_charges    = nil;
@@ -1320,28 +1321,29 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
 
         [enc setComputePipelineState:g_pso_simplex];
 
-        /* Bind all 17 buffers */
+        /* Bind buffers + textures */
         [enc setBuffer:g_buf_vertex_dof    offset:0 atIndex:0];
         /* scores + state share a buffer: scores[0..nverts-1], state[nverts..nverts+5] */
         [enc setBuffer:g_buf_simplex_state  offset:0 atIndex:1];
         [enc setBuffer:g_buf_simplex_state  offset:(nverts * sizeof(float)) atIndex:2];
         [enc setBuffer:g_buf_mol_data       offset:0 atIndex:3];
-        [enc setBuffer:g_buf_grid_avdw      offset:0 atIndex:4];
-        [enc setBuffer:g_buf_grid_bvdw      offset:0 atIndex:5];
-        [enc setBuffer:g_buf_grid_es        offset:0 atIndex:6];
-        [enc setBuffer:g_buf_vdwA           offset:0 atIndex:7];
-        [enc setBuffer:g_buf_vdwB           offset:0 atIndex:8];
-        [enc setBuffer:g_buf_charges        offset:0 atIndex:9];
-        [enc setBuffer:g_buf_params         offset:0 atIndex:10];
+        /* Grid data via 3D textures for hardware trilinear filtering */
+        [enc setTexture:g_tex_grid_avdw     atIndex:0];
+        [enc setTexture:g_tex_grid_bvdw     atIndex:1];
+        [enc setTexture:g_tex_grid_es       atIndex:2];
+        [enc setBuffer:g_buf_vdwA           offset:0 atIndex:4];
+        [enc setBuffer:g_buf_vdwB           offset:0 atIndex:5];
+        [enc setBuffer:g_buf_charges        offset:0 atIndex:6];
+        [enc setBuffer:g_buf_params         offset:0 atIndex:7];
         write_natoms(num_atoms);
-        [enc setBuffer:g_buf_natoms         offset:0 atIndex:11];
-        [enc setBuffer:g_buf_xyz            offset:0 atIndex:12];  /* out_scores (unused) */
-        [enc setBuffer:g_buf_ie_vdwA        offset:0 atIndex:13];
-        [enc setBuffer:g_buf_nb_int         offset:0 atIndex:14];
+        [enc setBuffer:g_buf_natoms         offset:0 atIndex:8];
+        [enc setBuffer:g_buf_xyz            offset:0 atIndex:9];  /* out_scores (unused) */
+        [enc setBuffer:g_buf_ie_vdwA        offset:0 atIndex:10];
+        [enc setBuffer:g_buf_nb_int         offset:0 atIndex:11];
         write_iep(g_ie_soft_delta, g_ie_cutoff_sq, g_num_nb_pairs);
-        [enc setBuffer:g_buf_iep            offset:0 atIndex:15];
+        [enc setBuffer:g_buf_iep            offset:0 atIndex:12];
         write_nnp(g_num_nb_pairs);
-        [enc setBuffer:g_buf_nnp            offset:0 atIndex:16];
+        [enc setBuffer:g_buf_nnp            offset:0 atIndex:13];
 
         MTLSize one = MTLSizeMake(1, 1, 1);
         [enc dispatchThreads:one threadsPerThreadgroup:one];

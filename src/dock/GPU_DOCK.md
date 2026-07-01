@@ -569,27 +569,73 @@ efficiently than 49 threads contending for scattered cache lines.
 - No speculative multi-vertex scoring (wasteful in single-thread — computes
   all 4 candidates when only 1-2 are needed)
 
-### Benchmarks
+### Benchmarks (buffer-based trilinear — Jun 30)
 | System | Atoms | Torsions | GPU Time | CPU Time | Ratio | Score vs CPU |
 |--------|-------|----------|----------|----------|-------|--------------|
 | 1A28 | 42 | 1 | 80.7s | 3.9s | 20.7× | -75.87 vs -75.96 (Δ0.09) |
 | 1C8K | 49 | 5 | 155.9s | 17.2s | 9.1× | -55.14 vs -55.21 (Δ0.07) |
 
-### Analysis
-- GPU overhead drops with system size (20× for 1-torsion → 9× for 5-torsion)
-  because the fixed-cost dispatch/readback is amortized over more work
-- Score differences (~0.1) are within IEEE float variation between GPU and CPU paths
-  (different summation order, fused multiply-add behavior)
-- Primary bottleneck: single thread doing ~42-49 trilinear grid reads per scoring call,
-  with ~2-4 scoring calls per iteration × ~100-200 iterations per minimization
+---
 
-### Next opportunities
-1. **Texture-based grid scoring**: Replace manual `trilinear()` with
-   `MTLTexture`'s built-in hardware trilinear interpolation — native
-   texture units are optimized for cache-coherent access patterns
-2. **Multi-molecule batch dispatch**: Queue N independent minimizations
+## Texture-based Grid Scoring (Jun 30 — ✅ Working)
+
+### Change
+Replaced manual `trilinear()` function (8 global reads + interpolation) with
+`MTLTexture` 3D sampler using hardware-accelerated trilinear filtering.
+
+**Before**: `device const float* grid_avdw → trilinear(gavdw, gp, x, y, z)`
+Each call: 8× global memory reads (`grid[i000..i111]`), interpolation math.
+
+**After**: `texture3d<float> grid_avdw → grid_avdw.sample(grid_sampler, norm).x`
+One texture sample → dedicated texture cache → hardware trilinear filter unit.
+
+Grid data is uploaded to 3D textures (`r32f`, no mipmaps) during init.
+Buffer bindings for grid data replaced with `setTexture:atIndex:`.
+
+### Updated Benchmarks
+| System | Atoms | Torsions | Buffer GPU | Texture GPU | Speedup | CPU Time | Ratio vs CPU | Score vs CPU |
+|--------|-------|----------|-----------|-------------|---------|----------|--------------|--------------|
+| 1A28 | 42 | 1 | 80.7s | **48.0s** | 1.68× | 3.9s | 12.3× | -75.85 vs -75.96 (Δ0.11) |
+| 1C8K | 49 | 5 | 155.9s | **138.3s** | 1.13× | 17.2s | 8.0× | -55.13 vs -55.21 (Δ0.08) |
+
+### Analysis
+- **1.68× speedup on 1A28**: Grid scoring from 3 trilinear calls per atom is the
+  dominant cost for small systems. Texture hardware reduces read + compute latency.
+- **1.13× speedup on 1C8K**: IE scoring (799 non-bonded pairs) becomes proportionally
+  larger for bigger systems; IE is compute-bound (distance-squared + LJ repulsion),
+  not memory-bound, so it doesn't benefit from texture acceleration.
+- Score diffs (Δ0.08-0.11 vs CPU) remain within expected float variation.
+  Small differences from texture hardware filtering vs manual `float` arithmetic
+  are expected and acceptable.
+
+### Why textures help on Apple Silicon
+- **Dedicated texture cache**: Separate from compute data cache; random 3D grid
+  accesses from atoms at different positions don't thrash the compute cache.
+- **Hardware filter unit**: The GPU's texture sampler does bilinear/trilinear
+  interpolation in a single pipeline cycle — no `8× fmul/fadd` per call.
+- **Cache-friendly tile walk**: The texture unit fetches 2×2×2 texel blocks
+  optimistically, exploiting spatial locality even for scattered access patterns.
+
+### Implementation notes
+- 3 textures created in `dock_gpu_init()`: `g_tex_grid_avdw`, `g_tex_grid_bvdw`,
+  `g_tex_grid_es` with `MTLPixelFormatR32Float`, `MTLStorageModeShared`.
+- `constexpr sampler grid_sampler(filter::linear, address::clamp_to_edge)` defined
+  at file scope in both shader sources.
+- Normalized coordinates: `norm = float3(gx/(sx-1), gy/(sy-1), gz/(sz-1))`.
+- Buffer bindings `[[buffer(1-3)]]` replaced with `[[texture(0-2)]]`;
+  subsequent bindings shifted down by 3 slots.
+
+### Key files changed
+| File | Changes |
+|------|--------|
+| `score_dock_gpu_metal.mm` | Add texture vars, creation, setTexture in 3 dispatch paths, cleanup |
+| `score_dock_gpu_metal.mm` (shader_src) | Add sampler, replace trilinear with texture version, update both batch kernels |
+| `score_dock_gpu_metal.mm` (shader_src_simplex) | Add sampler, replace trilinear, update score_xyz sig, update kernel sig |
+
+### Next opportunities (post-texture)
+1. **Multi-molecule batch dispatch**: Queue N independent minimizations
    into one command buffer to amortize `waitUntilCompleted` overhead
-3. **GPU-side conformation generator**: Move anchor/grow logic to GPU
+2. **GPU-side conformation generator**: Move anchor/grow logic to GPU
    (high risk, high reward — eliminates all CPU-GPU sync during search)
 
 ## Build matrix
@@ -597,6 +643,6 @@ efficiently than 49 threads contending for scattered cache lines.
 | `GPU_BACKEND` | Platform | Binary type | Status |
 |---------------|----------|-------------|--------|
 | `cpu` | any | CPU-only stub | ✅ All tests pass |
-| `metal` | macOS ARM | Metal GPU | 🟡 Flex docking works (20× overhead on 1-torsion, 9× on 5-torsion) |
+| `metal` | macOS ARM | Metal GPU | 🟡 Flex docking works (12× overhead on 1-torsion, 8× on 5-torsion with texture) |
 | `auto` | macOS ARM | Metal GPU | Same as `metal` |
 | `auto` | Linux | CPU stub | Not tested |
