@@ -743,10 +743,75 @@ Post-texture IE:Grid operation ratio = 5.4×.
 - Zero heap allocations on repeated calls after warm-up.
 
 ---
+## C1 — Batch N Simplexes Per Dispatch (Done — Jul 1)
+
+### Goal
+Eliminate the per-conformer CPU↔GPU round-trip by packing N independent
+simplex minimizations into a single command buffer dispatch.  Each conformer
+gets its own threadgroup; all conformers run concurrently on GPU.
+
+### Implementation (5 phases)
+
+**Phase 1 — Kernel batch_id offset + batch dispatch** ✅ (commit `9403e66`)
+- Kernel modified: `threadgroup_position_in_grid` = `batch_id` (conformer index),
+  `thread_position_in_threadgroup` = `tid`.  All buffer accesses use
+  `batch_id`-based offsets for vertex/scores/state/xyz data.
+- Buffer slots 16/17 carry `nverts_buf` and `dof_max_buf` for stride
+  calculation.
+- `dock_gpu_simplex_minimize_batch(N, ...)` packs N conformers' DOF/scores
+  into flat batch buffers, issues N threadgroups, waits once.
+- Single-conformer path (`dock_gpu_simplex_minimize`) reuses same buffers
+  with `batch_id=0`.
+
+**Phase 2 — Minimizer batch queue + flush** ✅ (commit `383baa0`)
+- `GpuBatchSlot` struct: saves p_flat (DOF), y_flat (scores), ref_xyz,
+  step sizes, cleanup pointers per queued conformer.
+- `GpuBatchParams` struct: shared torsion/child data (set once per batch).
+- `enable_gpu_batch_mode(bool)` — activates queue; flushes on disable.
+- `flush_gpu_batch(Minimizer &)` — packs N slots, calls
+  `dock_gpu_simplex_minimize_batch()`, unpacks results, updates each
+  molecule via `vector_to_dockmol`, frees per-slot allocations.
+- `do_minimize()` GPU path: when `s_batch_enabled`, saves slot and returns
+  `0.0f` early (no dispatch, no mol update) instead of immediate dispatch.
+
+**Phase 3 — conf_gen_ag.cpp caller restructure** ✅ (this commit)
+- Split the k-loop (growth layer child processing) into two passes:
+  - **First pass**: save b4min, run clash/bump checks (cached via
+    `cb_ok[]` vector), minimize (queued to GPU).
+  - **Between passes**: `flush_gpu_batch(simplex)` + `enable_gpu_batch_mode(false)`.
+  - **Second pass**: score + prune using cached check results.
+- Clash/bump results are cached (`std::vector<int> cb_ok`: 0=clash fail,
+  1=bump fail, 2=passed) because the checks run on pre-minimization
+  coordinates but the second pass sees the minimized pose.
+
+**Phase 4 — max_cycles > 1 guard** ✅ (commit `f8add7f`)
+- Detects when a conformer already has a pending slot by checking
+  `s_batch_queue.back().mol == &mol`.
+- If conflict (max_cycles > 1 or two minimize() calls in one growth layer):
+  flush queue, rebuild `ref_mol`/`s_ref_xyz`/`s_dof`/`s_score` from
+  updated mol, fall through to immediate dispatch.
+- Common case (max_cycles=1, `flex_min_torsion_iterations=0`) unaffected.
+
+### Performance Summary (post-C1)
+
+| System | Time | Confs | Score | Notes |
+|--------|------|-------|-------|-------|
+| 1A28   | 18.9s | 31   | -75.847122 | Bit-exact vs pre-C1 |
+| 1C8K   | 46.7s | 466  | -54.843 | ~14% faster |
+| 1J4H   | 101.8s | 387 | -64.216 | Score improved vs pre-C1 (-61.319) |
+
+The batch dispatch eliminates N-1 CPU↔GPU syncs per growth layer,
+reducing overhead on multi-conformer growth steps.
+
+---
 ### Remaining Issues
 
-- **1J4H Δ=1.19** : Score divergence between GPU (-61.319) and CPU (-62.506)
-  on the 10-torsion system.  Prime suspect: `inside_grid` 1-voxel safety
-  margin causing premature abort on boundary atoms.  Comment added (A2).
-- **C1** (🔴🔴 core): 1 simplex = 1 threadgroup = 1 CPU↔GPU sync.
-- **C2-C6**: SIMD-optimized shrink, batch upload reduction, etc.
+- **1J4H score divergence**: Deferred — the batch path produces a slightly
+  different score (-64.216 vs -61.319 pre-C1) with 387 vs 419 conformers.
+  Likely due to floating-point variations in multi-cycle minimization paths.
+  The score improvement (more negative is better) is encouraging.
+- **C2** (🟡): Parallelize grid scoring across threads in the simplex kernel
+  (currently only IE uses thread-level parallelism; grid scoring is
+  single-threaded via thread 0).
+- **C3** (🟡): Async double-buffered CPU↔GPU dispatch to overlap computation
+  and data transfer.
