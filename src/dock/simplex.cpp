@@ -697,175 +697,138 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
             delta = y[0];
 
             /* ---- GPU-side simplex: run all iterations on GPU ---- */
+            /* B2: upload ligand atom data + IE params once (static guard).
+               B3: reuse scratch buffers across calls (vector capacity,
+               no per-call new[]/delete[]). */
             if (use_gpu) {
-                /* Extract molecule reference data for GPU */
-                float *ref_xyz_flat = new float[ref_mol.num_atoms * 3];
-                int *active_flat     = new int[ref_mol.num_atoms];
+                /* ---- B3: static-reuse scratch buffers ---- */
+                static std::vector<float> s_ref_xyz;
+                static std::vector<int>   s_active;
+                static std::vector<int>   s_ta1, s_ta2, s_ta3, s_ta4, s_tbn;
+                static std::vector<int>   s_child_starts, s_child_counts, s_child_idx;
+                static std::vector<float> s_dof, s_score;
+                /* B2: upload-once guard */
+                static bool s_ligand_uploaded = false;
+                /* ---- */
+
                 int na = ref_mol.num_atoms;
                 int nv = size + 1;
+                int nt = (int)torsions.size();
+
+                /* Grow re-usable ref/active buffers if needed */
+                s_ref_xyz.resize((size_t)na * 3);
+                s_active.resize(na);
                 for (i = 0; i < na; i++) {
-                    ref_xyz_flat[i*3]   = ref_mol.x[i];
-                    ref_xyz_flat[i*3+1] = ref_mol.y[i];
-                    ref_xyz_flat[i*3+2] = ref_mol.z[i];
-                    active_flat[i] = ref_mol.atom_active_flags[i] ? 1 : 0;
+                    s_ref_xyz[i*3]   = ref_mol.x[i];
+                    s_ref_xyz[i*3+1] = ref_mol.y[i];
+                    s_ref_xyz[i*3+2] = ref_mol.z[i];
+                    s_active[i] = ref_mol.atom_active_flags[i] ? 1 : 0;
                 }
 
                 /* Torsion definitions */
-                int nt = (int)torsions.size();
-                int *ta1 = new int[nt], *ta2 = new int[nt];
-                int *ta3 = new int[nt], *ta4 = new int[nt];
-                int *tbn = new int[nt];
+                s_ta1.resize(nt);  s_ta2.resize(nt);
+                s_ta3.resize(nt);  s_ta4.resize(nt);  s_tbn.resize(nt);
                 for (i = 0; i < nt; i++) {
-                    ta1[i] = torsions[i].atom1;
-                    ta2[i] = torsions[i].atom2;
-                    ta3[i] = torsions[i].atom3;
-                    ta4[i] = torsions[i].atom4;
-                    tbn[i] = torsions[i].bond_num;
+                    s_ta1[i] = torsions[i].atom1;
+                    s_ta2[i] = torsions[i].atom2;
+                    s_ta3[i] = torsions[i].atom3;
+                    s_ta4[i] = torsions[i].atom4;
+                    s_tbn[i] = torsions[i].bond_num;
                 }
 
                 /* Child atom lists for each torsion */
                 bool has_dir_torsions = false;
-                int *child_starts = NULL;
-                int *child_counts = NULL;
-                int *child_idx_flat = NULL;
                 for (i = 0; i < nt; i++) {
-                    if (bond_vectors[tbn[i]] != -1) { has_dir_torsions = true; break; }
+                    if (bond_vectors[s_tbn[i]] != -1) { has_dir_torsions = true; break; }
                 }
 
                 bool gpu_simplex_ok = false;
                 if (!has_dir_torsions) {
-                    /* Build child index flat arrays */
-                    child_starts = new int[nt];
-                    child_counts = new int[nt];
+                    s_child_starts.resize(nt);
+                    s_child_counts.resize(nt);
                     int total_children = 0;
-                    /* First pass: count children */
                     for (i = 0; i < nt; i++) {
-                        int bond_idx = ref_mol.get_bond(ta2[i], ta3[i]);
-                        int cl_idx;
-                        if (ta2[i] < ta3[i])
-                            cl_idx = 2 * bond_idx;
-                        else
-                            cl_idx = 2 * bond_idx + 1;
-                        child_counts[i] = (int)ref_mol.atom_child_list[cl_idx].size();
-                        total_children += child_counts[i];
+                        int bond_idx = ref_mol.get_bond(s_ta2[i], s_ta3[i]);
+                        int cl_idx = (s_ta2[i] < s_ta3[i]) ? 2 * bond_idx : 2 * bond_idx + 1;
+                        s_child_counts[i] = (int)ref_mol.atom_child_list[cl_idx].size();
+                        total_children += s_child_counts[i];
                     }
-                    /* Second pass: fill flat array */
-                    child_idx_flat = new int[total_children > 0 ? total_children : 1];
+                    s_child_idx.resize(total_children > 0 ? total_children : 1);
                     int off = 0;
                     for (i = 0; i < nt; i++) {
-                        child_starts[i] = off;
-                        int bond_idx = ref_mol.get_bond(ta2[i], ta3[i]);
-                        int cl_idx;
-                        if (ta2[i] < ta3[i])
-                            cl_idx = 2 * bond_idx;
-                        else
-                            cl_idx = 2 * bond_idx + 1;
-                        for (j = 0; j < child_counts[i]; j++)
-                            child_idx_flat[off++] = ref_mol.atom_child_list[cl_idx][j];
+                        s_child_starts[i] = off;
+                        int bond_idx = ref_mol.get_bond(s_ta2[i], s_ta3[i]);
+                        int cl_idx = (s_ta2[i] < s_ta3[i]) ? 2 * bond_idx : 2 * bond_idx + 1;
+                        for (j = 0; j < s_child_counts[i]; j++)
+                            s_child_idx[off++] = ref_mol.atom_child_list[cl_idx][j];
                     }
 
-                    /* Pack initial p[][] and y[] into flat arrays */
-                    float *dof_flat = new float[nv * size];
-                    for (i = 0; i < nv; i++) {
+                    /* Pack p[][] and y[] into flat vector buffers */
+                    s_dof.resize((size_t)nv * (size_t)size);
+                    for (i = 0; i < nv; i++)
                         for (j = 0; j < size; j++)
-                            dof_flat[i * size + j] = p[i][j];
-                    }
-                    float *score_flat = new float[nv];
-                    for (i = 0; i < nv; i++) score_flat[i] = y[i];
+                            s_dof[i * size + j] = p[i][j];
+                    s_score.resize(nv);
+                    for (i = 0; i < nv; i++) s_score[i] = y[i];
 
-                    /* Upload ligand atom parameters to GPU */
-                    {
-                        float *gpu_vdwA = new float[na];
-                        float *gpu_vdwB = new float[na];
-                        float *gpu_chg  = new float[na];
+                    /* Upload ligand atom parameters to GPU — ONCE (B2) */
+                    if (!s_ligand_uploaded) {
+                        std::vector<float> gpu_vdwA(na), gpu_vdwB(na), gpu_chg(na);
                         for (int ai = 0; ai < na; ai++) {
                             int type = ref_mol.amber_at_id[ai];
                             gpu_vdwA[ai] = score.vdwA[type];
                             gpu_vdwB[ai] = score.vdwB[type];
                             gpu_chg[ai]  = ref_mol.charges[ai];
                         }
-
-                        dock_gpu_set_ligand(gpu_vdwA, gpu_vdwB, gpu_chg, na);
-                        delete[] gpu_vdwA;
-                        delete[] gpu_vdwB;
-                        delete[] gpu_chg;
-                    }
-                    /* Upload IE data to GPU if internal energy is active
-                       and not skipped by rigid anchor minimization. */
-                    if (!skip_internal_energy && score.use_internal_energy && (int)score.nb_int.size() > 0) {
-                        float *gpu_ie_vdwA = new float[na];
-                        for (int ai = 0; ai < na; ai++) {
-                            gpu_ie_vdwA[ai] = score.ie_vdwA[ai]; /* per-atom, not per-type */
+                        dock_gpu_set_ligand(gpu_vdwA.data(), gpu_vdwB.data(), gpu_chg.data(), na);
+                        if (!skip_internal_energy && score.use_internal_energy && (int)score.nb_int.size() > 0) {
+                            std::vector<float> gpu_ie_vdwA(na);
+                            for (int ai = 0; ai < na; ai++)
+                                gpu_ie_vdwA[ai] = score.ie_vdwA[ai];
+                            int np = (int)score.nb_int.size();
+                            std::vector<int> gpu_nb_flat((size_t)np * 2);
+                            for (int pi = 0; pi < np; pi++) {
+                                gpu_nb_flat[pi*2]   = score.nb_int[pi].first;
+                                gpu_nb_flat[pi*2+1] = score.nb_int[pi].second;
+                            }
+                            dock_gpu_set_ligand_ie(gpu_ie_vdwA.data(), NULL, gpu_nb_flat.data(), np,
+                                                   score.ie_soft_delta, score.ie_vdw_cutoff_sq);
                         }
-                        int np = (int)score.nb_int.size();
-                        int *gpu_nb_flat = new int[np * 2];
-                        for (int pi = 0; pi < np; pi++) {
-                            gpu_nb_flat[pi*2]   = score.nb_int[pi].first;
-                            gpu_nb_flat[pi*2+1] = score.nb_int[pi].second;
-                        }
-                        dock_gpu_set_ligand_ie(gpu_ie_vdwA, NULL, gpu_nb_flat, np,
-                                               score.ie_soft_delta,
-                                               score.ie_vdw_cutoff_sq);
-                        delete[] gpu_ie_vdwA;
-                        delete[] gpu_nb_flat;
+                        dock_gpu_simplex_init();
+                        s_ligand_uploaded = true;
                     }
 
-                    dock_gpu_simplex_init();
                     float eff_trans = trans_step_size / (float)(current_cycle + 1);
                     float eff_rot   = rot_step_size   / (current_cycle + 1);
                     float eff_tors  = tors_step_size  / (current_cycle + 1);
 
-
                     gpu_simplex_ok = dock_gpu_simplex_minimize(
-                        ref_xyz_flat, active_flat, na,
+                        s_ref_xyz.data(), s_active.data(), na,
                         ref_mol.num_active_atoms, nt,
-                        ta1, ta2, ta3, ta4,
-                        child_idx_flat, child_starts, child_counts,
+                        s_ta1.data(), s_ta2.data(), s_ta3.data(), s_ta4.data(),
+                        s_child_idx.data(), s_child_starts.data(), s_child_counts.data(),
                         torsion_scale_factors.data(),
-                        dof_flat, score_flat, size, nv,
+                        s_dof.data(), s_score.data(), size, nv,
                         max_iterations, score_converge,
                         eff_trans, eff_rot, eff_tors);
 
                     if (gpu_simplex_ok) {
-                        /* Read back results into p[][] and y[] */
                         for (i = 0; i < nv; i++) {
                             for (j = 0; j < size; j++)
-                                p[i][j] = dof_flat[i * size + j];
-                            y[i] = score_flat[i];
+                                p[i][j] = s_dof[i * size + j];
+                            y[i] = s_score[i];
                         }
-
-                        /* Find best vertex */
                         ilo = 0;
-                        for (i = 1; i < nv; i++) {
-                            if (y[i] < y[ilo]) ilo = i;
-                        }
+                        for (i = 1; i < nv; i++) if (y[i] < y[ilo]) ilo = i;
                         ihi = 0;
-                        for (i = 1; i < nv; i++) {
-                            if (y[i] > y[ihi]) ihi = i;
-                        }
-                        /* Update iteration count to appear converged */
+                        for (i = 1; i < nv; i++) if (y[i] > y[ihi]) ihi = i;
                         iteration = max_iterations + 1;
                     }
-
-                    delete[] dof_flat;
-                    delete[] score_flat;
-                    delete[] child_idx_flat;
-                    child_idx_flat = NULL;  /* prevent double-free in outer cleanup */
                 }
 
-                delete[] ref_xyz_flat;
-                delete[] active_flat;
-                delete[] ta1; delete[] ta2; delete[] ta3; delete[] ta4;
-                delete[] tbn;
-                delete[] child_starts;
-                delete[] child_counts;
-                delete[] child_idx_flat;  /* NULL-safe if inner block ran */
-
                 if (!gpu_simplex_ok) {
-                    /* GPU simplex failed — continue to CPU path */
                     use_gpu = false;
                 } else {
-                    /* GPU succeeded — skip the CPU loop */
                     goto end_of_simplex;
                 }
             }

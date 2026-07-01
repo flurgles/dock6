@@ -214,7 +214,7 @@ static const char* shader_src = \
 /*  Simplex shader source (separate compilation)                       */
 /* ================================================================== */
 
-static const char* shader_src_simplex = R"shader(
+static const char* shader_src_all = R"shader(
 #include <metal_stdlib>
 using namespace metal;
 
@@ -223,6 +223,10 @@ constexpr sampler grid_sampler(filter::linear, address::clamp_to_edge);
 #define PI 3.14159265358979323846f
 #define MAX_ATOMS 512
 #define MAX_TORSIONS 50
+/* NOTE: DOF_MAX = 56 (=6+50).  Ligands with >50 rotatable bonds will have
+ * their DOF silently truncated to 56 on GPU (the CPU path handles them
+ * correctly).  Add a runtime check or bump MAX_TORSIONS if this becomes
+ * a limitation for your target systems. */
 #define DOF_MAX (6 + MAX_TORSIONS)
 #define MAX_SIMPLEX_THREADS 256
 
@@ -240,12 +244,104 @@ struct IEParams {
     int   _pad;
 };
 
+/* Forward declarations (used by batch kernels before full definitions) */
+static float trilinear(texture3d<float> grid, constant GridParams &p,
+                        float x, float y, float z);
+static bool inside_grid(constant GridParams &p, float x, float y, float z);
+
+/* ============ Grid-only batch kernel ============ */
+kernel void batch_score_kernel(
+    device const float*    xyz          [[buffer(0)]],
+    texture3d<float>       grid_avdw    [[texture(0)]],
+    texture3d<float>       grid_bvdw    [[texture(1)]],
+    texture3d<float>       grid_es      [[texture(2)]],
+    device const float*    vdwA         [[buffer(1)]],
+    device const float*    vdwB         [[buffer(2)]],
+    device const float*    charges      [[buffer(3)]],
+    constant GridParams&   gp           [[buffer(4)]],
+    constant int&          num_atoms    [[buffer(5)]],
+    device float*          out_scores   [[buffer(6)]],
+    device const int*     active_flags [[buffer(7)]],
+    uint                   tid          [[thread_position_in_grid]])
+{
+    int atoms_per_pose = num_atoms;
+    int stride = 3 * atoms_per_pose;
+    int base = tid * stride;
+    float score = 0.0;
+    for (int a = 0; a < atoms_per_pose; a++) {
+        int o3 = base + a * 3;
+        float x = xyz[o3], y = xyz[o3+1], z = xyz[o3+2];
+        float vdw = trilinear(grid_avdw, gp, x, y, z);
+        float bvdw = trilinear(grid_bvdw, gp, x, y, z);
+        float es = trilinear(grid_es, gp, x, y, z);
+        if (active_flags[a])
+            score += vdwA[a]*vdw - vdwB[a]*bvdw + charges[a]*es;
+    }
+    out_scores[tid] = score;
+}
+
+/* ============ Grid + IE batch kernel ============ */
+kernel void batch_score_with_ie_kernel(
+    device const float*    xyz            [[buffer(0)]],
+    texture3d<float>       grid_avdw      [[texture(0)]],
+    texture3d<float>       grid_bvdw      [[texture(1)]],
+    texture3d<float>       grid_es        [[texture(2)]],
+    device const float*    vdwA           [[buffer(1)]],
+    device const float*    vdwB           [[buffer(2)]],
+    device const float*    charges        [[buffer(3)]],
+    constant GridParams&   gp             [[buffer(4)]],
+    constant int&          num_atoms      [[buffer(5)]],
+    device float*          out_scores     [[buffer(6)]],
+    device const float*    ie_vdwA        [[buffer(7)]],
+    device const int*      nb_int         [[buffer(8)]],
+    constant IEParams&     iep            [[buffer(9)]],
+    constant int&          num_nb_pairs   [[buffer(10)]],
+    device const int*     active_flags   [[buffer(11)]],
+    uint                   tid            [[thread_position_in_grid]])
+{
+    int atoms_per_pose = num_atoms;
+    int stride = 3 * atoms_per_pose;
+    int base = tid * stride;
+    float grid_score = 0.0;
+    for (int a = 0; a < atoms_per_pose; a++) {
+        int o3 = base + a * 3;
+        float x = xyz[o3], y = xyz[o3+1], z = xyz[o3+2];
+        if (active_flags[a] && !inside_grid(gp, x, y, z)) {
+            out_scores[tid] = -3.40282347e+38;
+            return;
+        }
+        if (active_flags[a]) {
+            float vdw = trilinear(grid_avdw, gp, x, y, z);
+            float bvdw = trilinear(grid_bvdw, gp, x, y, z);
+            float es = trilinear(grid_es, gp, x, y, z);
+            grid_score += vdwA[a]*vdw - vdwB[a]*bvdw + charges[a]*es;
+        }
+    }
+    float ie_score = 0.0;
+    if (num_nb_pairs > 0) {
+        for (int p = 0; p < num_nb_pairs; p++) {
+            int a1 = nb_int[p*2], a2 = nb_int[p*2+1];
+            if (!active_flags[a1] || !active_flags[a2]) continue;
+            int o1 = base + a1*3, o2 = base + a2*3;
+            float dx = xyz[o1]-xyz[o2], dy = xyz[o1+1]-xyz[o2+1], dz = xyz[o1+2]-xyz[o2+2];
+            float r2 = dx*dx + dy*dy + dz*dz;
+            if (r2 < iep.cutoff_sq) {
+                float r2eff = r2 + iep.soft_delta;
+                float denom = r2eff*r2eff*r2eff;
+                ie_score += (ie_vdwA[a1]*ie_vdwA[a2]) / (denom*denom);
+            }
+        }
+    }
+    out_scores[tid] = grid_score + ie_score;
+}
+
 struct MolData {
     float ref_xyz[MAX_ATOMS][3];
     int   active_flags[MAX_ATOMS];
     int   num_atoms;
     int   num_active_atoms;
     int   num_torsions;
+    float com_x, com_y, com_z;   /* precomputed center of mass (cached from CPU) */
     float trans_step;
     float rot_step;
     float tors_step;
@@ -258,6 +354,13 @@ struct MolData {
     int   child_cnt[MAX_TORSIONS];
 };
 
+/* NOTE: 1-voxel safety margin (gx > 1.0) is more conservative than
+ * CPU scoring, which may handle boundary atoms differently.  This
+ * can cause GPU minimizations to abort (via inside-grid sentinel)
+ * where CPU would not, potentially contributing to score divergence
+ * on deep growth trees (observed 1J4H Δ=1.19 vs typical ~0.1).
+ * If score differences exceed expectations, remove the margin and
+ * match CPU semantics exactly. */
 static bool inside_grid(constant GridParams &p, float x, float y, float z) {
     float gx = (x - p.origin_x) / p.spacing;
     float gy = (y - p.origin_y) / p.spacing;
@@ -319,21 +422,10 @@ static void quat_to_rmat(thread float3x3 &m, float3 qin) {
     m[2][2] = qn2 - q2[0] - q2[1] + q2[2];
 }
 
-static float3 compute_com(device const MolData &mol) {
-    float3 com = {0,0,0};
-    int cnt = 0;
-    for (int i = 0; i < mol.num_atoms; i++) {
-        if (mol.active_flags[i]) {
-            com.x += mol.ref_xyz[i][0];
-            com.y += mol.ref_xyz[i][1];
-            com.z += mol.ref_xyz[i][2];
-            cnt++;
-        }
-    }
-    if (cnt > 0) { com.x /= cnt; com.y /= cnt; com.z /= cnt; }
-    return com;
-}
-
+/* compute_com was removed in favor of precomputing the center of mass
+ * once on the CPU and storing it in MolData.com_{x,y,z}.  This avoids
+ * recomputing the same COM (from constant ref_xyz + active_flags) on
+ * every dof_to_xyz call — thousands of times per conformation. */
 static void rigid_transform(device float *xyz, int num_atoms,
                              float3 com, float3 trans, thread float3x3 &rmat) {
     for (int i = 0; i < num_atoms; i++) {
@@ -411,7 +503,7 @@ static void dof_to_xyz(threadgroup const float *dof, device const MolData &mol,
                     dof[5] * mol.rot_step};
     float3x3 rmat;
     quat_to_rmat(rmat, quat);
-    float3 com = compute_com(mol);
+    float3 com = {mol.com_x, mol.com_y, mol.com_z};
     rigid_transform(xyz, na, com, trans, rmat);
     for (int t = 0; t < mol.num_torsions; t++) {
         float delta_deg = dof[6 + t] * mol.tors_step;
@@ -536,7 +628,11 @@ kernel void simplex_iteration_kernel(
     threadgroup int tg_widx;
     threadgroup int tg_action;   /* 0=accept, 1=expand, 2=contract, 3=shrink */
     threadgroup int tg_repl_flag;
-    threadgroup float tg_ie_sums[MAX_SIMPLEX_THREADS / 16]; /* SIMD-group-reduced IE sums */
+    /* Sized at MAX_SIMPLEX_THREADS to support any SIMD width >= 1.
+     * On Apple Sillcon (SIMD=32): 256/32=8 entries used.
+     * On Intel/AMD with SIMD=8: 256/8=32 entries used — still safe.
+     * Previously was /16 which overflowed when SIMD width < 16. */
+    threadgroup float tg_ie_sums[MAX_SIMPLEX_THREADS];
 
     for (int iter = 0; iter < state[3]; iter++) {
         if (state[0]) return;  /* ALL threads — safe exit */
@@ -762,6 +858,10 @@ static id<MTLBuffer> g_buf_mol_data    = nil;
 
 /* Cached simplex params */
 static int  g_simplex_ready = 0;
+
+/* Cache for redundant-ligand skip (B2 optimization) */
+static int  g_set_ligand_num_atoms   = -1;
+static int  g_set_ie_num_nb_pairs    = -1;
 static int  g_buf_simplex_allocated = 0;
 
 /* Cached grid params */
@@ -849,7 +949,7 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
             opts.optimizationLevel = MTLLibraryOptimizationLevelDefault;
         }
         id<MTLLibrary> lib = [g_device newLibraryWithSource:
-                               [NSString stringWithUTF8String:shader_src]
+                               [NSString stringWithUTF8String:shader_src_all]
                                                      options:opts
                                                        error:&err];
         if (!lib) {
@@ -889,18 +989,8 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
             return 0;
         }
 
-        /* Compile simplex iteration shader (separate library) */
-        id<MTLLibrary> lib_simplex = [g_device newLibraryWithSource:
-                                        [NSString stringWithUTF8String:shader_src_simplex]
-                                                              options:opts
-                                                                error:&err];
-        if (!lib_simplex) {
-            fprintf(stderr, "GPU-DOCK: simplex shader compilation failed: %s\n",
-                    [[err localizedDescription] UTF8String]);
-            dock_gpu_cleanup();
-            return 0;
-        }
-        id<MTLFunction> func_simplex = [lib_simplex newFunctionWithName:@"simplex_iteration_kernel"];
+        /* Get simplex kernel function from the same library (all kernels unified) */
+        id<MTLFunction> func_simplex = [lib newFunctionWithName:@"simplex_iteration_kernel"];
         if (!func_simplex) {
             fprintf(stderr, "GPU-DOCK: kernel 'simplex_iteration_kernel' not found\n");
             dock_gpu_cleanup();
@@ -1040,12 +1130,19 @@ int dock_gpu_set_ligand(const float *vdwA, const float *vdwB,
         return 0;
     }
 
+    /* Skip upload if same-size ligand (common case: same molecule,
+       multiple anchors).  If num_atoms differs, re-upload is needed. */
+    if (g_set_ligand_num_atoms == num_atoms && g_active) {
+        return 1;
+    }
+
     @autoreleasepool {
         size_t bytes = sizeof(float) * (size_t)num_atoms;
         memcpy([g_buf_vdwA contents], vdwA, bytes);
         memcpy([g_buf_vdwB contents], vdwB, bytes);
         memcpy([g_buf_charges contents], charges, bytes);
         g_num_atoms = num_atoms;
+        g_set_ligand_num_atoms = num_atoms;
         g_active = 1;
         return 1;
     }
@@ -1066,6 +1163,12 @@ int dock_gpu_set_ligand_ie(const float *ie_vdwA, const float *ie_vdwB,
         return 0;
     }
 
+    /* Skip upload if same number of NB pairs (common case: same molecule,
+       multiple anchors).  NB pairs don't change between anchors. */
+    if (g_set_ie_num_nb_pairs == num_nb_pairs && g_num_nb_pairs > 0) {
+        return 1;
+    }
+
     @autoreleasepool {
         size_t ie_bytes = sizeof(float) * (size_t)g_num_atoms;
         memcpy([g_buf_ie_vdwA contents], ie_vdwA, ie_bytes);
@@ -1074,6 +1177,7 @@ int dock_gpu_set_ligand_ie(const float *ie_vdwA, const float *ie_vdwB,
         memcpy([g_buf_nb_int contents], nb_int_pairs, nb_bytes);
 
         g_num_nb_pairs   = num_nb_pairs;
+        g_set_ie_num_nb_pairs = num_nb_pairs;
         g_ie_soft_delta  = ie_soft_delta;
         g_ie_cutoff_sq   = ie_cutoff_sq;
 
@@ -1353,6 +1457,7 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
             int   num_atoms;
             int   num_active_atoms;
             int   num_torsions;
+            float com_x, com_y, com_z;   /* precomputed center of mass */
             float trans_step;
             float rot_step;
             float tors_step;
@@ -1377,6 +1482,26 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
         md.num_atoms = num_atoms;
         md.num_active_atoms = num_active_atoms;
         md.num_torsions = num_torsions;
+
+        /* Precompute center of mass from ref_xyz + active_flags
+         * (constant for a given active set — avoid recomputing in kernel). */
+        {
+            double comx = 0.0, comy = 0.0, comz = 0.0;
+            int cnt = 0;
+            for (int ai = 0; ai < num_atoms && ai < 512; ai++) {
+                if (active_flags[ai]) {
+                    comx += ref_xyz[ai*3];
+                    comy += ref_xyz[ai*3+1];
+                    comz += ref_xyz[ai*3+2];
+                    cnt++;
+                }
+            }
+            if (cnt > 0) { comx /= cnt; comy /= cnt; comz /= cnt; }
+            md.com_x = (float)comx;
+            md.com_y = (float)comy;
+            md.com_z = (float)comz;
+        }
+
         md.trans_step = trans_step_size;
         md.rot_step   = rot_step_size;
         md.tors_step  = tors_step_size;

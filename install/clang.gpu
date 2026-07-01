@@ -16,6 +16,8 @@
 # Makefile already filters -flto from .mm compilation, but LTO at the
 # link step still kills the Metal symbols.
 
+GPU_BACKEND= metal
+
 # CC is the C compiler
 # CFLAGS is the flags for the C compiler
 # CXX is the C++ compiler

@@ -31,7 +31,7 @@ CC=          clang
 CFLAGS=      -O3 -pipe -std=c99 -D_DARWIN_C_SOURCE -flto -mcpu=native -ffast-math
 CXX=         clang++
 CXXFLAGS=    -O3 -pipe -std=c++11 -flto -mcpu=native -ffast-math
-DOCK_SUFFIX= .clang
+DOCK_SUFFIX= .clang.cpu
 FC=          gfortran
 FFLAGS=      -O2 -fno-automatic -fno-second-underscore -std=legacy
 LIBS=        -lm -lpthread
