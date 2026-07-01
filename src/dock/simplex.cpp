@@ -785,13 +785,22 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                             std::vector<float> gpu_ie_vdwA(na);
                             for (int ai = 0; ai < na; ai++)
                                 gpu_ie_vdwA[ai] = score.ie_vdwA[ai];
+                            /* C5: Pre-filter nb_int to active-only pairs, removing the branch in the
+                             * GPU kernel's IE hot loop.  Inactive atoms never contribute to IE, so
+                             * skipping them here reduces wasted SIMD lanes and removes a branch. */
                             int np = (int)score.nb_int.size();
-                            std::vector<int> gpu_nb_flat((size_t)np * 2);
+                            std::vector<int> gpu_nb_flat;
+                            int filtered_count = 0;
                             for (int pi = 0; pi < np; pi++) {
-                                gpu_nb_flat[pi*2]   = score.nb_int[pi].first;
-                                gpu_nb_flat[pi*2+1] = score.nb_int[pi].second;
+                                int a1 = score.nb_int[pi].first;
+                                int a2 = score.nb_int[pi].second;
+                                if (s_active[a1] && s_active[a2]) {
+                                    gpu_nb_flat.push_back(a1);
+                                    gpu_nb_flat.push_back(a2);
+                                    filtered_count++;
+                                }
                             }
-                            dock_gpu_set_ligand_ie(gpu_ie_vdwA.data(), NULL, gpu_nb_flat.data(), np,
+                            dock_gpu_set_ligand_ie(gpu_ie_vdwA.data(), NULL, gpu_nb_flat.data(), filtered_count,
                                                    score.ie_soft_delta, score.ie_vdw_cutoff_sq);
                         }
                         dock_gpu_simplex_init();

@@ -321,7 +321,7 @@ kernel void batch_score_with_ie_kernel(
     if (num_nb_pairs > 0) {
         for (int p = 0; p < num_nb_pairs; p++) {
             int a1 = nb_int[p*2], a2 = nb_int[p*2+1];
-            if (!active_flags[a1] || !active_flags[a2]) continue;
+            /* C5: NB pairs pre-filtered to active-only on CPU */
             int o1 = base + a1*3, o2 = base + a2*3;
             float dx = xyz[o1]-xyz[o2], dy = xyz[o1+1]-xyz[o2+1], dz = xyz[o1+2]-xyz[o2+2];
             float r2 = dx*dx + dy*dy + dz*dz;
@@ -547,7 +547,7 @@ static float ie_score_parallel(
     device const float *xyz, int nnp,
     device const float *ie_vdwA, device const int *nb_int,
     constant IEParams &iep,
-    device const int *active_flags,
+    /* C5: NB pairs pre-filtered to active-only on CPU — no active_flags check needed */
     uint tid, int tg_size,
     threadgroup float *tg_sums,
     int sg_size) {
@@ -555,7 +555,7 @@ static float ie_score_parallel(
     if (nnp > 0) {
         for (int p = tid; p < nnp; p += tg_size) {
             int a1 = nb_int[p*2], a2 = nb_int[p*2+1];
-            if (!active_flags[a1] || !active_flags[a2]) continue;
+            /* C5: NB pairs pre-filtered to active-only on CPU */
             float dx = xyz[a1*3]-xyz[a2*3];
             float dy = xyz[a1*3+1]-xyz[a2*3+1];
             float dz = xyz[a1*3+2]-xyz[a2*3+2];
@@ -672,7 +672,6 @@ kernel void simplex_iteration_kernel(
         threadgroup_barrier(mem_flags::mem_device);
 
         float ie_refl = ie_score_parallel(xyz_dev, nnp, ie_vdwA, nb_int, iep,
-                                           mol->active_flags,
                                            tid, tg_size, tg_ie_sums, sg_size_buf);
 
         /* ===== Decision tree — set up next action ===== */
@@ -728,7 +727,6 @@ kernel void simplex_iteration_kernel(
         if (tg_action == 1 || tg_action == 2) {
             threadgroup_barrier(mem_flags::mem_device);
             float ie_second = ie_score_parallel(xyz_dev, nnp, ie_vdwA, nb_int, iep,
-                                                  mol->active_flags,
                                                   tid, tg_size, tg_ie_sums, sg_size_buf);
 
             if (tid == 0 && state[5] >= 0) {
@@ -788,7 +786,6 @@ kernel void simplex_iteration_kernel(
                 }
                 threadgroup_barrier(mem_flags::mem_device);
                 float ie_s = ie_score_parallel(xyz_dev, nnp, ie_vdwA, nb_int, iep,
-                                                mol->active_flags,
                                                 tid, tg_size, tg_ie_sums, sg_size_buf);
                 if (tid == 0 && state[5] >= 0) {
                     scores[si] = grid_score_second + ie_s;
@@ -896,8 +893,15 @@ static void write_nnp(int n) {
 
 static id<MTLBuffer> alloc_buffer(NSUInteger size, const char* label)
 {
+    /* C6: Use Managed (not Shared) on discrete-GPU Macs for read-only buffers.
+     * Apple Silicon unified memory: choose Shared (hardware coherency is free).
+     * Discrete GPUs: Managed avoids CPU↔GPU coherence traffic on every commit. */
+    MTLResourceOptions storage = MTLResourceStorageModeShared;
+    if (![g_device hasUnifiedMemory]) {
+        storage = MTLResourceStorageModeManaged;
+    }
     id<MTLBuffer> buf = [g_device newBufferWithLength:size
-                                              options:MTLResourceStorageModeShared];
+                                              options:storage];
     if (buf)
         buf.label = [NSString stringWithUTF8String:label];
     else
@@ -1050,6 +1054,9 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
             tdesc.depth  = (NSUInteger)span_z;
             tdesc.mipmapLevelCount = 1;
             tdesc.usage = MTLTextureUsageShaderRead;
+            /* C6: Shared storage — Private would be ideal but replaceRegion requires
+             * Shared on some Metal configurations.  alloc_buffer (below) uses Managed
+             * on discrete GPUs where it matters more. */
             tdesc.storageMode = MTLStorageModeShared;
 
             g_tex_grid_avdw = [g_device newTextureWithDescriptor:tdesc];
