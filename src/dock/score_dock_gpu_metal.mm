@@ -505,6 +505,11 @@ static float score_xyz(thread const float *xyz, int num_atoms,
     return grid_score + ie_score;
 }
 
+/* Single-thread simplex kernel. Each dispatch handles all iterations
+ * internally (avoids CPU-GPU sync per iteration).
+ * Multi-vertex speculative scoring: all 4 candidates (reflect, expand,
+ * contract-A, contract-B) computed each iteration; decision tree picks winner.
+ */
 kernel void simplex_iteration_kernel(
     device float*    vertex_dof    [[buffer(0)]],
     device float*    scores        [[buffer(1)]],
@@ -532,7 +537,6 @@ kernel void simplex_iteration_kernel(
     float alpha = 1.0, beta = 0.5, gamma = 2.0;
     int i, j;
 
-    /* Allocate DOF arrays once, reuse across iterations */
     float centroid[DOF_MAX];
     float pr[DOF_MAX];
     float prr[DOF_MAX];
@@ -540,7 +544,7 @@ kernel void simplex_iteration_kernel(
     int na = mol->num_atoms;
     int dof_max = (n < DOF_MAX) ? n : DOF_MAX;
 
-    /* Single kernel dispatch handles all iterations (avoids CPU-CPU sync per iter) */
+    /* Single kernel dispatch handles all iterations (avoids CPU-GPU sync per iter) */
     for (int iter = 0; iter < state[3]; iter++) {
         if (state[0]) return;  /* converged or error */
         state[1] = iter + 1;
