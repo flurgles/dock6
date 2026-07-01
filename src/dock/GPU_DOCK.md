@@ -511,11 +511,92 @@ id<MTLComputeCommandEncoder> enc = [cmdbuf computeCommandEncoder];
 | `conf_gen_ag.cpp` | Ligand parameter upload after IE init |
 | `GPU_DOCK.md` | This file |
 
+---
+
+## Phase 5 Experiment: Atom-parallel Simplex Kernel (Jun 30 — Reverted)
+
+### Goal
+Scale simplex scoring across multiple GPU threads — each thread scores a subset
+of atoms (stride across active atoms), with threadgroup barriers for sync.
+Idea: atom-level parallelism should let larger systems (5+ torsions) scale
+better than single-thread.
+
+### Design
+- Threadgroup size = `min(num_atoms, 64)`, one thread per atom
+- Thread 0: centroid, DOF vectors, `dof_to_xyz()` → threadgroup memory
+- All threads: atom-level stride-loop over grid trilinear reads + round-robin IE pairs
+- Threadgroup barrier after each phase
+- 4 candidates scored speculatively per iteration (atom-parallel)
+- Shrink phase: sequential over vertices, each vertex uses atom-parallel scoring
+
+### Barrier divergence bug
+Idle threads (tidg >= gs) and sentinel-hit threads called `continue` before
+`threadgroup_barrier()`, causing undefined behavior. Fixed by replacing
+`continue`-before-barrier with uniform `skip`-flag pattern.
+
+### Result: ❌ Failed — slower than single-thread
+| System | Time | Score | CPU Score | vs Baseline (151s) |
+|--------|------|-------|-----------|---------------------|
+| 1C8K (5 tor) | ~176s | diverged | -55.21 | Worse after barrier fix too |
+
+### Root cause
+Grid trilinear reads are **memory-bandwidth bound** on Apple Silicon (M1).
+Atom-level parallelism with 49 threads doing random grid accesses thrashes
+the cache harder than a single serial thread. The grid is large
+(110×128×127 = 1.8M points) and each trilinear read touches 8 floats.
+49 concurrent random reads scatter the access pattern, while 1 serial
+thread reads 8 sequentially-coherent values at a time.
+
+IE scoring (799 pairs) also benefits from serial access — pairs are stored
+contiguously, so a single thread has good spatial locality.
+
+### Lesson
+Not all embarrassingly-parallel workloads benefit from GPU threading.
+Grid-scoring is memory-latency bound, not compute bound — the bottleneck
+is getting bytes from global memory, not FLOPS. On Apple Silicon,
+the single-thread GPU kernel keeps the memory pipeline filled more
+efficiently than 49 threads contending for scattered cache lines.
+
+---
+
+## Current Architecture: Single-thread Simplex Kernel (Jun 30)
+
+### Design
+- Single GPU thread (`if (tid > 0) return;`)
+- One command-buffer dispatch covers all iterations (no CPU sync per iter)
+- Conditional scoring: reflect → conditionally expand or contract/shrink
+- Uses `dof_to_xyz()` and `score_xyz()` helper functions for readability
+- No speculative multi-vertex scoring (wasteful in single-thread — computes
+  all 4 candidates when only 1-2 are needed)
+
+### Benchmarks
+| System | Atoms | Torsions | GPU Time | CPU Time | Ratio | Score vs CPU |
+|--------|-------|----------|----------|----------|-------|--------------|
+| 1A28 | 42 | 1 | 80.7s | 3.9s | 20.7× | -75.87 vs -75.96 (Δ0.09) |
+| 1C8K | 49 | 5 | 155.9s | 17.2s | 9.1× | -55.14 vs -55.21 (Δ0.07) |
+
+### Analysis
+- GPU overhead drops with system size (20× for 1-torsion → 9× for 5-torsion)
+  because the fixed-cost dispatch/readback is amortized over more work
+- Score differences (~0.1) are within IEEE float variation between GPU and CPU paths
+  (different summation order, fused multiply-add behavior)
+- Primary bottleneck: single thread doing ~42-49 trilinear grid reads per scoring call,
+  with ~2-4 scoring calls per iteration × ~100-200 iterations per minimization
+
+### Next opportunities
+1. **Texture-based grid scoring**: Replace manual `trilinear()` with
+   `MTLTexture`'s built-in hardware trilinear interpolation — native
+   texture units are optimized for cache-coherent access patterns
+2. **Multi-molecule batch dispatch**: Queue N independent minimizations
+   into one command buffer to amortize `waitUntilCompleted` overhead
+3. **GPU-side conformation generator**: Move anchor/grow logic to GPU
+   (high risk, high reward — eliminates all CPU-GPU sync during search)
+
 ## Build matrix
 
 | `GPU_BACKEND` | Platform | Binary type | Status |
 |---------------|----------|-------------|--------|
 | `cpu` | any | CPU-only stub | ✅ All tests pass |
-| `metal` | macOS ARM | Metal GPU | 🟡 Flex docking works (was 74× pre-fix, now 20× on 1-torsion, improving with system size) |
+| `metal` | macOS ARM | Metal GPU | 🟡 Flex docking works (20× overhead on 1-torsion, 9× on 5-torsion) |
 | `auto` | macOS ARM | Metal GPU | Same as `metal` |
 | `auto` | Linux | CPU stub | Not tested |
