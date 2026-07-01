@@ -1431,6 +1431,20 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                 // num_grids = 1 when multiple grid docking is turned off
 
                 // score/minimize the new confs
+
+                // ---- C1 Phase 3: Split minimize+score into two passes ----
+                // First pass: save b4min, run clash/bump checks (cached for second pass),
+                //              minimize (batch queue).
+                // Second pass: score + prune after GPU flush.
+                //
+                // We cache the clash/bump results because the checks run on
+                // pre-minimization coordinates, but by the second pass the mol
+                // has been updated to the minimized pose.
+
+                std::vector<int> cb_ok(exp_seeds.size(), 0);
+                // 0 = clash fail, 1 = bump fail, 2 = both passed
+
+                enable_gpu_batch_mode(true);
                 for (k = 0; ((k < exp_seeds.size())&&(j==seeds.size()-1)); k++) {
 
                     // sudipto & trent - 11-14-08 - save current conf before minimizing
@@ -1443,12 +1457,29 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                         if (bump.check_growth_bumps(exp_seeds[k].structure)) {
                         // Note: bump-checking not compatible with ir_resecore
 
+                            cb_ok[k] = 2;
+
                              //print location in growth loop and minimize conformer 
                            //POSSIBLE PLACE TO  REINITIALIZE THE ANCHORS  
                              if (!simplex.use_min_flex_growth_ramp){
                                    simplex.minimize_flexible_growth(exp_seeds[k].structure, score, bond_tors_vectors); } 
                              else {
                                    simplex.minimize_flexible_ramp_growth(exp_seeds[k].structure, score, bond_tors_vectors, i, num_layers); }
+                        } else {
+                            cb_ok[k] = 1;
+                        }
+                    }
+                } // First pass over new conformers (k)
+
+                // Flush all queued GPU batch work — all minimized mols are now updated
+                flush_gpu_batch(simplex);
+                enable_gpu_batch_mode(false);
+
+                // Second pass: score and prune
+                for (k = 0; ((k < exp_seeds.size())&&(j==seeds.size()-1)); k++) {
+
+                    if (cb_ok[k] == 2) {
+
                             // compute the score for the molecule
                             // now internal energy is computed within compute_primary_score
                             if (score.use_primary_score){
@@ -1456,13 +1487,9 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                                 valid_orient = score.compute_primary_score(b4min_seeds[k].structure);
                             } else
                                 valid_orient = true;
- 
+
                             if (valid_orient) {
 
-                                 // compute internal energy for pruning
-                                 //score.primary_score->compute_ligand_internal_energy(exp_seeds[k].structure);
-                                 //score.primary_score->compute_ligand_internal_energy(b4min_seeds[k].structure);
-                                         
                                  // internal_energy here is just the repulsive component of the vdw energy
                                  ostringstream text;
                                  text <<  i << ":" << l << ":" << j << ":" << k; 
@@ -1484,12 +1511,6 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                                  // this is a hack to make sure b4min_seeds gets sorted in the same order as exp_seeds
                                  b4min_seeds[k].score = exp_seeds[k].score;
  
-                                 // this prints every conformer ever generated in the mol.conf_no.mol2 format
-                                 // superseded by branch_* and pruned_* mol2 files
-                                 /*if (verbose) cout << "Writing conformer #" << exp_seeds[k].conformer_num 
-                                      << " k=" << k << " count_conf_num=" << count_conf_num << endl;
-                                 print_conformer(exp_seeds[k]); 
-                                 */
                                          growth_score_cutoff = growth_score_cutoff_begin  / ( pow (growth_score_scaling_factor, i) );
 
                                          if (exp_seeds[k].structure.current_score <= growth_score_cutoff) {
@@ -1509,20 +1530,17 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                                 confs_pruned_outside_grid++;
                                 //if (verbose) cout << "Error scoring Conformer #" << exp_seeds[k].conformer_num << endl;
                             } 
-                        } else { 
-                             exp_seeds[k].used = true;  // failed bump filter 
-                             confs_pruned_bump_filter++;
-                             //if (verbose) cout << " Conformer #" << exp_seeds[k].conformer_num << " failed bump filter" << endl;
-                        }
+                    } else if (cb_ok[k] == 1) { 
+                         exp_seeds[k].used = true;  // failed bump filter 
+                         confs_pruned_bump_filter++;
+                         //if (verbose) cout << " Conformer #" << exp_seeds[k].conformer_num << " failed bump filter" << endl;
                     } else { 
                         exp_seeds[k].used = true;  // clash_overlap check 
                         confs_pruned_clash_overlap++;
                         //if (verbose) cout << " Conformer #" << exp_seeds[k].conformer_num << " failed clash check" << endl;
                     }
 
-                    // count_conf_num should be incremented inside the torsion function only
-                    // no new conformers are produced outside of segment_torsion_drive()
-                } // Loop over new conformers (k)
+                } // Second pass over new conformers (k)
 
             }  // Loop over seed conformers (j)
  
