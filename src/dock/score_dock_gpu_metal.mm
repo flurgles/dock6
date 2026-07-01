@@ -679,7 +679,7 @@ kernel void simplex_iteration_kernel(
                                        mol->active_flags);
             if (tg_grid_refl < -1e30) state[conf_state_off + 5] = -1;
         }
-        threadgroup_barrier(mem_flags::mem_device);
+        threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
 
         float ie_refl = ie_score_parallel(xyz_dev + xyz_off, nnp, ie_vdwA, nb_int, iep,
                                            tid, tg_size, tg_ie_sums, sg_size_buf);
@@ -733,9 +733,19 @@ kernel void simplex_iteration_kernel(
             }
         }
 
+        /* MISSING-1: The decision tree above (inside `if (tid == 0)`) wrote
+         * tg_action, tg_prr, tg_repl_flag (threadgroup memory) and xyz_dev
+         * (device memory, via dof_to_xyz).  All threads branch on tg_action
+         * below; without this barrier the branch can be divergent on
+         * discrete GPUs (SIMD groups run independently there), causing a
+         * hang at the barrier inside the `if` body.  On Apple Silicon TBDR
+         * the unified cache happens to make the write visible, but the Metal
+         * memory model requires an explicit flush for portability. */
+        threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
+
         /* ===== Scoring point 2 (if expand/contract) ===== */
         if (tg_action == 1 || tg_action == 2) {
-            threadgroup_barrier(mem_flags::mem_device);
+            threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
             float ie_second = ie_score_parallel(xyz_dev + xyz_off, nnp, ie_vdwA, nb_int, iep,
                                                   tid, tg_size, tg_ie_sums, sg_size_buf);
 
@@ -794,7 +804,7 @@ kernel void simplex_iteration_kernel(
                                                  mol->active_flags);
                     if (grid_score_second < -1e30) { state[conf_state_off + 5] = -1; state[conf_state_off] = 1; }
                 }
-                threadgroup_barrier(mem_flags::mem_device);
+                threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
                 float ie_s = ie_score_parallel(xyz_dev + xyz_off, nnp, ie_vdwA, nb_int, iep,
                                                 tid, tg_size, tg_ie_sums, sg_size_buf);
                 if (tid == 0 && state[conf_state_off + 5] >= 0) {
@@ -820,7 +830,7 @@ kernel void simplex_iteration_kernel(
          * written by tid=0 above. Without this barrier, the next iteration's
          * `if (state[conf_state_off]) return;` may read a stale value, causing
          * up to max_iterations - actual_converge wasted iterations per dispatch. */
-        threadgroup_barrier(mem_flags::mem_device);
+        threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
     }
 }
 )shader";
@@ -1186,12 +1196,11 @@ int dock_gpu_set_ligand(const float *vdwA, const float *vdwB,
         return 0;
     }
 
-    /* Skip upload if same-size ligand (common case: same molecule,
-       multiple anchors).  If num_atoms differs, re-upload is needed. */
-    if (g_set_ligand_num_atoms == num_atoms && g_active) {
-        return 1;
-    }
-
+    /* R3: No skip guard here.  The caller (simplex.cpp) already gates this
+     * call behind a 64-bit content signature, so we only get called when the
+     * ligand actually changed.  The old g_set_ligand_num_atoms guard silently
+     * skipped re-uploads for different ligands with the same atom count,
+     * producing wrong scores in multi-ligand workflows. */
     @autoreleasepool {
         size_t bytes = sizeof(float) * (size_t)num_atoms;
         memcpy([g_buf_vdwA contents], vdwA, bytes);
@@ -1219,12 +1228,11 @@ int dock_gpu_set_ligand_ie(const float *ie_vdwA, const float *ie_vdwB,
         return 0;
     }
 
-    /* Skip upload if same number of NB pairs (common case: same molecule,
-       multiple anchors).  NB pairs don't change between anchors. */
-    if (g_set_ie_num_nb_pairs == num_nb_pairs && g_num_nb_pairs > 0) {
-        return 1;
-    }
-
+    /* R3: No skip guard here.  The caller (simplex.cpp) gates this call
+     * behind the same content signature that covers vdwA/vdwB/charges, so
+     * we only get called when the ligand actually changed.  The old
+     * g_set_ie_num_nb_pairs guard could skip a needed re-upload when two
+     * different ligands happened to have the same NB-pair count. */
     @autoreleasepool {
         size_t ie_bytes = sizeof(float) * (size_t)g_num_atoms;
         memcpy([g_buf_ie_vdwA contents], ie_vdwA, ie_bytes);

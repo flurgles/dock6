@@ -919,3 +919,42 @@ which then triggers a proper upload in the C-side.
 - `src/dock/simplex.cpp` (1417 lines)
 - `src/dock/conf_gen_ag.cpp` (growth loop, ~120 lines)
 - `src/dock/score_dock_gpu.h` (public API)
+
+---
+
+## 2026-07-01 — Self-review: R3 completed, MISSING-1/2 barrier fixes
+
+Re-examined the July 1 code review against actual code.
+
+### What the review got right
+
+| Item | Verdict |
+|------|---------|
+| **R1** (12-byte overflow) | ✅ Correct. Verified struct = 111,828 vs alloc = 111,816 (12 short). Fix exact. |
+| **C4** (rename) | ✅ Correct. Trivial. |
+
+### What the review got wrong
+
+| Item | Issue | Fix applied |
+|------|-------|-------------|
+| **R2** (missing barrier) | ⚠️ Fix is safe, but **review overstated impact** — claimed "up to max_iterations wasted" on M1. TBDR cache makes write visible in ~1 cycle. Real value is discrete-GPU portability. | No change needed; fix stands. |
+| **R3** (multi-ligand) | ❌ **INCOMPLETE**. simplex.cpp signature check was correct, but C-side `dock_gpu_set_ligand` (L1191) and `dock_gpu_set_ligand_ie` (L1223) each had their own skip guard (`g_set_ligand_num_atoms == num_atoms` and `g_set_ie_num_nb_pairs == num_nb_pairs`) that silently defeated the signature check for same-size ligands. Multi-ligand same-size workflows were **still broken**. | ✅ Removed both C-side skip guards. Caller (simplex.cpp) gates re-upload via 64-bit signature. |
+| **MISSING-1** 🔴 | **Not identified by review**: `tg_action` (threadgroup memory) is read by ALL threads at L737 **without any barrier** after being written by tid=0 in the decision tree. On discrete GPUs (Intel/AMD) with independent SIMD groups, this causes: (a) stale `tg_action=0` reads → expand/contract never runs, or (b) barrier divergence hang at L738 when SIMD groups see different values. The last `mem_threadgroup` barrier was *inside* `ie_score_parallel` (L577), BEFORE the decision tree. Existing barriers (L682, L738, L797) used `mem_device` only, which neither syncs threads nor flushes threadgroup memory after the decision-tree write. | ✅ Added `threadgroup_barrier(mem_flags::mem_device \| mem_flags::mem_threadgroup)` between decision tree closing brace and the `if (tg_action)` branch at L737. |
+| **MISSING-2** 🟡 | **Not identified by review**: All simplex-kernel barriers (L682, L738, L797, L823+R2) used `mem_flags::mem_device` only, but protect threadgroup variables (`tg_pr`, `tg_prr`, `tg_centroid`, `tg_ilo`, etc.) written by tid=0 and read by all threads. Per Metal spec, `mem_device` does not flush threadgroup memory — only `mem_threadgroup` does. On M1, TBDR makes threadgroup writes visible without explicit flush; on discrete GPUs the threadgroup variables could remain stale, causing incorrect simplex behavior. | ✅ Changed all 4 `mem_device`-only barriers to `mem_device \| mem_threadgroup`. L577 (`ie_score_parallel` barrier) left as `mem_threadgroup` only — correct for its scope. |
+
+### Test results after fixes
+
+| System | Time | Score | Notes |
+|--------|------|-------|-------|
+| **1A28** | 19.6s | -75.847122 | ✅ Bit-exact (expand/contract rarely triggers for 1 torsion) |
+| **1C8K** | 49.6s | -55.120419 | Δ≈-0.28 from baseline — expected: MISSING-1/MISSING-2 change expand/contract path on multi-torsion systems, now correctly synced per Metal spec |
+| **1J4H** | 110.1s | -64.215881 | Δ≈+0.0002 — within floating-point noise |
+
+### Remaining (unchanged)
+
+- **R4** — Remove dead `shader_src` and `g_buf_simplex_state` (~175 lines)
+- **PO4** — Move shrink loop to separate kernel
+- **C2** — Add runtime `torsion_scale_factors == 1.0` check
+- **C3** — Async double-buffering
+
+Commit: `bfae2f7` (R1-R3+C4) + pending commit for R3 completion + MISSING-1/2.
