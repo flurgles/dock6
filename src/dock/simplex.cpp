@@ -970,48 +970,81 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                     }
 
                     if (s_batch_enabled) {
-                        /* ---- C1: Queue for later GPU batch dispatch ---- */
-                        /* Save shared params on first call */
-                        if (!s_batch_params) {
-                            s_batch_params = new GpuBatchParams;
-                            s_batch_params->ref_xyz = s_ref_xyz;
-                            s_batch_params->active_flags = s_active;
-                            s_batch_params->num_atoms = na;
-                            s_batch_params->num_active_atoms = ref_mol.num_active_atoms;
-                            s_batch_params->num_torsions = nt;
-                            s_batch_params->ta1 = s_ta1;
-                            s_batch_params->ta2 = s_ta2;
-                            s_batch_params->ta3 = s_ta3;
-                            s_batch_params->ta4 = s_ta4;
-                            s_batch_params->torsion_scale_factors = torsion_scale_factors;
-                            s_batch_params->child_idx = s_child_idx;
-                            s_batch_params->child_starts = s_child_starts;
-                            s_batch_params->child_counts = s_child_counts;
-                            s_batch_params->max_iterations = max_iterations;
-                            s_batch_params->score_converge = score_converge;
+                        /* ---- C1 Phase 4: max_cycles > 1 guard ----
+                         * If this conformer already has a pending slot, it means
+                         * we're in a subsequent cycle (max_cycles > 1) or a second
+                         * minimize() call (torsion-only followed by all-DOF).
+                         * Flush the batch queue first so cycle 0's result is
+                         * applied to mol, then rebuild ref_mol and s_ref_xyz
+                         * before falling through to immediate dispatch. */
+                        if (!s_batch_queue.empty() && s_batch_queue.back().mol == &mol) {
+                            flush_gpu_batch(*this);
+
+                            /* Rebuild ref_mol and reference coordinates from updated mol */
+                            copy_molecule(ref_mol, mol);
+                            na = ref_mol.num_atoms;
+                            s_ref_xyz.resize((size_t)na * 3);
+                            s_active.resize(na);
+                            for (int ai = 0; ai < na; ai++) {
+                                s_ref_xyz[ai*3]   = ref_mol.x[ai];
+                                s_ref_xyz[ai*3+1] = ref_mol.y[ai];
+                                s_ref_xyz[ai*3+2] = ref_mol.z[ai];
+                                s_active[ai] = ref_mol.atom_active_flags[ai] ? 1 : 0;
+                            }
+
+                            /* Rebuild s_dof and s_score from current p[][] and y[] */
+                            s_dof.resize((size_t)nv * (size_t)size);
+                            for (int vi = 0; vi < nv; vi++)
+                                for (int dj = 0; dj < size; dj++)
+                                    s_dof[vi * size + dj] = p[vi][dj];
+                            s_score.resize(nv);
+                            for (int si = 0; si < nv; si++) s_score[si] = y[si];
+
+                            /* Fall through to immediate GPU dispatch below */
+                        } else {
+                            /* ---- C1: Queue for later GPU batch dispatch ---- */
+                            /* Save shared params on first call */
+                            if (!s_batch_params) {
+                                s_batch_params = new GpuBatchParams;
+                                s_batch_params->ref_xyz = s_ref_xyz;
+                                s_batch_params->active_flags = s_active;
+                                s_batch_params->num_atoms = na;
+                                s_batch_params->num_active_atoms = ref_mol.num_active_atoms;
+                                s_batch_params->num_torsions = nt;
+                                s_batch_params->ta1 = s_ta1;
+                                s_batch_params->ta2 = s_ta2;
+                                s_batch_params->ta3 = s_ta3;
+                                s_batch_params->ta4 = s_ta4;
+                                s_batch_params->torsion_scale_factors = torsion_scale_factors;
+                                s_batch_params->child_idx = s_child_idx;
+                                s_batch_params->child_starts = s_child_starts;
+                                s_batch_params->child_counts = s_child_counts;
+                                s_batch_params->max_iterations = max_iterations;
+                                s_batch_params->score_converge = score_converge;
+                            }
+
+                            /* Save this slot */
+                            GpuBatchSlot slot;
+                            slot.mol = &mol;
+                            slot.p_flat = new float[(size_t)nv * (size_t)size];
+                            memcpy(slot.p_flat, s_dof.data(), (size_t)nv * (size_t)size * sizeof(float));
+                            slot.y_flat = new float[(size_t)nv];
+                            memcpy(slot.y_flat, s_score.data(), (size_t)nv * sizeof(float));
+                            slot.ref_xyz = new float[(size_t)na * 3];
+                            memcpy(slot.ref_xyz, s_ref_xyz.data(), (size_t)na * 3 * sizeof(float));
+                            slot.na = na;
+                            slot.nv = nv; slot.size = size;
+                            slot.trans_step = trans_step_size;
+                            slot.rot_step   = rot_step_size;
+                            slot.tors_step  = tors_step_size;
+                            slot.p = p; slot.y = y;
+                            slot.pr = pr; slot.prr = prr; slot.pbar = pbar;
+                            slot.old_vertex = old_vertex;
+
+                            s_batch_queue.push_back(slot);
+
+                            return 0.0f;  /* Early return — no cleanup, no mol update */
                         }
-
-                        /* Save this slot */
-                        GpuBatchSlot slot;
-                        slot.mol = &mol;
-                        slot.p_flat = new float[(size_t)nv * (size_t)size];
-                        memcpy(slot.p_flat, s_dof.data(), (size_t)nv * (size_t)size * sizeof(float));
-                        slot.y_flat = new float[(size_t)nv];
-                        memcpy(slot.y_flat, s_score.data(), (size_t)nv * sizeof(float));
-                        slot.ref_xyz = new float[(size_t)na * 3];
-                        memcpy(slot.ref_xyz, s_ref_xyz.data(), (size_t)na * 3 * sizeof(float));
-                        slot.na = na;
-                        slot.nv = nv; slot.size = size;
-                        slot.trans_step = trans_step_size;
-                        slot.rot_step   = rot_step_size;
-                        slot.tors_step  = tors_step_size;
-                        slot.p = p; slot.y = y;
-                        slot.pr = pr; slot.prr = prr; slot.pbar = pbar;
-                        slot.old_vertex = old_vertex;
-
-                        s_batch_queue.push_back(slot);
-
-                        return 0.0f;  /* Early return — no cleanup, no mol update */
                     }
 
                     /* ---- C1: Immediate GPU dispatch (non-batch path) ---- */
