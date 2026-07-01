@@ -43,177 +43,7 @@ Two kernels:
 /* ================================================================== */
 /*  Embedded Metal Shader Source — Both kernels in one library         */
 /* ================================================================== */
-
-static const char* shader_src = \
-"#include <metal_stdlib>\n"
-"using namespace metal;\n"
-"\n"
-"constexpr sampler grid_sampler(filter::linear, address::clamp_to_edge);\n"
-"\n"
-"struct GridParams {\n"
-"    float origin_x, origin_y, origin_z;\n"
-"    int   span_x, span_y, span_z;\n"
-"    float spacing;\n"
-"    int   grid_size;\n"
-"};\n"
-"\n"
-"struct IEParams {\n"
-"    float soft_delta;\n"
-"    float cutoff_sq;\n"
-"    int   num_pairs;\n"
-"    int   _pad;\n"
-"};\n"
-"\n"
-"/* Trilinear interpolation via hardware 3D texture sampling */\n"
-"static float trilinear(texture3d<float> grid,\n"
-"                       constant GridParams &p,\n"
-"                       float x, float y, float z);\n"
-"\n"
-"kernel void batch_score_kernel(\n"
-"    device const float*    xyz          [[buffer(0)]],\n"
-"    texture3d<float>       grid_avdw    [[texture(0)]],\n"
-"    texture3d<float>       grid_bvdw    [[texture(1)]],\n"
-"    texture3d<float>       grid_es      [[texture(2)]],\n"
-"    device const float*    vdwA         [[buffer(1)]],\n"
-"    device const float*    vdwB         [[buffer(2)]],\n"
-"    device const float*    charges      [[buffer(3)]],\n"
-"    constant GridParams&   gp           [[buffer(4)]],\n"
-"    constant int&          num_atoms    [[buffer(5)]],\n"
-"    device float*          out_scores   [[buffer(6)]],\n"
-"    device const int*     active_flags [[buffer(7)]],\n"
-"    uint                   tid          [[thread_position_in_grid]])\n"
-"{\n"
-"    int atoms_per_pose = num_atoms;\n"
-"    int stride = 3 * atoms_per_pose;\n"
-"    int base = tid * stride;\n"
-"\n"
-"    float score = 0.0;\n"
-"\n"
-"    for (int a = 0; a < atoms_per_pose; a++) {\n"
-"        int o3 = base + a * 3;\n"
-"        float x = xyz[o3];\n"
-"        float y = xyz[o3 + 1];\n"
-"        float z = xyz[o3 + 2];\n"
-"\n"
-"        float vdw = trilinear(grid_avdw, gp, x, y, z);\n"
-"        float bvdw = trilinear(grid_bvdw, gp, x, y, z);\n"
-"        float es = trilinear(grid_es, gp, x, y, z);\n"
-"\n"
-"        if (active_flags[a]) {\n"
-"            score += vdwA[a] * vdw - vdwB[a] * bvdw + charges[a] * es;\n"
-"        }\n"
-"    }\n"
-"\n"
-"    out_scores[tid] = score;\n"
-"}\n"
-"static bool inside_grid(constant GridParams &p, float x, float y, float z)\n"
-"{\n"
-"    float gx = (x - p.origin_x) / p.spacing;\n"
-"    float gy = (y - p.origin_y) / p.spacing;\n"
-"    float gz = (z - p.origin_z) / p.spacing;\n"
-"    return (gx > 1.0 && gx < (float)(p.span_x - 1) &&\n"
-"            gy > 1.0 && gy < (float)(p.span_y - 1) &&\n"
-"            gz > 1.0 && gz < (float)(p.span_z - 1));\n"
-"}\n"
-"\n"
-"/* Hardware trilinear via 3D texture sampler */\n"
-"static float trilinear(texture3d<float> grid,\n"
-"                       constant GridParams &p,\n"
-"                       float x, float y, float z)\n"
-"{\n"
-"    float gx = (x - p.origin_x) / p.spacing;\n"
-"    float gy = (y - p.origin_y) / p.spacing;\n"
-"    float gz = (z - p.origin_z) / p.spacing;\n"
-"\n"
-"    /* Bounds-check (keep for safety; inside_grid catches most) */\n"
-"    if (gx < 0.0 || gy < 0.0 || gz < 0.0 ||\n"
-"        gx >= (float)(p.span_x - 1) ||\n"
-"        gy >= (float)(p.span_y - 1) ||\n"
-"        gz >= (float)(p.span_z - 1))\n"
-"        return 0.0;\n"
-"\n"
-"    float3 norm = float3(gx / (float)(p.span_x - 1),\n"
-"                          gy / (float)(p.span_y - 1),\n"
-"                          gz / (float)(p.span_z - 1));\n"
-"    return grid.sample(grid_sampler, norm).x;\n"
-"}\n"
-"\n"
-"kernel void batch_score_with_ie_kernel(\n"
-"    device const float*    xyz            [[buffer(0)]],\n"
-"    texture3d<float>       grid_avdw      [[texture(0)]],\n"
-"    texture3d<float>       grid_bvdw      [[texture(1)]],\n"
-"    texture3d<float>       grid_es        [[texture(2)]],\n"
-"    device const float*    vdwA           [[buffer(1)]],\n"
-"    device const float*    vdwB           [[buffer(2)]],\n"
-"    device const float*    charges        [[buffer(3)]],\n"
-"    constant GridParams&   gp             [[buffer(4)]],\n"
-"    constant int&          num_atoms      [[buffer(5)]],\n"
-"    device float*          out_scores     [[buffer(6)]],\n"
-"    device const float*    ie_vdwA        [[buffer(7)]],\n"
-"    device const int*      nb_int         [[buffer(8)]],\n"
-"    constant IEParams&     iep            [[buffer(9)]],\n"
-"    constant int&          num_nb_pairs   [[buffer(10)]],\n"
-"    device const int*     active_flags   [[buffer(11)]],\n"
-"    uint                   tid            [[thread_position_in_grid]])\n"
-"{\n"
-"    int atoms_per_pose = num_atoms;\n"
-"    int stride = 3 * atoms_per_pose;\n"
-"    int base = tid * stride;\n"
-"\n"
-"    float grid_score = 0.0;\n"
-"    bool has_outside_atom = false;\n"
-"\n"
-"    /* ---- Grid score (short-circuit on outside-grid) ---- */\n"
-"    for (int a = 0; a < atoms_per_pose; a++) {\n"
-"        int o3 = base + a * 3;\n"
-"        float x = xyz[o3];\n"
-"        float y = xyz[o3 + 1];\n"
-"        float z = xyz[o3 + 2];\n"
-"\n"
-"        if (active_flags[a] && !inside_grid(gp, x, y, z)) {\n"
-"            out_scores[tid] = -3.40282347e+38;  /* -FLT_MAX */\n"
-"            return;\n"
-"        }\n"
-"\n"
-"        if (active_flags[a]) {\n"
-"            float vdw = trilinear(grid_avdw, gp, x, y, z);\n"
-"            float bvdw = trilinear(grid_bvdw, gp, x, y, z);\n"
-"            float es = trilinear(grid_es, gp, x, y, z);\n"
-"\n"
-"            grid_score += vdwA[a] * vdw - vdwB[a] * bvdw + charges[a] * es;\n"
-"        }\n"
-"    }\n"
-"\n"
-"    /* ---- Internal energy ---- */\n"
-"    float ie_score = 0.0;\n"
-"    if (num_nb_pairs > 0) {\n"
-"        for (int p = 0; p < num_nb_pairs; p++) {\n"
-"            int a1 = nb_int[p * 2];\n"
-"            int a2 = nb_int[p * 2 + 1];\n"
-"            if (!active_flags[a1] || !active_flags[a2]) continue;\n"
-"\n"
-"            int o1 = base + a1 * 3;\n"
-"            int o2 = base + a2 * 3;\n"
-"            float dx = xyz[o1] - xyz[o2];\n"
-"            float dy = xyz[o1 + 1] - xyz[o2 + 1];\n"
-"            float dz = xyz[o1 + 2] - xyz[o2 + 2];\n"
-"            float r2 = dx*dx + dy*dy + dz*dz;\n"
-"\n"
-"            if (r2 < iep.cutoff_sq) {\n"
-"                float r2eff = r2 + iep.soft_delta;\n"
-"                float denom = r2eff * r2eff * r2eff;  /* r^3 */\n"
-"                ie_score += (ie_vdwA[a1] * ie_vdwA[a2]) / (denom * denom);  /* r^6 */\n"
-"            }\n"
-"        }\n"
-"    }\n"
-"\n"
-"    out_scores[tid] = grid_score + ie_score;\n"
-"}\n"
-;
-
-
-/* ================================================================== */
-/*  Simplex shader source (separate compilation)                       */
+/*  Simplex shader (unified: batch + IE + simplex in one raw string)   */
 /* ================================================================== */
 
 static const char* shader_src_all = R"shader(
@@ -875,7 +705,6 @@ static id<MTLBuffer> g_buf_tg_header  = nil;  /* 2 ints: tg_size, num_simd_group
 
 /* Simplex-specific buffers */
 static id<MTLBuffer> g_buf_vertex_dof    = nil;
-static id<MTLBuffer> g_buf_simplex_state = nil;  /* single-conformer (legacy) */
 static id<MTLBuffer> g_buf_mol_data      = nil;
 /* Batch buffers for C1 — sized at BATCH_MAX, shared by single and batch dispatch */
 static id<MTLBuffer> g_buf_scores_batch  = nil;  /* [BATCH_MAX][MAX_NVERTS] float */
@@ -1414,7 +1243,6 @@ void dock_gpu_cleanup(void)
         g_buf_xyz        = nil;
         g_buf_scores     = nil;
         g_buf_vertex_dof = nil;
-        g_buf_simplex_state = nil;
         g_buf_mol_data      = nil;
         g_buf_scores_batch  = nil;
         g_buf_state_batch   = nil;
@@ -1556,6 +1384,19 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
             }
         }
 
+
+        /* C2 safety check: GPU dof_to_xyz doesn't divide by torsion_scale_factors.
+         * If any factor != 1, CPU and GPU produce diverging torsion deltas.
+         * Currently always 1 (minimizer.cpp). Guard against future changes. */
+        for (i = 0; i < num_torsions && i < 50; i++) {
+            if (torsion_scale_factors[i] != 1) {
+                fprintf(stderr, "GPU-DOCK ERROR: torsion_scale_factors[%d]=%d "
+                        "not supported by GPU dof_to_xyz (must be 1).\n",
+                        i, torsion_scale_factors[i]);
+                return 0;
+            }
+        }
+
         memcpy(g_buf_mol_data.contents, &md, sizeof(md));
 
         /* ---- Upload initial vertex DOF and scores (slot 0) ---- */
@@ -1677,7 +1518,6 @@ void dock_gpu_simplex_cleanup(void)
 {
     @autoreleasepool {
         g_buf_vertex_dof    = nil;
-        g_buf_simplex_state = nil;
         g_buf_mol_data      = nil;
         g_buf_scores_batch  = nil;
         g_buf_state_batch   = nil;
@@ -1793,6 +1633,19 @@ int dock_gpu_simplex_minimize_batch(
             int cnt = child_counts[i];
             for (j = 0; j < cnt && j < 512; j++) {
                 md.child_idx[i][j] = child_idx_flat[start + j];
+            }
+        }
+
+
+        /* C2 safety check: GPU dof_to_xyz doesn't divide by torsion_scale_factors.
+         * If any factor != 1, CPU and GPU produce diverging torsion deltas.
+         * Currently always 1 (minimizer.cpp). Guard against future changes. */
+        for (i = 0; i < num_torsions && i < 50; i++) {
+            if (torsion_scale_factors[i] != 1) {
+                fprintf(stderr, "GPU-DOCK ERROR: torsion_scale_factors[%d]=%d "
+                        "not supported by GPU dof_to_xyz (must be 1).\n",
+                        i, torsion_scale_factors[i]);
+                return 0;
             }
         }
 
