@@ -664,7 +664,9 @@ kernel void simplex_iteration_kernel(
         if (scores[i] > scores[ihi]) ihi = i;
     }
     float diff = fabs(scores[ihi] - scores[ilo]);
-    state[0] = (diff < 0.001 || iter >= state[3]) ? 1 : 0;
+    float converge_tol = as_type<float>(state[4]);
+    if (converge_tol < 1e-10) converge_tol = 0.001;
+    state[0] = (diff < converge_tol || iter >= state[3]) ? 1 : 0;
 }
 )shader";
 
@@ -1195,7 +1197,7 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
             size_t buf_size = (size_t)nverts * (size_t)dof_pad * sizeof(float);
             g_buf_vertex_dof = alloc_buffer(buf_size, "simplex_vertex_dof");
 
-            size_t state_size = (size_t)nverts * sizeof(float) + 4 * sizeof(int);
+            size_t state_size = (size_t)nverts * sizeof(float) + 5 * sizeof(int);
             g_buf_simplex_state = alloc_buffer(state_size, "simplex_state");
 
             /* MolData buffer: fixed size struct */
@@ -1295,6 +1297,12 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
         statep[1] = 0;
         statep[2] = dof_pad;
         statep[3] = max_iterations;
+        /* Pack score_converge as IEEE float bits into int slot */
+        {
+            union { float f; int i; } u;
+            u.f = score_converge;
+            statep[4] = u.i;
+        }
 
         /* ---- Encode all iterations in one command buffer ---- */
         id<MTLCommandBuffer> cmdbuf = [g_cmdq commandBuffer];
@@ -1339,6 +1347,13 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
 
         if (cmdbuf.error) {
             NSLog(@"GPU-DOCK: simplex command buffer error: %@", cmdbuf.error);
+            return 0;
+        }
+
+        /* Check for outside-grid sentinel (-1) */
+        statep = (int *)g_buf_simplex_state.contents;
+        statep += nverts;
+        if (statep[0] == -1) {
             return 0;
         }
 
