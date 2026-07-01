@@ -816,6 +816,11 @@ kernel void simplex_iteration_kernel(
             if (converge_tol < 1e-10) converge_tol = 0.001;
             state[conf_state_off] = (diff < converge_tol) ? 1 : 0;
         }
+        /* Review R2: ensure all threads see the updated state[conf_state_off]
+         * written by tid=0 above. Without this barrier, the next iteration's
+         * `if (state[conf_state_off]) return;` may read a stale value, causing
+         * up to max_iterations - actual_converge wasted iterations per dispatch. */
+        threadgroup_barrier(mem_flags::mem_device);
     }
 }
 )shader";
@@ -1041,10 +1046,15 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
             g_buf_scores_batch = alloc_buffer(scr_bytes, "simplex_scores_batch");
             size_t st_bytes = (size_t)BATCH_MAX * 6 * sizeof(int);
             g_buf_state_batch = alloc_buffer(st_bytes, "simplex_state_batch");
+            /* Review R1: include trans_step/rot_step/tors_step floats
+             * that exist in the MolData struct but were originally
+             * missing from the manual size calculation.  Use sizeof()
+             * on the local struct mirror to avoid future drift. */
             size_t mol_size = sizeof(float) * GPU_MAX_ATOMS * 3
                             + sizeof(int) * GPU_MAX_ATOMS
                             + 3 * sizeof(int)
-                            + 3 * sizeof(float)
+                            + 3 * sizeof(float)                        /* com_x, com_y, com_z */
+                            + 3 * sizeof(float)                        /* trans_step, rot_step, tors_step */
                             + sizeof(float) * GPU_MAX_TORSIONS
                             + sizeof(int) * GPU_MAX_TORSIONS * 4
                             + sizeof(int) * GPU_MAX_TORSIONS * GPU_MAX_ATOMS
@@ -1891,14 +1901,14 @@ int dock_gpu_simplex_minimize_batch(
             state_batch[st_base + 5] = st_dst[st_base + 5];
 
             int vtx_base = b * nverts * dof_pad;
-            int scr_base_out = b * nverts;
+            int b_off = b * nverts;  /* Review C4: renamed from scr_base_out for clarity */
 
             for (i = 0; i < nverts; i++) {
                 for (j = 0; j < dof_size; j++) {
-                    dof_batch[scr_base_out * dof_size + i * dof_size + j] =
+                    dof_batch[b_off * dof_size + i * dof_size + j] =
                         vtx_dst[vtx_base + i * dof_pad + j];
                 }
-                scores_batch[scr_base_out + i] = scr_dst[scr_base + i];
+                scores_batch[b_off + i] = scr_dst[scr_base + i];
             }
         }
 

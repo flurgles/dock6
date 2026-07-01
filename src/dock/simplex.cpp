@@ -1,6 +1,7 @@
 #include <iostream>
 #include <string.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include "master_score.h"
 #include "minimizer.h"
 #include "simplex.h"
@@ -933,40 +934,82 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                     s_score.resize(nv);
                     for (i = 0; i < nv; i++) s_score[i] = y[i];
 
-                    /* Upload ligand atom parameters to GPU — ONCE (B2) */
-                    if (!s_ligand_uploaded) {
-                        std::vector<float> gpu_vdwA(na), gpu_vdwB(na), gpu_chg(na);
+                    /* Upload ligand atom parameters to GPU — cache by signature (B2 + R3)
+                     *
+                     * The static s_ligand_uploaded guard is necessary because the
+                     * per-atom vdW/charge/IE buffers are constant for a given
+                     * molecule across the thousands of conformer minimizations
+                     * per docking run.  However, dock6 may process multiple
+                     * ligands in a single invocation (while get_mol() loop in
+                     * dock.cpp), and a previous implementation set the flag
+                     * permanently which silently produced wrong scores for the
+                     * second ligand if its atom count matched the first.
+                     *
+                     * Fix (R3): compute a cheap signature from vdwA, vdwB, charges,
+                     * and (when used) nb_int pair list.  Only upload and set
+                     * s_ligand_uploaded when the signature differs from the cached
+                     * one.  The signature is a simple sum — collision probability
+                     * is negligible for vdw/charge values of typical ligands, and
+                     * a collision would only cause an unnecessary re-upload, not
+                     * silent incorrect results.
+                     */
+                    {
+                        static uint64_t s_ligand_sig = 0;
+                        uint64_t sig = (uint64_t)na * 0x9E3779B97F4A7C15ULL;
+                        /* Mix vdwA, vdwB, charges into a per-atom-type signature */
                         for (int ai = 0; ai < na; ai++) {
                             int type = ref_mol.amber_at_id[ai];
-                            gpu_vdwA[ai] = score.vdwA[type];
-                            gpu_vdwB[ai] = score.vdwB[type];
-                            gpu_chg[ai]  = ref_mol.charges[ai];
+                            sig ^= ((uint64_t)type * 0x100000001B3ULL)
+                                 + ((uint64_t)(int)(ref_mol.charges[ai] * 1000.0f) << 16);
                         }
-                        dock_gpu_set_ligand(gpu_vdwA.data(), gpu_vdwB.data(), gpu_chg.data(), na);
+                        /* Mix nb_int pair list (after active filter) into signature */
                         if (!skip_internal_energy && score.use_internal_energy && (int)score.nb_int.size() > 0) {
-                            std::vector<float> gpu_ie_vdwA(na);
-                            for (int ai = 0; ai < na; ai++)
-                                gpu_ie_vdwA[ai] = score.ie_vdwA[ai];
-                            /* C5: Pre-filter nb_int to active-only pairs, removing the branch in the
-                             * GPU kernel's IE hot loop.  Inactive atoms never contribute to IE, so
-                             * skipping them here reduces wasted SIMD lanes and removes a branch. */
                             int np = (int)score.nb_int.size();
-                            std::vector<int> gpu_nb_flat;
-                            int filtered_count = 0;
                             for (int pi = 0; pi < np; pi++) {
                                 int a1 = score.nb_int[pi].first;
                                 int a2 = score.nb_int[pi].second;
                                 if (s_active[a1] && s_active[a2]) {
-                                    gpu_nb_flat.push_back(a1);
-                                    gpu_nb_flat.push_back(a2);
-                                    filtered_count++;
+                                    sig ^= ((uint64_t)a1 * 0x27d4eb2f165667c5ULL)
+                                         + ((uint64_t)a2 << 7);
                                 }
                             }
-                            dock_gpu_set_ligand_ie(gpu_ie_vdwA.data(), NULL, gpu_nb_flat.data(), filtered_count,
-                                                   score.ie_soft_delta, score.ie_vdw_cutoff_sq);
                         }
-                        dock_gpu_simplex_init();
-                        s_ligand_uploaded = true;
+
+                        if (!s_ligand_uploaded || sig != s_ligand_sig) {
+                            std::vector<float> gpu_vdwA(na), gpu_vdwB(na), gpu_chg(na);
+                            for (int ai = 0; ai < na; ai++) {
+                                int type = ref_mol.amber_at_id[ai];
+                                gpu_vdwA[ai] = score.vdwA[type];
+                                gpu_vdwB[ai] = score.vdwB[type];
+                                gpu_chg[ai]  = ref_mol.charges[ai];
+                            }
+                            dock_gpu_set_ligand(gpu_vdwA.data(), gpu_vdwB.data(), gpu_chg.data(), na);
+                            if (!skip_internal_energy && score.use_internal_energy && (int)score.nb_int.size() > 0) {
+                                std::vector<float> gpu_ie_vdwA(na);
+                                for (int ai = 0; ai < na; ai++)
+                                    gpu_ie_vdwA[ai] = score.ie_vdwA[ai];
+                                /* C5: Pre-filter nb_int to active-only pairs, removing the branch in the
+                                 * GPU kernel's IE hot loop.  Inactive atoms never contribute to IE, so
+                                 * skipping them here reduces wasted SIMD lanes and removes a branch. */
+                                int np = (int)score.nb_int.size();
+                                std::vector<int> gpu_nb_flat;
+                                int filtered_count = 0;
+                                for (int pi = 0; pi < np; pi++) {
+                                    int a1 = score.nb_int[pi].first;
+                                    int a2 = score.nb_int[pi].second;
+                                    if (s_active[a1] && s_active[a2]) {
+                                        gpu_nb_flat.push_back(a1);
+                                        gpu_nb_flat.push_back(a2);
+                                        filtered_count++;
+                                    }
+                                }
+                                dock_gpu_set_ligand_ie(gpu_ie_vdwA.data(), NULL, gpu_nb_flat.data(), filtered_count,
+                                                       score.ie_soft_delta, score.ie_vdw_cutoff_sq);
+                            }
+                            dock_gpu_simplex_init();
+                            s_ligand_sig = sig;
+                            s_ligand_uploaded = true;
+                        }
                     }
 
                     if (s_batch_enabled) {
