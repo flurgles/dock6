@@ -11,6 +11,10 @@ bin
 
 *.o
 *.dif
+*.tmp
+src/dock/dock6.clang
+src/dock/dock6.clang.cpu
+src/dock/dock6.clang.gpu
 
 install/test/solvgrid_generation/OUTSEV
 install/test/solvgrid_generation/dielec_sev.box
