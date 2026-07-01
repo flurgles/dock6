@@ -6,6 +6,7 @@ min_anchor_size                                              40
 pruning_use_clustering                                       yes
 pruning_max_orients                                          1
 pruning_clustering_cutoff                                    1
+pruning_cluster_rmsd_type                                    std
 pruning_orient_score_cutoff                                  1000.0
 pruning_conformer_score_cutoff                               100.0
 pruning_conformer_score_scaling_factor                       1.0

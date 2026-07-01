@@ -9,7 +9,7 @@
 #
 # GPU/Metal enabled: the Makefile links -framework Metal automatically
 # for GPU-accelerated scoring and simplex minimization.
-# Produces dock6.gpu as the executable.
+# Produces dock6.clang.gpu as the executable.
 #
 # NOTE: Do NOT add -flto to CFLAGS/CXXFLAGS — it strips Metal/Objective-C
 # symbols at link time, causing GPU initialization failure.  The
@@ -31,7 +31,7 @@ CC=          clang
 CFLAGS=      -O3 -pipe -std=c99 -D_DARWIN_C_SOURCE -mcpu=native -ffast-math
 CXX=         clang++
 CXXFLAGS=    -O3 -pipe -std=c++11 -mcpu=native -ffast-math
-DOCK_SUFFIX= .gpu
+DOCK_SUFFIX= .clang.gpu
 FC=          gfortran
 FFLAGS=      -O2 -fno-automatic -fno-second-underscore -std=legacy
 LIBS=        -lm -lpthread

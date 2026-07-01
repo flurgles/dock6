@@ -1310,39 +1310,38 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
         id<MTLCommandBuffer> cmdbuf = [g_cmdq commandBuffer];
         cmdbuf.label = @"SimplexFullRun";
 
-        for (int iter = 0; iter < max_iterations; iter++) {
-            id<MTLComputeCommandEncoder> enc = [cmdbuf computeCommandEncoder];
-            enc.label = [NSString stringWithFormat:@"SimplexIter%d", iter];
+        /* Single dispatch — kernel loops internally over all iterations */
+        id<MTLComputeCommandEncoder> enc = [cmdbuf computeCommandEncoder];
+        enc.label = @"SimplexAllIters";
 
-            [enc setComputePipelineState:g_pso_simplex];
+        [enc setComputePipelineState:g_pso_simplex];
 
-            /* Bind all 17 buffers */
-            [enc setBuffer:g_buf_vertex_dof    offset:0 atIndex:0];
-            /* scores + state share a buffer: scores[0..nverts-1], state[nverts..nverts+5] */
-            [enc setBuffer:g_buf_simplex_state  offset:0 atIndex:1];
-            [enc setBuffer:g_buf_simplex_state  offset:(nverts * sizeof(float)) atIndex:2];
-            [enc setBuffer:g_buf_mol_data       offset:0 atIndex:3];
-            [enc setBuffer:g_buf_grid_avdw      offset:0 atIndex:4];
-            [enc setBuffer:g_buf_grid_bvdw      offset:0 atIndex:5];
-            [enc setBuffer:g_buf_grid_es        offset:0 atIndex:6];
-            [enc setBuffer:g_buf_vdwA           offset:0 atIndex:7];
-            [enc setBuffer:g_buf_vdwB           offset:0 atIndex:8];
-            [enc setBuffer:g_buf_charges        offset:0 atIndex:9];
-            [enc setBuffer:g_buf_params         offset:0 atIndex:10];
-            write_natoms(num_atoms);
-            [enc setBuffer:g_buf_natoms         offset:0 atIndex:11];
-            [enc setBuffer:g_buf_xyz            offset:0 atIndex:12];  /* out_scores (unused) */
-            [enc setBuffer:g_buf_ie_vdwA        offset:0 atIndex:13];
-            [enc setBuffer:g_buf_nb_int         offset:0 atIndex:14];
-            write_iep(g_ie_soft_delta, g_ie_cutoff_sq, g_num_nb_pairs);
-            [enc setBuffer:g_buf_iep            offset:0 atIndex:15];
-            write_nnp(g_num_nb_pairs);
-            [enc setBuffer:g_buf_nnp            offset:0 atIndex:16];
+        /* Bind all 17 buffers */
+        [enc setBuffer:g_buf_vertex_dof    offset:0 atIndex:0];
+        /* scores + state share a buffer: scores[0..nverts-1], state[nverts..nverts+5] */
+        [enc setBuffer:g_buf_simplex_state  offset:0 atIndex:1];
+        [enc setBuffer:g_buf_simplex_state  offset:(nverts * sizeof(float)) atIndex:2];
+        [enc setBuffer:g_buf_mol_data       offset:0 atIndex:3];
+        [enc setBuffer:g_buf_grid_avdw      offset:0 atIndex:4];
+        [enc setBuffer:g_buf_grid_bvdw      offset:0 atIndex:5];
+        [enc setBuffer:g_buf_grid_es        offset:0 atIndex:6];
+        [enc setBuffer:g_buf_vdwA           offset:0 atIndex:7];
+        [enc setBuffer:g_buf_vdwB           offset:0 atIndex:8];
+        [enc setBuffer:g_buf_charges        offset:0 atIndex:9];
+        [enc setBuffer:g_buf_params         offset:0 atIndex:10];
+        write_natoms(num_atoms);
+        [enc setBuffer:g_buf_natoms         offset:0 atIndex:11];
+        [enc setBuffer:g_buf_xyz            offset:0 atIndex:12];  /* out_scores (unused) */
+        [enc setBuffer:g_buf_ie_vdwA        offset:0 atIndex:13];
+        [enc setBuffer:g_buf_nb_int         offset:0 atIndex:14];
+        write_iep(g_ie_soft_delta, g_ie_cutoff_sq, g_num_nb_pairs);
+        [enc setBuffer:g_buf_iep            offset:0 atIndex:15];
+        write_nnp(g_num_nb_pairs);
+        [enc setBuffer:g_buf_nnp            offset:0 atIndex:16];
 
-            MTLSize one = MTLSizeMake(1, 1, 1);
-            [enc dispatchThreads:one threadsPerThreadgroup:one];
-            [enc endEncoding];
-        }
+        MTLSize one = MTLSizeMake(1, 1, 1);
+        [enc dispatchThreads:one threadsPerThreadgroup:one];
+        [enc endEncoding];
 
         [cmdbuf commit];
         [cmdbuf waitUntilCompleted];
