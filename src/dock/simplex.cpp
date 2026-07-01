@@ -445,6 +445,168 @@ Simplex_Minimizer::initialize()
     srand(random_seed);
 
 }
+
+
+/* ================================================================== */
+/*  C1 Batch Queue Infrastructure                                      */
+/* ================================================================== */
+
+struct GpuBatchSlot {
+    DOCKMol  *mol;              /* pointer to conformer's molecule (stable) */
+    float    *p_flat;           /* flat copy of p[][] [nv * size] */
+    float    *y_flat;           /* flat copy of y[] [nv] */
+    float    *ref_xyz;          /* reference coordinates [na*3] */
+    int       na;               /* number of atoms */
+    int       nv, size;         /* simplex dimensions */
+    float     trans_step, rot_step, tors_step;
+    /* Pointers for cleanup (preserved from do_minimize allocation) */
+    float   **p;
+    float    *y;
+    float    *pr;
+    float    *prr;
+    float    *pbar;
+    float    *old_vertex;
+};
+
+/* Shared batch parameters — set once per batch (by the first queued call).
+ * These must be identical for all slots in the batch (same molecule,
+ * same growth layer, same max_iterations/score_converge). */
+struct GpuBatchParams {
+    std::vector<float>  ref_xyz;
+    std::vector<int>    active_flags;
+    int    num_atoms;
+    int    num_active_atoms;
+    int    num_torsions;
+    std::vector<int>    ta1, ta2, ta3, ta4, torsion_scale_factors;
+    std::vector<int>    child_idx, child_starts, child_counts;
+    int    max_iterations;
+    float  score_converge;
+};
+
+static std::vector<GpuBatchSlot> s_batch_queue;
+static GpuBatchParams *s_batch_params = nullptr;
+static bool s_batch_enabled = false;
+
+
+void enable_gpu_batch_mode(bool enabled)
+{
+    s_batch_enabled = enabled;
+    if (!enabled && !s_batch_queue.empty()) {
+        /* Cleanup without mol update — needed if e.g. an error occurred mid-batch */
+        fprintf(stderr, "GPU-DOCK: enable_gpu_batch_mode(false) with %zu queued slots — discarding\n",
+                s_batch_queue.size());
+        for (auto &slot : s_batch_queue) {
+            delete[] slot.p_flat; delete[] slot.y_flat; delete[] slot.ref_xyz;
+            for (int i = 0; i < slot.nv; i++) { delete[] slot.p[i]; }
+            delete[] slot.p; delete[] slot.y;
+            delete[] slot.pr; delete[] slot.prr; delete[] slot.pbar;
+            delete[] slot.old_vertex;
+        }
+        delete s_batch_params;
+        s_batch_params = nullptr;
+        s_batch_queue.clear();
+    }
+}
+
+
+int flush_gpu_batch(Minimizer &min)
+{
+    if (s_batch_queue.empty() || !s_batch_params) return 0;
+
+    int N = (int)s_batch_queue.size();
+
+    GpuBatchSlot &first = s_batch_queue[0];
+    int nv = first.nv;
+    int size = first.size;
+
+    /* Build flat batch arrays */
+    std::vector<float> dof_flat((size_t)N * (size_t)nv * (size_t)size);
+    std::vector<float> score_flat((size_t)N * (size_t)nv);
+    std::vector<int>   state_flat((size_t)N * 6, 0);
+
+    for (int b = 0; b < N; b++) {
+        GpuBatchSlot &slot = s_batch_queue[b];
+        int dof_off = b * nv * size;
+        int scr_off = b * nv;
+        memcpy(&dof_flat[dof_off], slot.p_flat, (size_t)nv * (size_t)size * sizeof(float));
+        memcpy(&score_flat[scr_off], slot.y_flat, (size_t)nv * sizeof(float));
+    }
+
+    /* Use shared parameters from the first batch */
+    GpuBatchParams &bp = *s_batch_params;
+
+    /* Dispatch all N conformers in one command buffer */
+    bool ok = dock_gpu_simplex_minimize_batch(
+        N,
+        bp.ref_xyz.data(), bp.active_flags.data(),
+        bp.num_atoms, bp.num_active_atoms, bp.num_torsions,
+        bp.ta1.data(), bp.ta2.data(), bp.ta3.data(), bp.ta4.data(),
+        bp.child_idx.data(), bp.child_starts.data(), bp.child_counts.data(),
+        bp.torsion_scale_factors.data(),
+        dof_flat.data(), score_flat.data(), state_flat.data(),
+        N,
+        size, nv,
+        bp.max_iterations, bp.score_converge,
+        first.trans_step, first.rot_step, first.tors_step);
+
+    if (!ok) {
+        fprintf(stderr, "GPU-DOCK: batch simplex minimize failed for %d conformers\n", N);
+    }
+
+    /* ---- Unpack results and update molecules ---- */
+    for (int b = 0; b < N; b++) {
+        GpuBatchSlot &slot = s_batch_queue[b];
+
+        if (!ok || state_flat[b * 6 + 5] == -1) {
+            slot.y_flat[0] = 1e30f;
+        }
+
+        /* Find best vertex (ilo) */
+        int ilo = 0;
+        for (int i = 1; i < nv; i++)
+            if (score_flat[b * nv + i] < score_flat[b * nv + ilo]) ilo = i;
+
+        /* Update mol with best solution:
+         *   Restore reference coords from saved ref_xyz, then apply DOF
+         *   using the minimizer's scale_vector + vector_to_dockmol. */
+        DOCKMol *m = slot.mol;
+        for (int ai = 0; ai < slot.na; ai++) {
+            m->x[ai] = slot.ref_xyz[ai*3];
+            m->y[ai] = slot.ref_xyz[ai*3+1];
+            m->z[ai] = slot.ref_xyz[ai*3+2];
+        }
+
+        /* Scale DOF values by step sizes (inline of scale_vector) */
+        FLOATVec new_vec;
+        for (int i = 0; i < 3 && i < size; i++)
+            new_vec.push_back(slot.p_flat[ilo * size + i] * slot.trans_step);
+        for (int i = 3; i < 6 && i < size; i++)
+            new_vec.push_back(slot.p_flat[ilo * size + i] * slot.rot_step);
+        for (int i = 6; i < size; i++)
+            new_vec.push_back(slot.p_flat[ilo * size + i] * slot.tors_step);
+        min.vector_to_dockmol(*m, new_vec);
+
+        /* ---- Cleanup this slot's allocations ---- */
+        delete[] slot.p_flat;
+        delete[] slot.y_flat;
+        delete[] slot.ref_xyz;
+        for (int i = 0; i < slot.nv; i++) { delete[] slot.p[i]; }
+        delete[] slot.p;
+        delete[] slot.y;
+        delete[] slot.pr;
+        delete[] slot.prr;
+        delete[] slot.pbar;
+        delete[] slot.old_vertex;
+    }
+
+    delete s_batch_params;
+    s_batch_params = nullptr;
+    s_batch_queue.clear();
+
+    return N;
+}
+
+
 float
 Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                                     FLOATVec & vertex, int max_iterations,
@@ -807,6 +969,52 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                         s_ligand_uploaded = true;
                     }
 
+                    if (s_batch_enabled) {
+                        /* ---- C1: Queue for later GPU batch dispatch ---- */
+                        /* Save shared params on first call */
+                        if (!s_batch_params) {
+                            s_batch_params = new GpuBatchParams;
+                            s_batch_params->ref_xyz = s_ref_xyz;
+                            s_batch_params->active_flags = s_active;
+                            s_batch_params->num_atoms = na;
+                            s_batch_params->num_active_atoms = ref_mol.num_active_atoms;
+                            s_batch_params->num_torsions = nt;
+                            s_batch_params->ta1 = s_ta1;
+                            s_batch_params->ta2 = s_ta2;
+                            s_batch_params->ta3 = s_ta3;
+                            s_batch_params->ta4 = s_ta4;
+                            s_batch_params->torsion_scale_factors = torsion_scale_factors;
+                            s_batch_params->child_idx = s_child_idx;
+                            s_batch_params->child_starts = s_child_starts;
+                            s_batch_params->child_counts = s_child_counts;
+                            s_batch_params->max_iterations = max_iterations;
+                            s_batch_params->score_converge = score_converge;
+                        }
+
+                        /* Save this slot */
+                        GpuBatchSlot slot;
+                        slot.mol = &mol;
+                        slot.p_flat = new float[(size_t)nv * (size_t)size];
+                        memcpy(slot.p_flat, s_dof.data(), (size_t)nv * (size_t)size * sizeof(float));
+                        slot.y_flat = new float[(size_t)nv];
+                        memcpy(slot.y_flat, s_score.data(), (size_t)nv * sizeof(float));
+                        slot.ref_xyz = new float[(size_t)na * 3];
+                        memcpy(slot.ref_xyz, s_ref_xyz.data(), (size_t)na * 3 * sizeof(float));
+                        slot.na = na;
+                        slot.nv = nv; slot.size = size;
+                        slot.trans_step = trans_step_size;
+                        slot.rot_step   = rot_step_size;
+                        slot.tors_step  = tors_step_size;
+                        slot.p = p; slot.y = y;
+                        slot.pr = pr; slot.prr = prr; slot.pbar = pbar;
+                        slot.old_vertex = old_vertex;
+
+                        s_batch_queue.push_back(slot);
+
+                        return 0.0f;  /* Early return — no cleanup, no mol update */
+                    }
+
+                    /* ---- C1: Immediate GPU dispatch (non-batch path) ---- */
                     float eff_trans = trans_step_size / (float)(current_cycle + 1);
                     float eff_rot   = rot_step_size   / (current_cycle + 1);
                     float eff_tors  = tors_step_size  / (current_cycle + 1);

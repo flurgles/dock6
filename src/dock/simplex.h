@@ -5,6 +5,11 @@
 #include <vector>
 #include "minimizer.h"
 
+/* C1 Batch queue API */
+void enable_gpu_batch_mode(bool enabled);
+int  flush_gpu_batch(Minimizer &min);
+
+
 class           Simplex_Minimizer : public Minimizer {
 
   public:
