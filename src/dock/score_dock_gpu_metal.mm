@@ -333,7 +333,7 @@ static float3 compute_com(device const MolData &mol) {
     return com;
 }
 
-static void rigid_transform(thread float *xyz, int num_atoms,
+static void rigid_transform(device float *xyz, int num_atoms,
                              float3 com, float3 trans, thread float3x3 &rmat) {
     for (int i = 0; i < num_atoms; i++) {
         float tx = xyz[i*3+0] - com.x;
@@ -346,7 +346,7 @@ static void rigid_transform(thread float *xyz, int num_atoms,
     }
 }
 
-static float dihedral_degrees(thread const float *xyz, int a1, int a2, int a3, int a4) {
+static float dihedral_degrees(device const float *xyz, int a1, int a2, int a3, int a4) {
     float3 v1 = {xyz[a1*3], xyz[a1*3+1], xyz[a1*3+2]};
     float3 v2 = {xyz[a2*3], xyz[a2*3+1], xyz[a2*3+2]};
     float3 v3 = {xyz[a3*3], xyz[a3*3+1], xyz[a3*3+2]};
@@ -369,7 +369,7 @@ static float dihedral_degrees(thread const float *xyz, int a1, int a2, int a3, i
     return angle;
 }
 
-static void apply_torsion(thread float *xyz, int a1, int a2, int a3, int a4,
+static void apply_torsion(device float *xyz, int a1, int a2, int a3, int a4,
                            device const int *children, int child_cnt, float new_angle_rad) {
     float cur_deg = dihedral_degrees(xyz, a1, a2, a3, a4);
     float cur_rad = cur_deg * PI / 180.0;
@@ -394,8 +394,8 @@ static void apply_torsion(thread float *xyz, int a1, int a2, int a3, int a4,
     }
 }
 
-static void dof_to_xyz(thread const float *dof, device const MolData &mol,
-                        thread float *xyz) {
+static void dof_to_xyz(threadgroup const float *dof, device const MolData &mol,
+                        device float *xyz) {
     int na = mol.num_atoms;
     for (int i = 0; i < na; i++) {
         xyz[i*3] = mol.ref_xyz[i][0];
@@ -423,15 +423,15 @@ static void dof_to_xyz(thread const float *dof, device const MolData &mol,
     }
 }
 
-static float score_xyz(thread const float *xyz, int num_atoms,
-                        texture3d<float> grid_avdw, texture3d<float> grid_bvdw,
-                        texture3d<float> grid_es,
-                        device const float *vdwA, device const float *vdwB,
-                        device const float *charges,
-                        constant GridParams &gp,
-                        device const float *ie_vdwA, device const int *nb_int,
-                        constant IEParams &iep, int nnp,
-                        device const int *active_flags) {
+/* Grid scoring only (called by thread 0 — reads from xyz device buffer) */
+static float score_grid(
+    device const float *xyz, int num_atoms,
+    texture3d<float> grid_avdw, texture3d<float> grid_bvdw,
+    texture3d<float> grid_es,
+    device const float *vdwA, device const float *vdwB,
+    device const float *charges,
+    constant GridParams &gp,
+    device const int *active_flags) {
     float grid_score = 0.0;
     for (int a = 0; a < num_atoms; a++) {
         if (!active_flags[a]) continue;
@@ -442,9 +442,24 @@ static float score_xyz(thread const float *xyz, int num_atoms,
         float es = trilinear(grid_es, gp, x, y, z);
         grid_score += vdwA[a]*vdw - vdwB[a]*bvdw + charges[a]*es;
     }
-    float ie_score = 0.0;
+    return grid_score;
+}
+
+/* Parallel IE scoring — called by ALL threads. Each thread processes
+ * (nnp / tg_size) pairs via strided loop, then each thread writes its
+ * partial sum to tg_sums[tid]. Thread 0 sums all partials after barrier.
+ * This avoids platform-dependent SIMD group query functions.
+ */
+static float ie_score_parallel(
+    device const float *xyz, int nnp,
+    device const float *ie_vdwA, device const int *nb_int,
+    constant IEParams &iep,
+    device const int *active_flags,
+    uint tid, int tg_size,
+    threadgroup float *tg_sums) {
+    float partial = 0.0;
     if (nnp > 0) {
-        for (int p = 0; p < nnp; p++) {
+        for (int p = tid; p < nnp; p += tg_size) {
             int a1 = nb_int[p*2], a2 = nb_int[p*2+1];
             if (!active_flags[a1] || !active_flags[a2]) continue;
             float dx = xyz[a1*3]-xyz[a2*3];
@@ -454,11 +469,18 @@ static float score_xyz(thread const float *xyz, int num_atoms,
             if (r2 < iep.cutoff_sq) {
                 float r2eff = r2 + iep.soft_delta;
                 float denom = r2eff*r2eff*r2eff;
-                ie_score += (ie_vdwA[a1]*ie_vdwA[a2]) / (denom*denom);
+                partial += (ie_vdwA[a1]*ie_vdwA[a2]) / (denom*denom);
             }
         }
     }
-    return grid_score + ie_score;
+    tg_sums[tid] = partial;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0) {
+        float total = 0.0;
+        for (int i = 0; i < tg_size; i++) total += tg_sums[i];
+        return total;
+    }
+    return 0.0;
 }
 
 /* Single-thread simplex kernel. Each dispatch handles all iterations
@@ -479,152 +501,209 @@ kernel void simplex_iteration_kernel(
     device const float*    charges       [[buffer(6)]],
     constant GridParams &  gp            [[buffer(7)]],
     constant int&          num_atoms_buf [[buffer(8)]],
-    device float*          out_scores    [[buffer(9)]],
+    device float*          xyz_dev       [[buffer(9)]],
     device const float*    ie_vdwA       [[buffer(10)]],
     device const int*      nb_int        [[buffer(11)]],
     constant IEParams&     iep           [[buffer(12)]],
     constant int&          num_nb_pairs  [[buffer(13)]],
+    constant int&          tg_size       [[buffer(14)]],
     uint tid                       [[thread_position_in_grid]])
 {
-    if (tid > 0) return;
-
     int n = state[2];       /* DOF size */
     int nverts = n + 1;     /* number of vertices */
     float alpha = 1.0, beta = 0.5, gamma = 2.0;
-    int i, j;
-
-    float centroid[DOF_MAX];
-    float pr[DOF_MAX];
-    float prr[DOF_MAX];
-    float xyz[MAX_ATOMS * 3];
     int na = mol->num_atoms;
+    int nnp = num_nb_pairs;
     int dof_max = (n < DOF_MAX) ? n : DOF_MAX;
 
-    /* Single kernel dispatch handles all iterations (avoids CPU-GPU sync per iter) */
+    /* Threadgroup memory for cross-thread communication.
+     * All threads must participate in barriers; thread 0 writes these,
+     * barriers sync visibility, then all threads read to decide flow. */
+    threadgroup float tg_centroid[DOF_MAX];
+    threadgroup float tg_pr[DOF_MAX];
+    threadgroup float tg_prr[DOF_MAX];
+    threadgroup float tg_grid_refl;
+    threadgroup float tg_grid_second;
+    threadgroup int tg_ilo, tg_ihi, tg_inhi;
+    threadgroup int tg_widx;
+    threadgroup int tg_action;   /* 0=accept, 1=expand, 2=contract, 3=shrink */
+    threadgroup int tg_repl_flag;
+    threadgroup float tg_ie_sums[256]; /* per-thread partial IE sums (up to max threads) */
+
     for (int iter = 0; iter < state[3]; iter++) {
-        if (state[0]) return;  /* converged or error */
-        state[1] = iter + 1;
+        if (state[0]) return;  /* ALL threads — safe exit */
+        if (tid == 0) state[1] = iter + 1;
 
-        /* 1. Find best (ilo), worst (ihi), second-worst (inhi) */
-        int ilo = 0, ihi = 1, inhi = 0;
-        if (scores[0] > scores[1]) { ihi = 0; inhi = 1; }
-        else { ihi = 1; inhi = 0; }
-        for (i = 0; i < nverts; i++) {
-            if (scores[i] < scores[ilo]) ilo = i;
-            if (scores[i] > scores[ihi]) { inhi = ihi; ihi = i; }
-            else if (i != ihi && scores[i] > scores[inhi]) inhi = i;
+        /* ===== Phase 0: Find best/worst, centroid, reflect DOF ===== */
+        if (tid == 0) {
+            tg_ilo = 0; tg_ihi = 1; tg_inhi = 0;
+            if (scores[0] > scores[1]) { tg_ihi = 0; tg_inhi = 1; }
+            else { tg_ihi = 1; tg_inhi = 0; }
+            for (int i = 0; i < nverts; i++) {
+                if (scores[i] < scores[tg_ilo]) tg_ilo = i;
+                if (scores[i] > scores[tg_ihi]) { tg_inhi = tg_ihi; tg_ihi = i; }
+                else if (i != tg_ihi && scores[i] > scores[tg_inhi]) tg_inhi = i;
+            }
+            for (int j = 0; j < dof_max; j++) tg_centroid[j] = 0.0;
+            for (int i = 0; i < nverts; i++) {
+                if (i != tg_ihi) {
+                    for (int j = 0; j < dof_max; j++)
+                        tg_centroid[j] += vertex_dof[i * dof_max + j];
+                }
+            }
+            for (int j = 0; j < dof_max; j++) tg_centroid[j] /= (float)n;
+            tg_widx = tg_ihi * dof_max;
+            for (int j = 0; j < dof_max; j++)
+                tg_pr[j] = tg_centroid[j] + alpha * (tg_centroid[j] - vertex_dof[tg_widx + j]);
         }
 
-        /* 2. Compute centroid */
-        for (j = 0; j < dof_max; j++) centroid[j] = 0.0;
-        for (i = 0; i < nverts; i++) {
-            if (i != ihi) {
-                for (j = 0; j < dof_max; j++)
-                    centroid[j] += vertex_dof[i * dof_max + j];
+        /* ===== Scoring point 1: Reflect (grid + IE) ===== */
+        if (tid == 0) {
+            dof_to_xyz(tg_pr, *mol, xyz_dev);
+            tg_grid_refl = score_grid(xyz_dev, na, grid_avdw, grid_bvdw, grid_es,
+                                       vdwA, vdwB, charges, gp,
+                                       mol->active_flags);
+            if (tg_grid_refl < -1e30) state[5] = -1;
+        }
+        threadgroup_barrier(mem_flags::mem_device);
+
+        float ie_refl = ie_score_parallel(xyz_dev, nnp, ie_vdwA, nb_int, iep,
+                                           mol->active_flags,
+                                           tid, tg_size, tg_ie_sums);
+
+        /* ===== Decision tree — set up next action ===== */
+        if (tid == 0) {
+            if (state[5] < 0) {
+                state[0] = 1;
+                tg_action = 0;
+            } else {
+                float total_refl = tg_grid_refl + ie_refl;
+
+                if (total_refl <= scores[tg_ilo]) {
+                    /* --- Expand --- */
+                    for (int j = 0; j < dof_max; j++)
+                        tg_prr[j] = tg_centroid[j] + gamma * (tg_pr[j] - tg_centroid[j]);
+                    dof_to_xyz(tg_prr, *mol, xyz_dev);
+                    tg_grid_second = score_grid(xyz_dev, na, grid_avdw, grid_bvdw, grid_es,
+                                                 vdwA, vdwB, charges, gp,
+                                                 mol->active_flags);
+                    if (tg_grid_second < -1e30) {
+                        state[5] = -1; state[0] = 1; tg_action = 0;
+                    } else {
+                        tg_action = 1;
+                    }
+                } else if (total_refl >= scores[tg_inhi]) {
+                    /* --- Contract path --- */
+                    tg_repl_flag = (total_refl < scores[tg_ihi]) ? 1 : 0;
+                    if (tg_repl_flag) {
+                        for (int j = 0; j < dof_max; j++)
+                            tg_prr[j] = tg_centroid[j] + beta * (tg_pr[j] - tg_centroid[j]);
+                    } else {
+                        for (int j = 0; j < dof_max; j++)
+                            tg_prr[j] = tg_centroid[j] + beta * (vertex_dof[tg_widx + j] - tg_centroid[j]);
+                    }
+                    dof_to_xyz(tg_prr, *mol, xyz_dev);
+                    tg_grid_second = score_grid(xyz_dev, na, grid_avdw, grid_bvdw, grid_es,
+                                                 vdwA, vdwB, charges, gp,
+                                                 mol->active_flags);
+                    if (tg_grid_second < -1e30) {
+                        state[5] = -1; state[0] = 1; tg_action = 0;
+                    } else {
+                        tg_action = 2;
+                    }
+                } else {
+                    /* --- Accept reflect --- */
+                    for (int j = 0; j < dof_max; j++) vertex_dof[tg_widx + j] = tg_pr[j];
+                    scores[tg_ihi] = total_refl;
+                    tg_action = 0;
+                }
             }
         }
-        for (j = 0; j < dof_max; j++) centroid[j] /= (float)n;
 
-        /* 3. Reflect: pr = centroid + alpha*(centroid - worst) */
-        int widx = ihi * dof_max;
-        for (j = 0; j < dof_max; j++)
-            pr[j] = centroid[j] + alpha * (centroid[j] - vertex_dof[widx + j]);
+        /* ===== Scoring point 2 (if expand/contract) ===== */
+        if (tg_action == 1 || tg_action == 2) {
+            threadgroup_barrier(mem_flags::mem_device);
+            float ie_second = ie_score_parallel(xyz_dev, nnp, ie_vdwA, nb_int, iep,
+                                                  mol->active_flags,
+                                                  tid, tg_size, tg_ie_sums);
 
-        /* 4. Score reflect */
-        dof_to_xyz(pr, *mol, xyz);
-        float score_refl = score_xyz(xyz, na, grid_avdw, grid_bvdw, grid_es,
-                                      vdwA, vdwB, charges, gp,
-                                      ie_vdwA, nb_int, iep, num_nb_pairs,
-                                      mol->active_flags);
-        if (score_refl < -1e30) { state[0] = 1; state[5] = -1; return; }
+            if (tid == 0 && state[5] >= 0) {
+                float total_second = tg_grid_second + ie_second;
+                float total_refl = tg_grid_refl + ie_refl;
 
-        /* 5. Decision tree */
-        if (score_refl <= scores[ilo]) {
-            /* Expand */
-            for (j = 0; j < dof_max; j++)
-                prr[j] = centroid[j] + gamma * (pr[j] - centroid[j]);
-            dof_to_xyz(prr, *mol, xyz);
-            float score_exp = score_xyz(xyz, na, grid_avdw, grid_bvdw, grid_es,
-                                         vdwA, vdwB, charges, gp,
-                                         ie_vdwA, nb_int, iep, num_nb_pairs,
-                                         mol->active_flags);
-            if (score_exp < -1e30) { state[0] = 1; state[5] = -1; return; }
+                if (tg_action == 1) {
+                    /* --- Expand: pick best --- */
+                    if (total_second < total_refl) {
+                        for (int j = 0; j < dof_max; j++) vertex_dof[tg_widx + j] = tg_prr[j];
+                        scores[tg_ihi] = total_second;
+                    } else {
+                        for (int j = 0; j < dof_max; j++) vertex_dof[tg_widx + j] = tg_pr[j];
+                        scores[tg_ihi] = total_refl;
+                    }
+                } else {
+                    /* --- Contract: compare with current worst --- */
+                    float compare_base = tg_repl_flag ? total_refl : scores[tg_ihi];
 
-            if (score_exp < score_refl) {
-                for (j = 0; j < dof_max; j++) vertex_dof[widx + j] = prr[j];
-                scores[ihi] = score_exp;
-            } else {
-                for (j = 0; j < dof_max; j++) vertex_dof[widx + j] = pr[j];
-                scores[ihi] = score_refl;
-            }
-        } else if (score_refl >= scores[inhi]) {
-            /* Contract or shrink */
-            int replace_flag = 0;
+                    if (total_second < compare_base) {
+                        for (int j = 0; j < dof_max; j++) vertex_dof[tg_widx + j] = tg_prr[j];
+                        scores[tg_ihi] = total_second;
+                        tg_repl_flag = 1;
+                    } else if (tg_repl_flag) {
+                        /* Reflect is better — use it */
+                        for (int j = 0; j < dof_max; j++) vertex_dof[tg_widx + j] = tg_pr[j];
+                        scores[tg_ihi] = total_refl;
+                        tg_repl_flag = 1;
+                    }
 
-            if (score_refl < scores[ihi]) {
-                for (j = 0; j < dof_max; j++) vertex_dof[widx + j] = pr[j];
-                scores[ihi] = score_refl;
-                replace_flag = 1;
-            }
-
-            if (replace_flag) {
-                for (j = 0; j < dof_max; j++)
-                    prr[j] = centroid[j] + beta * (pr[j] - centroid[j]);
-            } else {
-                for (j = 0; j < dof_max; j++)
-                    prr[j] = centroid[j] + beta * (vertex_dof[widx + j] - centroid[j]);
-            }
-
-            dof_to_xyz(prr, *mol, xyz);
-            float score_con = score_xyz(xyz, na, grid_avdw, grid_bvdw, grid_es,
-                                         vdwA, vdwB, charges, gp,
-                                         ie_vdwA, nb_int, iep, num_nb_pairs,
-                                         mol->active_flags);
-            if (score_con < -1e30) { state[0] = 1; state[5] = -1; return; }
-
-            if (score_con < scores[ihi]) {
-                for (j = 0; j < dof_max; j++) vertex_dof[widx + j] = prr[j];
-                scores[ihi] = score_con;
-                replace_flag = 1;
-            }
-
-            if (!replace_flag) {
-                /* Shrink */
-                float local_dof[DOF_MAX];
-                for (i = 0; i < nverts; i++) {
-                    if (i != ilo) {
-                        for (j = 0; j < dof_max; j++) {
-                            float old = vertex_dof[i * dof_max + j];
-                            vertex_dof[i * dof_max + j] = 0.5 * (old + vertex_dof[ilo * dof_max + j]);
-                        }
-                        for (j = 0; j < dof_max; j++)
-                            local_dof[j] = vertex_dof[i * dof_max + j];
-                        dof_to_xyz(local_dof, *mol, xyz);
-                        float s = score_xyz(xyz, na, grid_avdw, grid_bvdw, grid_es,
-                                             vdwA, vdwB, charges, gp,
-                                             ie_vdwA, nb_int, iep, num_nb_pairs,
-                                             mol->active_flags);
-                        if (s < -1e30) { state[0] = 1; state[5] = -1; return; }
-                        scores[i] = s;
+                    if (!tg_repl_flag) {
+                        /* --- Shrink --- */
+                        tg_action = 3;
+                    } else {
+                        tg_action = 0;  /* done */
                     }
                 }
             }
-        } else {
-            /* Accept reflect */
-            for (j = 0; j < dof_max; j++) vertex_dof[widx + j] = pr[j];
-            scores[ihi] = score_refl;
         }
 
-        /* 6. Check convergence */
-        ilo = 0; ihi = 0;
-        for (i = 0; i < nverts; i++) {
-            if (scores[i] < scores[ilo]) ilo = i;
-            if (scores[i] > scores[ihi]) ihi = i;
+        /* ===== Shrink loop (if contract failed) ===== */
+        if (tg_action == 3) {
+            for (int si = 0; si < nverts; si++) {
+                if (tid == 0 && si != tg_ilo) {
+                    int wi = si * dof_max;
+                    for (int j = 0; j < dof_max; j++) {
+                        float old = vertex_dof[wi + j];
+                        vertex_dof[wi + j] = 0.5 * (old + vertex_dof[tg_ilo * dof_max + j]);
+                    }
+                    for (int j = 0; j < dof_max; j++) tg_pr[j] = vertex_dof[wi + j];
+                    dof_to_xyz(tg_pr, *mol, xyz_dev);
+                    tg_grid_second = score_grid(xyz_dev, na, grid_avdw, grid_bvdw, grid_es,
+                                                 vdwA, vdwB, charges, gp,
+                                                 mol->active_flags);
+                    if (tg_grid_second < -1e30) { state[5] = -1; state[0] = 1; }
+                }
+                threadgroup_barrier(mem_flags::mem_device);
+                float ie_s = ie_score_parallel(xyz_dev, nnp, ie_vdwA, nb_int, iep,
+                                                mol->active_flags,
+                                                tid, tg_size, tg_ie_sums);
+                if (tid == 0 && state[5] >= 0) {
+                    scores[si] = tg_grid_second + ie_s;
+                }
+            }
+            tg_action = 0;  /* shrink complete */
         }
-        float diff = fabs(scores[ihi] - scores[ilo]);
-        float converge_tol = as_type<float>(state[4]);
-        if (converge_tol < 1e-10) converge_tol = 0.001;
-        state[0] = (diff < converge_tol) ? 1 : 0;
+
+        /* ===== Convergence check ===== */
+        if (tid == 0 && state[5] >= 0) {
+            int ilo = 0, ihi = 0;
+            for (int i = 0; i < nverts; i++) {
+                if (scores[i] < scores[ilo]) ilo = i;
+                if (scores[i] > scores[ihi]) ihi = i;
+            }
+            float diff = fabs(scores[ihi] - scores[ilo]);
+            float converge_tol = as_type<float>(state[4]);
+            if (converge_tol < 1e-10) converge_tol = 0.001;
+            state[0] = (diff < converge_tol) ? 1 : 0;
+        }
     }
 }
 )shader";
@@ -640,6 +719,7 @@ static id<MTLCommandQueue>         g_cmdq       = nil;
 static id<MTLComputePipelineState> g_pso        = nil;  /* grid-only kernel */
 static id<MTLComputePipelineState> g_pso_ie    = nil;  /* grid+IE kernel */
 static id<MTLComputePipelineState> g_pso_simplex = nil; /* simplex kernel */
+static int g_simplex_threads         = 128;  /* threads per dispatch for parallel IE */
 
 /* GPU buffers (shared memory) */
 static id<MTLBuffer> g_buf_grid_avdw  = nil;
@@ -662,6 +742,7 @@ static id<MTLBuffer> g_buf_params     = nil;  /* DockGridParams */
 static id<MTLBuffer> g_buf_natoms     = nil;  /* int num_atoms */
 static id<MTLBuffer> g_buf_iep        = nil;  /* IEParams */
 static id<MTLBuffer> g_buf_nnp        = nil;  /* int num_nb_pairs */
+static id<MTLBuffer> g_buf_tg_header  = nil;  /* 2 ints: tg_size, num_simd_groups */
 
 /* Simplex-specific buffers */
 static id<MTLBuffer> g_buf_vertex_dof = nil;
@@ -744,9 +825,21 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
 
         /* Compile grid-only shader */
         NSError *err = nil;
+        MTLCompileOptions *opts = [[MTLCompileOptions alloc] init];
+        if (@available(macOS 15.0, *)) {
+            opts.mathMode = MTLMathModeFast;
+        } else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            opts.fastMathEnabled = YES;
+#pragma clang diagnostic pop
+        }
+        if (@available(macOS 13.0, *)) {
+            opts.optimizationLevel = MTLLibraryOptimizationLevelDefault;
+        }
         id<MTLLibrary> lib = [g_device newLibraryWithSource:
                                [NSString stringWithUTF8String:shader_src]
-                                                     options:nil
+                                                     options:opts
                                                        error:&err];
         if (!lib) {
             fprintf(stderr, "GPU-DOCK: shader compilation failed: %s\n",
@@ -788,7 +881,7 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
         /* Compile simplex iteration shader (separate library) */
         id<MTLLibrary> lib_simplex = [g_device newLibraryWithSource:
                                         [NSString stringWithUTF8String:shader_src_simplex]
-                                                              options:nil
+                                                              options:opts
                                                                 error:&err];
         if (!lib_simplex) {
             fprintf(stderr, "GPU-DOCK: simplex shader compilation failed: %s\n",
@@ -808,6 +901,17 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
                     [[err localizedDescription] UTF8String]);
             dock_gpu_cleanup();
             return 0;
+        }
+
+        /* Query max threadgroup size for parallel IE reduction */
+        {
+            NSUInteger max_tg = [g_pso_simplex maxTotalThreadsPerThreadgroup];
+            NSUInteger sw = [g_pso_simplex threadExecutionWidth];
+            g_simplex_threads = (int)MIN(max_tg, (NSUInteger)256);
+            /* Round down to multiple of simd width */
+            g_simplex_threads = (g_simplex_threads / (int)sw) * (int)sw;
+            fprintf(stderr, "GPU-DOCK: simplex threads=%d (max_tg=%lu, simd=%lu)\n",
+                    g_simplex_threads, (unsigned long)max_tg, (unsigned long)sw);
         }
 
         /* Cache grid parameters */
@@ -883,6 +987,7 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
         g_buf_iep    = alloc_buffer(32, "iep"); /* holds IEParams struct */
         g_buf_nnp    = alloc_buffer(sizeof(int), "nnp");
         g_buf_active_flags = alloc_buffer(sizeof(int) * GPU_MAX_ATOMS, "active_flags");
+        g_buf_tg_header   = alloc_buffer(sizeof(int) * 2, "tg_header");
 
         /* Allocate per-batch buffers */
         g_buf_xyz    = alloc_buffer(sizeof(float) * 3 * GPU_MAX_ATOMS * GPU_MAX_POSES, "xyz");
@@ -892,7 +997,7 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
             !g_buf_ie_vdwA || !g_buf_nb_int ||
             !g_buf_xyz || !g_buf_scores ||
             !g_buf_params || !g_buf_natoms || !g_buf_iep || !g_buf_nnp ||
-            !g_buf_active_flags) {
+            !g_buf_active_flags || !g_buf_tg_header) {
             fprintf(stderr, "GPU-DOCK: per-batch buffer allocation failed\n");
             dock_gpu_cleanup();
             return 0;
@@ -1131,6 +1236,7 @@ void dock_gpu_cleanup(void)
         g_buf_vertex_dof = nil;
         g_buf_simplex_state = nil;
         g_buf_mol_data   = nil;
+        g_buf_tg_header  = nil;
         g_pso            = nil;
         g_pso_ie         = nil;
         g_pso_simplex    = nil;
@@ -1337,7 +1443,7 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
         [enc setBuffer:g_buf_params         offset:0 atIndex:7];
         write_natoms(num_atoms);
         [enc setBuffer:g_buf_natoms         offset:0 atIndex:8];
-        [enc setBuffer:g_buf_xyz            offset:0 atIndex:9];  /* out_scores (unused) */
+        [enc setBuffer:g_buf_xyz            offset:0 atIndex:9];  /* xyz device buffer */
         [enc setBuffer:g_buf_ie_vdwA        offset:0 atIndex:10];
         [enc setBuffer:g_buf_nb_int         offset:0 atIndex:11];
         write_iep(g_ie_soft_delta, g_ie_cutoff_sq, g_num_nb_pairs);
@@ -1345,8 +1451,16 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
         write_nnp(g_num_nb_pairs);
         [enc setBuffer:g_buf_nnp            offset:0 atIndex:13];
 
-        MTLSize one = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreads:one threadsPerThreadgroup:one];
+        /* Write tg_size for parallel IE */
+        {
+            int *hdr = (int *)[g_buf_tg_header contents];
+            hdr[0] = g_simplex_threads;
+        }
+        [enc setBuffer:g_buf_tg_header      offset:0 atIndex:14];
+
+        MTLSize gridSize = MTLSizeMake(g_simplex_threads, 1, 1);
+        MTLSize tgSize   = MTLSizeMake(g_simplex_threads, 1, 1);
+        [enc dispatchThreads:gridSize threadsPerThreadgroup:tgSize];
         [enc endEncoding];
 
         [cmdbuf commit];
