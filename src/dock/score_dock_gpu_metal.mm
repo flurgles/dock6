@@ -441,6 +441,7 @@ kernel void simplex_iteration_kernel(
     constant int&          sg_size_buf   [[buffer(15)]],
     constant int&          nverts_buf    [[buffer(16)]],
     constant int&          dof_max_buf   [[buffer(17)]],
+    device float*          xyz_shrink    [[buffer(18)]],
     uint batch_id [[threadgroup_position_in_grid]],
     uint tid [[thread_position_in_threadgroup]])
 {
@@ -449,6 +450,7 @@ kernel void simplex_iteration_kernel(
     int conf_scr_off  = batch_id * nverts_buf;
     int conf_state_off = batch_id * 6;
     int xyz_off       = batch_id * num_atoms_buf * 3;
+    int xyz_shrink_off = batch_id * MAX_NVERTS * GPU_MAX_ATOMS * 3;
     int n = state[conf_state_off + 2];       /* DOF size */
     int nverts = n + 1;     /* number of vertices */
     float alpha = 1.0, beta = 0.5, gamma = 2.0;
@@ -617,31 +619,122 @@ kernel void simplex_iteration_kernel(
             }
         }
 
-        /* ===== Shrink loop (if contract failed) ===== */
+        /* ===== Shrink loop (if contract failed) — SIMD-group parallel =====
+         *
+         * Design: each SIMD group independently scores one vertex using stride =
+         * sg_size for IE evaluation.  tg_size/sg_size vertices processed per
+         * round; ceil((nverts-1)*sg_size/tg_size) rounds total.
+         *
+         * Performance note (July 2026, #43): this did NOT make a measurable
+         * difference on any test system (1A28/1C8K/1J4H).  The bottleneck on
+         * current systems is the IE scoring (memory bandwidth from xyz reads +
+         * NB pair data), not the loop structure of the shrink.  Grid scoring
+         * (texture lookups) is similarly bandwidth-bound.
+         *
+         * However, this IS a worthwhile improvement for two reasons:
+         *   1. If we fix the bandwidth bottleneck (e.g., cache-friendly atom
+         *      reordering, reduce per-vertex IE work), the parallel shrink
+         *      becomes the faster path automatically.
+         *   2. For high-DOF systems (50+ torsions, 50+ shrink vertices), the
+         *      ~8× parallelism within a round could help even without other
+         *      improvements.
+         *
+         * The inline dof_to_xyz (necessary because dof_to_xyz takes threadgroup
+         * const float*) increases register pressure slightly but avoids copying
+         * DOF from device to threadgroup memory, which may be a net win on
+         * register-rich architectures.
+         * ================================================================ */
         if (tg_action == 3) {
-            for (int si = 0; si < nverts; si++) {
-                if (si == tg_ilo) continue;  /* skip best vertex — unchanged */
-                if (tid == 0) {
-                    int wi = si * dof_max_buf;
+            int sg_id = tid / sg_size_buf;
+            int lane = tid % sg_size_buf;
+            int num_sg = tg_size / sg_size_buf;
+
+            /* Process vertices in batches of num_sg.  Each SIMD group handles
+             * one vertex per round — nverts-1 vertices (skipping tg_ilo)
+             * across ceil((nverts-1) / num_sg) rounds. */
+            for (int base = 0; base < nverts; base += num_sg) {
+                int si = base + sg_id;
+                if (si >= nverts || si == tg_ilo) continue;
+
+                int wi = si * dof_max_buf;
+
+                /* Phase A: Compute shrink DOF (lane 0 of each SIMD group) */
+                if (lane == 0) {
                     for (int j = 0; j < dof_max; j++) {
                         float old = vertex_dof[conf_vtx_off + wi + j];
                         vertex_dof[conf_vtx_off + wi + j] = 0.5 * (old + vertex_dof[conf_vtx_off + tg_ilo * dof_max_buf + j]);
                     }
-                    for (int j = 0; j < dof_max; j++) tg_pr[j] = vertex_dof[conf_vtx_off + wi + j];
-                    dof_to_xyz(tg_pr, *mol, xyz_dev + xyz_off);
-                    grid_score_second = score_grid(xyz_dev + xyz_off, na, grid_avdw, grid_bvdw, grid_es,
-                                                 vdwA, vdwB, charges, gp,
-                                                 mol->active_flags);
-                    if (grid_score_second < -1e30) { state[conf_state_off + 5] = -1; state[conf_state_off] = 1; }
                 }
+
+                /* Phase B: xyz + grid (lane 0, if no prior error) */
+                device float* vxyz = xyz_shrink + xyz_shrink_off + si * GPU_MAX_ATOMS * 3;
+                float gs = 0.0;
+                if (lane == 0 && state[conf_state_off + 5] >= 0) {
+                    /* Inline dof_to_xyz — read DOF from device memory directly */
+                    int _na = mol->num_atoms;
+                    for (int _i = 0; _i < _na; _i++) {
+                        vxyz[_i*3]   = mol->ref_xyz[_i][0];
+                        vxyz[_i*3+1] = mol->ref_xyz[_i][1];
+                        vxyz[_i*3+2] = mol->ref_xyz[_i][2];
+                    }
+                    float3 _trans = {vertex_dof[conf_vtx_off + wi + 0] * mol->trans_step,
+                                    vertex_dof[conf_vtx_off + wi + 1] * mol->trans_step,
+                                    vertex_dof[conf_vtx_off + wi + 2] * mol->trans_step};
+                    float3 _quat  = {vertex_dof[conf_vtx_off + wi + 3] * mol->rot_step,
+                                    vertex_dof[conf_vtx_off + wi + 4] * mol->rot_step,
+                                    vertex_dof[conf_vtx_off + wi + 5] * mol->rot_step};
+                    float3x3 _rmat;
+                    quat_to_rmat(_rmat, _quat);
+                    float3 _com = {mol->com_x, mol->com_y, mol->com_z};
+                    rigid_transform(vxyz, _na, _com, _trans, _rmat);
+                    for (int _t = 0; _t < mol->num_torsions; _t++) {
+                        float _delta_deg = vertex_dof[conf_vtx_off + wi + 6 + _t] * mol->tors_step;
+                        if (fabs(_delta_deg) < 1e-10) continue;
+                        float _cur_deg = dihedral_degrees(vxyz, mol->torsion_a1[_t], mol->torsion_a2[_t],
+                                                           mol->torsion_a3[_t], mol->torsion_a4[_t]);
+                        float _new_rad = (PI/180.0) * (_cur_deg + _delta_deg);
+                        apply_torsion(vxyz, mol->torsion_a1[_t], mol->torsion_a2[_t],
+                                      mol->torsion_a3[_t], mol->torsion_a4[_t],
+                                      mol->child_idx[_t], mol->child_cnt[_t], _new_rad);
+                    }
+                    gs = score_grid(vxyz, na, grid_avdw, grid_bvdw, grid_es,
+                                    vdwA, vdwB, charges, gp,
+                                    mol->active_flags);
+                    if (gs < -1e30) { state[conf_state_off + 5] = -1; state[conf_state_off] = 1; }
+                }
+
+                /* Barrier: vxyz writes + error state visible to all groups */
                 threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
-                float ie_s = ie_score_parallel(xyz_dev + xyz_off, nnp, ie_vdwA, nb_int, iep,
-                                                tid, tg_size, tg_ie_sums, sg_size_buf);
-                if (tid == 0 && state[conf_state_off + 5] >= 0) {
-                    scores[conf_scr_off + si] = grid_score_second + ie_s;
+
+                /* Phase C: SIMD-group-scoped IE (all lanes, stride = sg_size_buf).
+                 * Each SIMD group independently evaluates ALL nnp pairs for its
+                 * vertex using stride = sg_size_buf.  simd_sum across the 32-lane
+                 * group gives the correct per-vertex IE total — no tg_ie_sums
+                 * needed here. */
+                float ie_s = 0.0;
+                if (nnp > 0 && state[conf_state_off + 5] >= 0) {
+                    float ie_p = 0.0;
+                    for (int p = lane; p < nnp; p += sg_size_buf) {
+                        int a1 = nb_int[p*2], a2 = nb_int[p*2+1];
+                        float dx = vxyz[a1*3] - vxyz[a2*3];
+                        float dy = vxyz[a1*3+1] - vxyz[a2*3+1];
+                        float dz = vxyz[a1*3+2] - vxyz[a2*3+2];
+                        float r2 = dx*dx + dy*dy + dz*dz;
+                        if (r2 < iep.cutoff_sq) {
+                            float r2eff = r2 + iep.soft_delta;
+                            float denom = r2eff*r2eff*r2eff;
+                            ie_p += (ie_vdwA[a1]*ie_vdwA[a2]) / (denom*denom);
+                        }
+                    }
+                    ie_s = simd_sum(ie_p);
+                }
+
+                /* Write combined score (lane 0 of each SIMD group) */
+                if (lane == 0 && state[conf_state_off + 5] >= 0) {
+                    scores[conf_scr_off + si] = gs + ie_s;
                 }
             }
-            tg_action = 0;  /* shrink complete */
+            if (tid == 0) tg_action = 0;  /* shrink complete */
         }
 
         /* ===== Convergence check ===== */
@@ -709,6 +802,7 @@ static id<MTLBuffer> g_buf_mol_data      = nil;
 /* Batch buffers for C1 — sized at BATCH_MAX, shared by single and batch dispatch */
 static id<MTLBuffer> g_buf_scores_batch  = nil;  /* [BATCH_MAX][MAX_NVERTS] float */
 static id<MTLBuffer> g_buf_state_batch   = nil;  /* [BATCH_MAX][6] int */
+static id<MTLBuffer> g_buf_xyz_shrink   = nil;  /* [BATCH_MAX][MAX_NVERTS][GPU_MAX_ATOMS][3] float */
 
 /* Cached simplex params */
 static int  g_simplex_ready = 0;
@@ -901,6 +995,14 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
             g_buf_mol_data = alloc_buffer(mol_size, "simplex_mol_data");
             if (!g_buf_vertex_dof || !g_buf_scores_batch || !g_buf_state_batch || !g_buf_mol_data) {
                 fprintf(stderr, "GPU-DOCK: batch buffer allocation failed\n");
+                dock_gpu_cleanup();
+                return 0;
+            }
+            /* #43: per-vertex xyz for SIMD-group parallel shrink loop */
+            size_t xyz_shrink_bytes = (size_t)BATCH_MAX * (size_t)MAX_NVERTS * (size_t)GPU_MAX_ATOMS * 3 * sizeof(float);
+            g_buf_xyz_shrink = alloc_buffer(xyz_shrink_bytes, "xyz_shrink");
+            if (!g_buf_xyz_shrink) {
+                fprintf(stderr, "GPU-DOCK: xyz_shrink buffer allocation failed\n");
                 dock_gpu_cleanup();
                 return 0;
             }
@@ -1246,6 +1348,7 @@ void dock_gpu_cleanup(void)
         g_buf_mol_data      = nil;
         g_buf_scores_batch  = nil;
         g_buf_state_batch   = nil;
+        g_buf_xyz_shrink    = nil;
         g_buf_tg_header  = nil;
         g_pso            = nil;
         g_pso_ie         = nil;
@@ -1474,6 +1577,7 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
         int dof_pad_val = dof_pad;
         [enc setBytes:&nverts_val  length:sizeof(int) atIndex:16];
         [enc setBytes:&dof_pad_val length:sizeof(int) atIndex:17];
+        [enc setBuffer:g_buf_xyz_shrink  offset:0 atIndex:18];
 
         MTLSize gridSize = MTLSizeMake(g_simplex_threads, 1, 1);
         MTLSize tgSize   = MTLSizeMake(g_simplex_threads, 1, 1);
@@ -1517,10 +1621,11 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
 void dock_gpu_simplex_cleanup(void)
 {
     @autoreleasepool {
-        g_buf_vertex_dof    = nil;
+        g_buf_vertex_dof = nil;
         g_buf_mol_data      = nil;
         g_buf_scores_batch  = nil;
         g_buf_state_batch   = nil;
+        g_buf_xyz_shrink    = nil;
         g_simplex_ready        = 0;
         g_buf_simplex_allocated = 0;
     }
@@ -1734,6 +1839,7 @@ int dock_gpu_simplex_minimize_batch(
         int dof_pad_val = dof_pad;
         [enc setBytes:&nverts_val  length:sizeof(int) atIndex:16];
         [enc setBytes:&dof_pad_val length:sizeof(int) atIndex:17];
+        [enc setBuffer:g_buf_xyz_shrink  offset:0 atIndex:18];
 
         /* Dispatch N_valid threadgroups (each with g_simplex_threads threads) */
         MTLSize gridSize = MTLSizeMake(N_valid * g_simplex_threads, 1, 1);

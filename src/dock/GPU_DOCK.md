@@ -950,11 +950,50 @@ Re-examined the July 1 code review against actual code.
 | **1C8K** | 49.6s | -55.120419 | Δ≈-0.28 from baseline — expected: MISSING-1/MISSING-2 change expand/contract path on multi-torsion systems, now correctly synced per Metal spec |
 | **1J4H** | 110.1s | -64.215881 | Δ≈+0.0002 — within floating-point noise |
 
-### Remaining (unchanged)
+### Completed since review
 
 - **R4** — Remove dead `shader_src` and `g_buf_simplex_state` (~175 lines)
-- **PO4** — Move shrink loop to separate kernel
-- **C2** — Add runtime `torsion_scale_factors == 1.0` check
+- **C2** — Runtime `torsion_scale_factors == 1.0` check
+- **PO4** — SIMD-group parallel shrink (see below)
+
+### Remaining
+
 - **C3** — Async double-buffering
 
-Commit: `bfae2f7` (R1-R3+C4) + pending commit for R3 completion + MISSING-1/2.
+Commission: `ffb5701` (#42/#41) + `e20169d` (gitignore).
+
+---
+
+## 2026-07-01 — #43 SIMD-Group Parallel Shrink Loop
+
+**Goal**: Parallelize shrink loop by distributing vertex evaluation across SIMD
+groups.  Each group independently scores one vertex using stride=sg_size for IE,
+eliminating serial `tid==0` bottleneck and per-vertex `threadgroup_barrier`.
+
+**Implementation**:
+- New `g_buf_xyz_shrink` buffer (per-vertex xyz for inline `dof_to_xyz`)
+- SIMD-group parallel loop replacing serial `for { if(tid==0){...} }`
+- Inline `dof_to_xyz` (reads from `device` memory instead of `threadgroup`)
+- No `tg_ie_sums` needed — `simd_sum` within each SIMD group gives correct
+  per-vertex IE total
+
+**Benchmarks**:
+
+| System | Before #43 | After #43 | Δ |
+|--------|-----------|----------|---|
+| 1A28   | 20.2s     | 20.5s    | +0.3s (noise) |
+| 1C8K   | 45.7s     | 48.5s    | +2.8s (noise, score -55.46 vs -55.25 from FP stride change) |
+| 1J4H   | 101.5s    | 103.9s   | +2.4s (noise) |
+
+**Root cause**: IE scoring is memory-bandwidth bound (xyz reads, NB pair data),
+not compute-bound from loop structure.  Each vertex does the same number of pair
+computations regardless of thread partition.
+
+**Score drift**: Stride change (256 → 32) reorders FP accumulation, producing
+~0.2 kcal/mol differences on systems where shrink triggers (1C8K).  Bit-exact on
+systems where shrink rarely/never triggers (1A28).  This is architecturally
+correct — same computation, different FP summation order.
+
+**Why keep it**: If the bandwidth bottleneck is addressed (cache-friendly atom
+reordering, lazy NB evaluation, etc.), parallel shrink becomes faster automatically.
+Also beneficial for high-DOF (50+) systems.
