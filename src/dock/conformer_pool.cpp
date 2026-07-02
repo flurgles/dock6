@@ -129,7 +129,14 @@ ConformerPool::add(DOCKMol* mol, Base_Score* score,
     slot.user_data          = user_data;
     slot.restrained         = restrained;
     slot.coefficient_restraint = coefficient_restraint;
-    slot.m_rmsd_ref         = rmsd_ref;
+    /* Restraint reference: use caller's rmsd_ref if provided, otherwise
+       use the internal refMol snapshot (RMSD^2 = 0 for the GPU path, which
+       matches the existing do_minimize() GPU behavior). */
+    if (restrained) {
+        slot.m_rmsd_ref = (rmsd_ref != nullptr) ? rmsd_ref : slot.m_refMol;
+    } else {
+        slot.m_rmsd_ref = nullptr;
+    }
 
     /* Allocate and build initial simplex vertices (N+1 vertices, each of length size) */
     slot.p = new float*[size + 1];
@@ -190,28 +197,108 @@ ConformerPool::idle() const
 
 
 /* ------------------------------------------------------------------ */
-/*  step — Run one pool cycle (STUB — filled in S5)                   */
+/*  step — Run one pool cycle                                          */
 /* ------------------------------------------------------------------ */
 
 int
 ConformerPool::step()
 {
-    /* TODO (S5): pack ready candidates, submit GPU dispatch,
-       distribute scores, run decision trees, check convergence. */
     if (!m_use_gpu) return 0;
+    if (m_slots.empty()) return 0;
 
-    /* Mark all INIT slots as converged as a placeholder so the caller
-       can drain the pool (scores are uninitialized, but this unblocks
-       growth-loop integration for testing). */
+    int na = m_num_atoms;
+    int* active_flags = new int[na];
+    for (int a = 0; a < na; a++) {
+        active_flags[a] = m_slots[0].m_refMol->atom_active_flags[a] ? 1 : 0;
+    }
+
+    /* Phase 1: Pack ready candidates from all active slots */
+    int total = 0;
     for (auto& slot : m_slots) {
-        if (slot.phase == SlotPhase::INIT && !slot.converged) {
-            slot.phase       = SlotPhase::CONVERGED;
-            slot.converged   = true;
+        if (slot.phase == SlotPhase::CONVERGED || slot.converged) continue;
+        total = pack_slot(slot, total, m_dispatch_capacity);
+    }
+
+    /* No GPU work pending — check convergence on remaining slots */
+    if (total == 0) {
+        delete[] active_flags;
+        int newly = 0;
+        for (auto& slot : m_slots) {
+            if (slot.converged || slot.phase == SlotPhase::CONVERGED) continue;
+            if (check_convergence(slot)) {
+                fill_slot_from_mol(slot, slot.id);
+                m_converged.push_back(&slot);
+                newly++;
+            }
+        }
+        return newly;
+    }
+
+    /* Phase 2: Submit GPU dispatch */
+    int ok = dock_gpu_batch_score_with_ie(
+        m_xyz_buffer, total, na, active_flags, m_score_buffer);
+    delete[] active_flags;
+
+    if (!ok) {
+        /* GPU scoring failed (e.g. IE data not uploaded) —
+           caller must handle fallback */
+        return 0;
+    }
+
+    /* Phase 3: Distribute scores back to each slot */
+    int newly_converged = 0;
+    int off = 0;
+    for (auto& slot : m_slots) {
+        if (slot.phase == SlotPhase::CONVERGED || slot.converged) continue;
+
+        int ncan = 0;
+        switch (slot.phase) {
+        case SlotPhase::INIT:    ncan = slot.size + 1; break;
+        case SlotPhase::REFLECT: ncan = 4;             break;
+        case SlotPhase::SHRINK:  ncan = slot.size;     break;
+        default: break;
+        }
+        if (ncan == 0) continue;
+
+        /* Add restraint energy — same Econstraint per slot per iteration */
+        if (slot.restrained) {
+            float Econstraint = slot.coefficient_restraint *
+                m_minimizer->calc_active_rmsd2(*slot.m_rmsd_ref, *slot.m_refMol);
+            for (int ci = 0; ci < ncan; ci++) {
+                m_score_buffer[off + ci] += Econstraint;
+            }
+        }
+
+        /* Sentinel check: outside-grid poses can't be scored */
+        bool sentinel_hit = false;
+        for (int ci = 0; ci < ncan; ci++) {
+            if (m_score_buffer[off + ci] < -1.0e30f) {
+                sentinel_hit = true;
+                break;
+            }
+        }
+        if (sentinel_hit) {
+            /* Conformer outside scoring grid — mark converged and move on */
+            slot.converged = true;
+            slot.phase     = SlotPhase::CONVERGED;
             m_converged.push_back(&slot);
+            newly_converged++;
+            off += ncan;
+            continue;
+        }
+
+        /* Run decision tree */
+        evaluate_slot(slot, m_score_buffer + off, ncan);
+        off += ncan;
+
+        if (check_convergence(slot)) {
+            fill_slot_from_mol(slot, slot.id);
+            m_converged.push_back(&slot);
+            newly_converged++;
         }
     }
 
-    return (int)m_converged.size();
+    return newly_converged;
 }
 
 

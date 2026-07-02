@@ -12,6 +12,7 @@
 #include "hungarian.h"
 #include "master_score.h"
 #include "simplex.h"
+#include "conformer_pool.h"
 #include "trace.h"
 class Bump_Filter;
 class Master_Score;
@@ -1444,36 +1445,75 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                 std::vector<int> cb_ok(exp_seeds.size(), 0);
                 // 0 = clash fail, 1 = bump fail, 2 = both passed
 
-                enable_gpu_batch_mode(true);
-                for (k = 0; ((k < exp_seeds.size())&&(j==seeds.size()-1)); k++) {
+                bool use_gpu = dock_gpu_is_active();
+                ConformerPool pool(dock_gpu_recommended_batch_size(),
+                                   &simplex, use_gpu);
+                bool last_seed_level = (j == seeds.size() - 1);
+
+                for (k = 0; ((k < exp_seeds.size())&&last_seed_level); k++) {
 
                     // sudipto & trent - 11-14-08 - save current conf before minimizing
                     CONFORMER conf_before_min = exp_seeds[k];
                     b4min_seeds.push_back(conf_before_min);
 
-                    if (segment_clash_check(exp_seeds[k].structure, i, l)) {    // i+1
-                    // Note: clash-checking not compatible with ir_resecore
-                        
+                    if (segment_clash_check(exp_seeds[k].structure, i, l)) {
+
                         if (bump.check_growth_bumps(exp_seeds[k].structure)) {
-                        // Note: bump-checking not compatible with ir_resecore
 
                             cb_ok[k] = 2;
 
-                             //print location in growth loop and minimize conformer 
-                           //POSSIBLE PLACE TO  REINITIALIZE THE ANCHORS  
-                             if (!simplex.use_min_flex_growth_ramp){
-                                   simplex.minimize_flexible_growth(exp_seeds[k].structure, score, bond_tors_vectors); } 
-                             else {
-                                   simplex.minimize_flexible_ramp_growth(exp_seeds[k].structure, score, bond_tors_vectors, i, num_layers); }
+                            if (use_gpu) {
+                                /* Build initial DOF vertex (same layout as
+                                   minimize_flexible_growth) */
+                                FLOATVec vertex;
+                                for (int iv = 0; iv < 6; iv++) vertex.push_back(0.0f);
+                                simplex.id_torsions(exp_seeds[k].structure, vertex);
+
+                                /* Backpressure: drain pool before adding if full */
+                                while (pool.active_count() >= pool.capacity()) {
+                                    pool.step();
+                                    pool.poll();
+                                }
+
+                                pool.add(&exp_seeds[k].structure,
+                                         score.primary_score,
+                                         vertex,
+                                         simplex.flex_min_trans_step_size,
+                                         simplex.flex_min_rot_step_size,
+                                         simplex.flex_min_tors_step_size,
+                                         simplex.flex_min_cycle_converge,
+                                         simplex.flex_min_max_iterations,
+                                         simplex.skip_internal_energy,
+                                         simplex.restrained_min,
+                                         simplex.coefficient_restraint,
+                                         nullptr,
+                                         reinterpret_cast<void*>((intptr_t)k));
+                            } else {
+                                /* CPU fallback: per-conformer minimization */
+                                if (!simplex.use_min_flex_growth_ramp) {
+                                    simplex.minimize_flexible_growth(
+                                        exp_seeds[k].structure, score,
+                                        bond_tors_vectors);
+                                } else {
+                                    simplex.minimize_flexible_ramp_growth(
+                                        exp_seeds[k].structure, score,
+                                        bond_tors_vectors,
+                                        i, num_layers);
+                                }
+                            }
                         } else {
                             cb_ok[k] = 1;
                         }
                     }
                 } // First pass over new conformers (k)
 
-                // Flush all queued GPU batch work — all minimized mols are now updated
-                flush_gpu_batch(simplex);
-                enable_gpu_batch_mode(false);
+                // Drain pool — all mols updated in place by fill_slot_from_mol
+                if (use_gpu && last_seed_level) {
+                    while (!pool.idle()) {
+                        pool.step();
+                        pool.poll();
+                    }
+                }
 
                 // Second pass: score and prune
                 for (k = 0; ((k < exp_seeds.size())&&(j==seeds.size()-1)); k++) {

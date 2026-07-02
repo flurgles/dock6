@@ -20,7 +20,7 @@ Simplex_Minimizer::initialize()
     srand(random_seed);
 
 }
-/* enable_gpu_batch_mode / flush_gpu_batch moved to simplex_stubs.cpp */
+/* enable_gpu_batch_mode / flush_gpu_batch removed in P2 — ConformerPool manages GPU work */
 
 
 float
