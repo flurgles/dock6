@@ -196,6 +196,9 @@ class Minimizer {
     float           calc_active_rmsd2(DOCKMol &, DOCKMol &);
     void            vector_to_dockmol(DOCKMol &, FLOATVec &);
 
+    // Scale a normalised vertex vector by the step sizes.
+    void            scale_vector(FLOATVec &, FLOATVec &, float, float, float);
+
 
   protected:
 
@@ -219,9 +222,6 @@ class Minimizer {
     bool            gpu_batch_eval_scores(Base_Score &, DOCKMol &, DOCKMol &,
                                            const std::vector<FLOATVec> &,
                                            float, float, float, float, float *);
-
-    // Scale a normalised vertex vector by the step sizes.
-    void            scale_vector(FLOATVec &, FLOATVec &, float, float, float);
 
 };
 

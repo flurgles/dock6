@@ -116,6 +116,8 @@ ConformerPool::add(DOCKMol* mol, Base_Score* score,
     slot.size               = size;
     slot.iteration          = 0;
     slot.converged          = false;
+    slot.ihi                = 0;
+    slot.ilo                = 0;
     slot.trans_step_size    = trans_step_size;
     slot.rot_step_size      = rot_step_size;
     slot.tors_step_size     = tors_step_size;
@@ -213,17 +215,105 @@ ConformerPool::step()
 
 
 /* ------------------------------------------------------------------ */
-/*  Private stubs (filled in S3, S4, S5)                              */
+/*  pack_vertex — Single-vertex dof→xyz pipeline                      */
+/* ------------------------------------------------------------------ */
+
+void
+ConformerPool::pack_vertex(SimplexSlot& slot, const float* vertex, int idx)
+{
+    int na = m_num_atoms;
+    float* buf = m_xyz_buffer + idx * na * 3;
+
+    /* Restore coordinates from reference molecule */
+    copy_crds(*slot.m_tmpMol, *slot.m_refMol);
+
+    /* Convert float* vertex to FLOATVec and apply step sizes */
+    FLOATVec vertex_vec(slot.size);
+    for (int j = 0; j < slot.size; j++) vertex_vec[j] = vertex[j];
+
+    FLOATVec new_vec;
+    m_minimizer->scale_vector(new_vec, vertex_vec,
+                               slot.trans_step_size,
+                               slot.rot_step_size,
+                               slot.tors_step_size);
+
+    /* Convert scaled DOF vector to molecule coordinates */
+    m_minimizer->vector_to_dockmol(*slot.m_tmpMol, new_vec);
+
+    /* Extract xyz into flat buffer (row-major: candidate × atom × xyz) */
+    for (int a = 0; a < na; a++) {
+        buf[a * 3]     = slot.m_tmpMol->x[a];
+        buf[a * 3 + 1] = slot.m_tmpMol->y[a];
+        buf[a * 3 + 2] = slot.m_tmpMol->z[a];
+    }
+}
+
+
+/* ------------------------------------------------------------------ */
+/*  pack_slot — Pack all ready candidates for one slot into xyz buffer */
 /* ------------------------------------------------------------------ */
 
 int
 ConformerPool::pack_slot(SimplexSlot& slot, int offset, int capacity)
 {
-    /* TODO (S3): copy_crds + scale_vector + vector_to_dockmol + xyz extract */
-    (void)slot;
-    (void)offset;
-    (void)capacity;
-    return offset;
+    int N = slot.size;
+    (void)capacity;  /* caller guarantees enough space */
+
+    switch (slot.phase) {
+
+    case SlotPhase::INIT:
+        /* Pack all N+1 initial vertices */
+        for (int vi = 0; vi < N + 1; vi++) {
+            pack_vertex(slot, slot.p[vi], offset + vi);
+        }
+        return offset + N + 1;
+
+    case SlotPhase::REFLECT: {
+        /* Pack 4 speculative candidates:
+             0: reflect_v (pr)
+             1: expand   = (1+alpha)*pr - alpha*pbar
+             2: contract_cA = beta*pr + (1-beta)*pbar
+             3: contract_cB = beta*p[ihi] + (1-beta)*pbar
+        */
+        const float alpha = 1.0f, beta = 0.5f;
+        float* pbar = slot.centroid.data();
+        float* pr   = slot.reflect_v.data();
+        float** p   = slot.p;
+        int ihi     = slot.ihi;
+
+        /* Candidate 0: reflected point */
+        pack_vertex(slot, pr, offset + 0);
+
+        /* Candidates 1-3 computed on the fly */
+        FLOATVec expand_v(N), cA_v(N), cB_v(N);
+        for (int j = 0; j < N; j++) {
+            expand_v[j] = (1.0f + alpha) * pr[j] - alpha * pbar[j];
+            cA_v[j]     = beta * pr[j] + (1.0f - beta) * pbar[j];
+            cB_v[j]     = beta * p[ihi][j] + (1.0f - beta) * pbar[j];
+        }
+        pack_vertex(slot, expand_v.data(), offset + 1);
+        pack_vertex(slot, cA_v.data(),     offset + 2);
+        pack_vertex(slot, cB_v.data(),     offset + 3);
+
+        return offset + 4;
+    }
+
+    case SlotPhase::SHRINK: {
+        /* Pack N candidates: all N+1 vertices except p[ilo] */
+        int ilo = slot.ilo;
+        int ci = 0;
+        for (int vi = 0; vi < N + 1; vi++) {
+            if (vi == ilo) continue;
+            pack_vertex(slot, slot.p[vi], offset + ci);
+            ci++;
+        }
+        return offset + ci;
+    }
+
+    case SlotPhase::CONVERGED:
+    default:
+        return offset;
+    }
 }
 
 

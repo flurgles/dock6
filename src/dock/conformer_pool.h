@@ -66,12 +66,16 @@ struct SimplexSlot {
     int            id;                 // slot index (0 .. capacity-1)
     SlotPhase      phase;
 
-    // Simplex vertices and scores
-    FLOATVec*      p;                  // vertices[0..N][DOF] — flat: N+1 vectors of length size
-    float*         y;                  // scores[0..N]
+    // Simplex vertices and scores (same layout as simplex.cpp do_minimize())
+    float**        p;                  // p[0..N][0..DOF-1] — N+1 vertex arrays, each length size
+    float*         y;                  // y[0..N] — scores
     int            size;               // N = degrees of freedom; num vertices = N+1
     int            iteration;
     bool           converged;
+
+    // Vertex rankings (set by evaluate_slot, used by pack_slot)
+    int            ihi;                // index of highest (worst)  score
+    int            ilo;                // index of lowest  (best)  score
 
     // Working buffers (pre-allocated per slot)
     FLOATVec       centroid;           // pbar — dimension = size
@@ -162,6 +166,8 @@ private:
     int                     m_batch_max;
     Minimizer*              m_minimizer;        // shared for dof→xyz
     bool                    m_use_gpu;
+    int                     m_num_atoms;   // ligand atom count, set on first add()
+    int                     m_dof;          // degrees of freedom, set on first add()
 
     std::vector<SimplexSlot>  m_slots;
     std::vector<SimplexSlot*> m_converged;       // converged slots pending poll()
@@ -177,6 +183,7 @@ private:
 
     // Internal helpers
     int  pack_slot(SimplexSlot& slot, int offset, int capacity);
+    void pack_vertex(SimplexSlot& slot, const float* vertex, int idx);
     void evaluate_slot(SimplexSlot& slot, const float* scores, int count);
     bool fill_slot_from_mol(SimplexSlot& slot, int slot_idx);
     bool check_convergence(SimplexSlot& slot);
