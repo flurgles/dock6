@@ -28,9 +28,9 @@ GPU_BACKEND= cpu
 # LOAD is the command to invoke the linker
 
 CC=          clang
-CFLAGS=      -O3 -pipe -std=c99 -D_DARWIN_C_SOURCE -flto -mcpu=native -ffast-math
+CFLAGS=      -O3 -pipe -std=c99 -D_DARWIN_C_SOURCE -mcpu=native -ffast-math
 CXX=         clang++
-CXXFLAGS=    -O3 -pipe -std=c++11 -flto -mcpu=native -ffast-math
+CXXFLAGS=    -O3 -pipe -std=c++11 -mcpu=native -ffast-math
 DOCK_SUFFIX= .clang.cpu
 FC=          gfortran
 FFLAGS=      -O2 -fno-automatic -fno-second-underscore -std=legacy

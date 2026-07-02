@@ -55,6 +55,34 @@ void dock_gpu_cleanup(void)
 {
 }
 
+int dock_gpu_simplex_minimize_batch(
+    int N,
+    const float *ref_xyz,
+    const int *active_flags,
+    int num_atoms, int num_active_atoms,
+    int num_torsions,
+    const int *torsion_a1,
+    const int *torsion_a2,
+    const int *torsion_a3,
+    const int *torsion_a4,
+    const int *child_idx_flat,
+    const int *child_starts,
+    const int *child_counts,
+    const int *torsion_scale_factors,
+    float *dof_batch,
+    float *scores_batch,
+    int *state_batch,
+    int N_valid,
+    int dof_size, int nverts,
+    int max_iterations,
+    float score_converge,
+    float trans_step_size,
+    float rot_step_size,
+    float tors_step_size)
+{
+    return 0;
+}
+
 int dock_gpu_is_active(void)
 {
     return 0;
@@ -103,4 +131,11 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
 
 void dock_gpu_simplex_cleanup(void)
 {
+}
+
+
+void dock_gpu_monitor(int layer, int segment, int total_segments)
+{
+    (void)layer; (void)segment; (void)total_segments;
+    /* no-op: GPU not available */
 }

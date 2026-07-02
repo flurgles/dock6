@@ -1623,6 +1623,9 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
             confs_pruned_bump_filter = 0;
             confs_pruned_clustered = 0;
 
+        /* Report GPU thermal + dispatch trend after each segment (requires -v) */
+        if (verbose) dock_gpu_monitor(i, l, (int)layers[i].segments.size());
+
         }  // End loop over segments (l)
 
     }   // End loop over layers (i)

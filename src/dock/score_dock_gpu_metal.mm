@@ -27,6 +27,7 @@ Two kernels:
 #include <string.h>
 #include <math.h>
 #include <float.h>
+#include <iostream>
 #include "score_dock_gpu.h"
 #include "score_dock_gpu_metal.h"
 
@@ -61,6 +62,8 @@ constexpr sampler grid_sampler(filter::linear, address::clamp_to_edge);
  * a limitation for your target systems. */
 #define DOF_MAX (6 + MAX_TORSIONS)
 #define MAX_SIMPLEX_THREADS 256
+#define GPU_MAX_ATOMS MAX_ATOMS
+#define MAX_NVERTS (DOF_MAX + 1)
 
 struct GridParams {
     float origin_x, origin_y, origin_z;
@@ -165,6 +168,106 @@ kernel void batch_score_with_ie_kernel(
         }
     }
     out_scores[tid] = grid_score + ie_score;
+}
+
+/* ============ Atom-parallel batch scoring kernel ============
+ * Each threadgroup handles one pose. Threads are atom-parallel:
+ * each thread scores 1-2 atoms. Grid contribution is skipped if
+ * atom is OOB; IE always runs via per-atom pair lists. Single-phase,
+ * no sentinel, one barrier (cross-SIMD reduction). Threadgroup size = 64.
+ *
+ * Buffer layout (differs from batch_score_with_ie_kernel):
+ *   buf  0: xyz [N][num_atoms][3]
+ *   tex 0-2: grid_avdw, grid_bvdw, grid_es
+ *   buf  1: vdwA
+ *   buf  2: vdwB
+ *   buf  3: charges
+ *   buf  4: GridParams (constant)
+ *   buf  5: num_atoms (constant)
+ *   buf  6: active_flags
+ *   buf  7: ie_vdwA
+ *   buf  8: pair_starts  (per-atom pair list prefix-sum)
+ *   buf  9: pair_indices (per-atom pair list flattened indices)
+ *   buf 10: total_pairs (constant, for bounds check)
+ *   buf 11: ie_soft_delta (constant)
+ *   buf 12: ie_cutoff_sq (constant)
+ *   buf 13: out_scores [N]
+ */
+kernel void score_batch_kernel_atom_parallel(
+    device const float*    xyz            [[buffer(0)]],
+    texture3d<float>       grid_avdw      [[texture(0)]],
+    texture3d<float>       grid_bvdw      [[texture(1)]],
+    texture3d<float>       grid_es        [[texture(2)]],
+    device const float*    vdwA           [[buffer(1)]],
+    device const float*    vdwB           [[buffer(2)]],
+    device const float*    charges        [[buffer(3)]],
+    constant GridParams&   gp             [[buffer(4)]],
+    constant int&          num_atoms      [[buffer(5)]],
+    device const int*      active_flags   [[buffer(6)]],
+    device const float*    ie_vdwA        [[buffer(7)]],
+    device const int*      pair_starts    [[buffer(8)]],
+    device const int*      pair_indices   [[buffer(9)]],
+    constant int&          total_pairs    [[buffer(10)]],
+    constant float&        ie_soft_delta  [[buffer(11)]],
+    constant float&        ie_cutoff_sq   [[buffer(12)]],
+    device float*          out_scores     [[buffer(13)]],
+    uint candidate [[threadgroup_position_in_grid]],
+    uint tid       [[thread_position_in_threadgroup]],
+    uint tg_size   [[threads_per_threadgroup]])
+{
+    int stride = candidate * num_atoms * 3;
+    uint simd_idx = tid / 32;
+    uint num_simd = (tg_size + 31) / 32;
+
+    float total = 0.0;
+    for (uint a = tid; a < num_atoms; a += tg_size) {
+        if (!active_flags[a]) continue;
+
+        float x = xyz[stride + a*3];
+        float y = xyz[stride + a*3 + 1];
+        float z = xyz[stride + a*3 + 2];
+
+        // Grid score — skip if this atom is outside the grid
+        if (inside_grid(gp, x, y, z)) {
+            float vdw  = trilinear(grid_avdw, gp, x, y, z);
+            float bvdw = trilinear(grid_bvdw, gp, x, y, z);
+            float es   = trilinear(grid_es, gp, x, y, z);
+            total += vdwA[a]*vdw - vdwB[a]*bvdw + charges[a]*es;
+        }
+
+        // IE score — always runs, doesn't depend on grid position
+        int start = pair_starts[a];
+        int end   = pair_starts[a + 1];
+        for (int i = start; i < end; i++) {
+            int a2 = pair_indices[i];
+            float dx = xyz[stride + a*3]   - xyz[stride + a2*3];
+            float dy = xyz[stride + a*3+1] - xyz[stride + a2*3+1];
+            float dz = xyz[stride + a*3+2] - xyz[stride + a2*3+2];
+            float r2 = dx*dx + dy*dy + dz*dz;
+            if (r2 < ie_cutoff_sq) {
+                float r2eff = r2 + ie_soft_delta;
+                float denom = r2eff*r2eff*r2eff;
+                total += (ie_vdwA[a]*ie_vdwA[a2]) / (denom*denom);
+            }
+        }
+    }
+
+    // Cross-SIMD reduction
+    total = simd_sum(total);
+    threadgroup float tg_partial[8];
+    if (simd_is_first()) {
+        tg_partial[simd_idx] = total;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // tid == 0 final serial sum (NOT simd_sum — uninitialized lanes)
+    if (tid == 0) {
+        float final = 0.0;
+        for (uint i = 0; i < num_simd; i++) {
+            final += tg_partial[i];
+        }
+        out_scores[candidate] = final;
+    }
 }
 
 struct MolData {
@@ -768,7 +871,8 @@ static id<MTLDevice>               g_device     = nil;
 static id<MTLCommandQueue>         g_cmdq       = nil;
 static id<MTLComputePipelineState> g_pso        = nil;  /* grid-only kernel */
 static id<MTLComputePipelineState> g_pso_ie    = nil;  /* grid+IE kernel */
-static id<MTLComputePipelineState> g_pso_simplex = nil; /* simplex kernel */
+static id<MTLComputePipelineState> g_pso_simplex = nil;      /* simplex kernel */
+static id<MTLComputePipelineState> g_pso_atom_parallel = nil; /* atom-parallel scoring kernel */
 #define MAX_SIMPLEX_THREADS_C 256
 static int g_simplex_threads         = 128;  /* threads per dispatch for parallel IE */
 static int g_simplex_simd_width      = 32;   /* SIMD group width (device-dependent) */
@@ -784,8 +888,10 @@ static id<MTLTexture> g_tex_grid_es    = nil;
 static id<MTLBuffer> g_buf_vdwA       = nil;
 static id<MTLBuffer> g_buf_vdwB       = nil;
 static id<MTLBuffer> g_buf_charges    = nil;
-static id<MTLBuffer> g_buf_ie_vdwA    = nil;
-static id<MTLBuffer> g_buf_nb_int     = nil;
+static id<MTLBuffer> g_buf_ie_vdwA      = nil;
+static id<MTLBuffer> g_buf_nb_int       = nil;
+static id<MTLBuffer> g_buf_pair_starts  = nil;  /* int pair_starts[num_atoms + 1] */
+static id<MTLBuffer> g_buf_pair_indices = nil;  /* int pair_indices[total_pairs] */
 static id<MTLBuffer> g_buf_xyz        = nil;
 static id<MTLBuffer> g_buf_scores     = nil;
 /* Persistent constant buffers (allocated once, reused per dispatch) */
@@ -841,6 +947,27 @@ static void write_iep(float sd, float csq, int np) {
 static void write_nnp(int n) {
     memcpy([g_buf_nnp contents], &n, sizeof(int));
 }
+
+/* ---- Profiling helpers (Metal-only, for dev use) ---- */
+static uint64_t prof_tic(void) {
+    return clock_gettime_nsec_np(CLOCK_MONOTONIC);
+}
+static void prof_toc(const char *label, uint64_t t0) {
+#if 0
+    uint64_t dt = clock_gettime_nsec_np(CLOCK_MONOTONIC) - t0;
+    NSLog(@"GPU-DOCK: [PROF] %s = %llu us", label, dt / 1000);
+#endif
+}
+/* Dispatch counters */
+static int  prof_dispatch_count  = 0;
+static int  prof_total_conformers = 0;
+
+/* Rolling GPU wait-time buffer for dock_gpu_monitor() */
+#define GPU_WAIT_BUF_SIZE 20
+static uint64_t g_gpu_wait_us[GPU_WAIT_BUF_SIZE] = {0};
+static int g_gpu_wait_idx  = 0;   /* next slot index (mod buffer size) */
+static int g_gpu_wait_total = 0;  /* total measurements taken */
+/* ----------------------------------------------------- */
 
 static id<MTLBuffer> alloc_buffer(NSUInteger size, const char* label)
 {
@@ -954,6 +1081,21 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
         g_pso_simplex = [g_device newComputePipelineStateWithFunction:func_simplex error:&err];
         if (!g_pso_simplex) {
             fprintf(stderr, "GPU-DOCK: simplex PSO creation failed: %s\n",
+                    [[err localizedDescription] UTF8String]);
+            dock_gpu_cleanup();
+            return 0;
+        }
+
+        /* Compile atom-parallel batch scoring kernel */
+        id<MTLFunction> func_ap = [lib newFunctionWithName:@"score_batch_kernel_atom_parallel"];
+        if (!func_ap) {
+            fprintf(stderr, "GPU-DOCK: kernel 'score_batch_kernel_atom_parallel' not found\n");
+            dock_gpu_cleanup();
+            return 0;
+        }
+        g_pso_atom_parallel = [g_device newComputePipelineStateWithFunction:func_ap error:&err];
+        if (!g_pso_atom_parallel) {
+            fprintf(stderr, "GPU-DOCK: atom-parallel PSO creation failed: %s\n",
                     [[err localizedDescription] UTF8String]);
             dock_gpu_cleanup();
             return 0;
@@ -1079,6 +1221,8 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
         g_buf_charges = alloc_buffer(sizeof(float) * GPU_MAX_ATOMS, "charges");
         g_buf_ie_vdwA = alloc_buffer(sizeof(float) * GPU_MAX_ATOMS, "ie_vdwA");
         g_buf_nb_int  = alloc_buffer(sizeof(int) * GPU_MAX_NB_PAIRS * 2, "nb_int");
+        g_buf_pair_starts  = alloc_buffer(sizeof(int) * (GPU_MAX_ATOMS + 1), "pair_starts");
+        g_buf_pair_indices = alloc_buffer(sizeof(int) * GPU_MAX_NB_PAIRS, "pair_indices");
 
         /* Persistent constants buffers */
         g_buf_params = alloc_buffer(sizeof(DockGridParams), "params");
@@ -1094,6 +1238,7 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
 
         if (!g_buf_vdwA || !g_buf_vdwB || !g_buf_charges ||
             !g_buf_ie_vdwA || !g_buf_nb_int ||
+            !g_buf_pair_starts || !g_buf_pair_indices ||
             !g_buf_xyz || !g_buf_scores ||
             !g_buf_params || !g_buf_natoms || !g_buf_iep || !g_buf_nnp ||
             !g_buf_active_flags || !g_buf_tg_header) {
@@ -1170,6 +1315,47 @@ int dock_gpu_set_ligand_ie(const float *ie_vdwA, const float *ie_vdwB,
 
         size_t nb_bytes = sizeof(int) * (size_t)num_nb_pairs * 2;
         memcpy([g_buf_nb_int contents], nb_int_pairs, nb_bytes);
+
+        /* Build per-atom pair lists: pair_starts[num_atoms+1] + pair_indices[total_pairs]
+         * from the flat nb_int[] array. pair_starts[a] = start offset in pair_indices
+         * for atom a's pairs. pair_starts[a+1] - pair_starts[a] = count.
+         * This eliminates the O(num_atoms × num_pairs) stride loop in IE scoring. */
+        {
+            int na = g_num_atoms;
+            int *counts = (int *)calloc(na, sizeof(int));
+            int *starts = (int *)[g_buf_pair_starts contents];
+
+            /* Phase 1: count pairs per atom */
+            for (int p = 0; p < num_nb_pairs; p++) {
+                int a1 = nb_int_pairs[p*2];
+                if (a1 >= 0 && a1 < na) counts[a1]++;
+            }
+
+            /* Phase 2: prefix sum into starts + save offsets for insertion */
+            int *offsets = (int *)malloc(na * sizeof(int));
+            int total = 0;
+            for (int a = 0; a < na; a++) {
+                starts[a] = total;
+                offsets[a] = total;
+                total += counts[a];
+            }
+            starts[na] = total;  /* sentinel end */
+            free(counts);
+
+            /* Phase 3: fill pair_indices using saved offsets */
+            int *pair_indices = (int *)[g_buf_pair_indices contents];
+            for (int p = 0; p < num_nb_pairs; p++) {
+                int a1 = nb_int_pairs[p*2];
+                int a2 = nb_int_pairs[p*2+1];
+                if (a1 >= 0 && a1 < na) {
+                    pair_indices[offsets[a1]++] = a2;
+                }
+            }
+            free(offsets);
+
+            NSLog(@"GPU-DOCK: per-atom pair lists built: %d total pairs for %d atoms",
+                  total, na);
+        }
 
         g_num_nb_pairs   = num_nb_pairs;
         g_set_ie_num_nb_pairs = num_nb_pairs;
@@ -1269,45 +1455,48 @@ int dock_gpu_batch_score_with_ie(const float *xyz, int num_poses, int num_atoms,
         return 0;
     }
     @autoreleasepool {
-
         size_t xyz_bytes = sizeof(float) * (size_t)num_poses * (size_t)num_atoms * 3;
         memcpy([g_buf_xyz contents], xyz, xyz_bytes);
 
-        id<MTLCommandBuffer>  cmdbuf = [g_cmdq commandBuffer];
-        cmdbuf.label = @"DockBatchScoreIE";
-
-        id<MTLComputeCommandEncoder> enc = [cmdbuf computeCommandEncoder];
-        enc.label = @"BatchScoreIEKernel";
-
-        [enc setComputePipelineState:g_pso_ie];
-
-        /* Bind buffers — must match shader buffer layout */
-        [enc setBuffer:g_buf_xyz        offset:0 atIndex:0];
-        /* Grid data via 3D textures for hardware trilinear filtering */
-        [enc setTexture:g_tex_grid_avdw  atIndex:0];
-        [enc setTexture:g_tex_grid_bvdw  atIndex:1];
-        [enc setTexture:g_tex_grid_es    atIndex:2];
-        [enc setBuffer:g_buf_vdwA       offset:0 atIndex:1];
-        [enc setBuffer:g_buf_vdwB       offset:0 atIndex:2];
-        [enc setBuffer:g_buf_charges    offset:0 atIndex:3];
-        [enc setBuffer:g_buf_params     offset:0 atIndex:4];
-        write_natoms(num_atoms);
-        [enc setBuffer:g_buf_natoms    offset:0 atIndex:5];
-        [enc setBuffer:g_buf_scores    offset:0 atIndex:6];
-        [enc setBuffer:g_buf_ie_vdwA   offset:0 atIndex:7];
-        [enc setBuffer:g_buf_nb_int    offset:0 atIndex:8];
-        write_iep(g_ie_soft_delta, g_ie_cutoff_sq, g_num_nb_pairs);
-        [enc setBuffer:g_buf_iep       offset:0 atIndex:9];
-        write_nnp(g_num_nb_pairs);
-        [enc setBuffer:g_buf_nnp       offset:0 atIndex:10];
+        /* Upload active_flags if provided */
         if (active_flags) {
             memcpy([g_buf_active_flags contents], active_flags, sizeof(int) * (size_t)num_atoms);
         }
-        [enc setBuffer:g_buf_active_flags offset:0 atIndex:11];
 
-        MTLSize threadsPerGrid  = MTLSizeMake(num_poses, 1, 1);
-        NSUInteger tg = MIN(g_pso_ie.maxTotalThreadsPerThreadgroup, (NSUInteger)256);
+        id<MTLCommandBuffer>  cmdbuf = [g_cmdq commandBuffer];
+        cmdbuf.label = @"DockBatchScoreAP";
+
+        id<MTLComputeCommandEncoder> enc = [cmdbuf computeCommandEncoder];
+        enc.label = @"BatchScoreAPKernel";
+
+        [enc setComputePipelineState:g_pso_atom_parallel];
+
+        /* Bind buffers — must match score_batch_kernel_atom_parallel layout */
+        [enc setBuffer:g_buf_xyz         offset:0 atIndex:0];
+        /* Grid textures (hardware trilinear filtering) */
+        [enc setTexture:g_tex_grid_avdw   atIndex:0];
+        [enc setTexture:g_tex_grid_bvdw   atIndex:1];
+        [enc setTexture:g_tex_grid_es     atIndex:2];
+        [enc setBuffer:g_buf_vdwA        offset:0 atIndex:1];
+        [enc setBuffer:g_buf_vdwB        offset:0 atIndex:2];
+        [enc setBuffer:g_buf_charges     offset:0 atIndex:3];
+        [enc setBuffer:g_buf_params      offset:0 atIndex:4];
+        write_natoms(num_atoms);
+        [enc setBuffer:g_buf_natoms      offset:0 atIndex:5];
+        [enc setBuffer:g_buf_active_flags offset:0 atIndex:6];
+        [enc setBuffer:g_buf_ie_vdwA     offset:0 atIndex:7];
+        [enc setBuffer:g_buf_pair_starts offset:0 atIndex:8];
+        [enc setBuffer:g_buf_pair_indices offset:0 atIndex:9];
+        /* IE constants via inline setBytes (no buffer allocation needed) */
+        [enc setBytes:&g_num_nb_pairs  length:sizeof(int)   atIndex:10];
+        [enc setBytes:&g_ie_soft_delta length:sizeof(float)  atIndex:11];
+        [enc setBytes:&g_ie_cutoff_sq  length:sizeof(float)  atIndex:12];
+        [enc setBuffer:g_buf_scores      offset:0 atIndex:13];
+
+        /* Atom-parallel dispatch: 1 threadgroup per pose, 64 threads each */
+        NSUInteger tg = 64;
         MTLSize threadgroupSize = MTLSizeMake(tg, 1, 1);
+        MTLSize threadsPerGrid  = MTLSizeMake((NSUInteger)num_poses * tg, 1, 1);
 
         [enc dispatchThreads:threadsPerGrid
            threadsPerThreadgroup:threadgroupSize];
@@ -1316,7 +1505,7 @@ int dock_gpu_batch_score_with_ie(const float *xyz, int num_poses, int num_atoms,
         [cmdbuf waitUntilCompleted];
 
         if (cmdbuf.error) {
-            NSLog(@"GPU-DOCK: command buffer error (IE): %@", cmdbuf.error);
+            NSLog(@"GPU-DOCK: command buffer error (AP): %@", cmdbuf.error);
             return 0;
         }
     }
@@ -1330,6 +1519,11 @@ int dock_gpu_batch_score_with_ie(const float *xyz, int num_poses, int num_atoms,
 void dock_gpu_cleanup(void)
 {
     @autoreleasepool {
+        NSLog(@"GPU-DOCK: [PROF] total dispatches=%d conformers=%d", 
+              prof_dispatch_count, prof_total_conformers);
+        if (prof_dispatch_count > 0)
+            NSLog(@"GPU-DOCK: [PROF] avg batch size=%.1f",
+                  (float)prof_total_conformers / (float)prof_dispatch_count);
         g_buf_grid_avdw  = nil;
         g_buf_grid_bvdw  = nil;
         g_buf_grid_es    = nil;
@@ -1339,8 +1533,10 @@ void dock_gpu_cleanup(void)
         g_buf_vdwA       = nil;
         g_buf_vdwB       = nil;
         g_buf_charges    = nil;
-        g_buf_ie_vdwA    = nil;
-        g_buf_nb_int     = nil;
+        g_buf_ie_vdwA      = nil;
+        g_buf_nb_int       = nil;
+        g_buf_pair_starts  = nil;
+        g_buf_pair_indices = nil;
         g_buf_active_flags = nil;
         g_buf_xyz        = nil;
         g_buf_scores     = nil;
@@ -1350,9 +1546,10 @@ void dock_gpu_cleanup(void)
         g_buf_state_batch   = nil;
         g_buf_xyz_shrink    = nil;
         g_buf_tg_header  = nil;
-        g_pso            = nil;
-        g_pso_ie         = nil;
-        g_pso_simplex    = nil;
+        g_pso               = nil;
+        g_pso_ie            = nil;
+        g_pso_simplex       = nil;
+        g_pso_atom_parallel = nil;
         g_cmdq           = nil;
         g_device         = nil;
         g_initialized    = 0;
@@ -1408,7 +1605,14 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
                                float rot_step_size,
                                float tors_step_size)
 {
-    if (!g_initialized || !g_pso_simplex || !g_buf_simplex_allocated) return 0;
+    static int _gpu_total_calls = 0;
+    _gpu_total_calls++;
+    if (!g_initialized || !g_pso_simplex || !g_buf_simplex_allocated) {
+        static int _fail_count = 0;
+        if (++_fail_count == 1) fprintf(stderr, "[GPU_FAIL] init/pso/buf not ready (call %d)\n", _gpu_total_calls);
+        if (_fail_count % 1000 == 0) fprintf(stderr, "[GPU_FAIL] %d failures at call %d\n", _fail_count, _gpu_total_calls);
+        return 0;
+    }
 
     @autoreleasepool {
         int i, j;
@@ -1531,6 +1735,15 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
         }
         statep[5] = 0;       /* error code */
 
+        uint64_t t_total = prof_tic();
+        uint64_t t_setup = prof_tic();
+
+        /* ---- Counters to identify why GPU fails ---- */
+        static int _entered_gpu_func = 0;
+        _entered_gpu_func++;
+        static int _gpu_ret0_count = 0;
+        static int _gpu_success_count = 0;
+
         /* ---- Encode one dispatch (batch_id=0, single threadgroup) ---- */
         id<MTLCommandBuffer> cmdbuf = [g_cmdq commandBuffer];
         cmdbuf.label = @"SimplexFullRun";
@@ -1584,8 +1797,19 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
         [enc dispatchThreads:gridSize threadsPerThreadgroup:tgSize];
         [enc endEncoding];
 
+        prof_toc("setup (single)", t_setup);
+
         [cmdbuf commit];
         [cmdbuf waitUntilCompleted];
+
+        prof_toc("gpu_wait (single)", t_setup);  /* includes setup + wait */
+        /* Feed rolling GPU-wait buffer for dock_gpu_monitor() */
+        {
+            uint64_t _gd = clock_gettime_nsec_np(CLOCK_MONOTONIC) - t_setup;
+            g_gpu_wait_us[g_gpu_wait_idx % GPU_WAIT_BUF_SIZE] = _gd / 1000;
+            g_gpu_wait_idx++;
+            g_gpu_wait_total++;
+        }
 
         if (cmdbuf.error) {
             NSLog(@"GPU-DOCK: simplex command buffer error: %@", cmdbuf.error);
@@ -1595,6 +1819,10 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
         /* Check for outside-grid sentinel (-1) */
         int *state_rd = (int *)g_buf_state_batch.contents;
         if (state_rd[5] == -1) {
+            prof_toc("total (single)", t_total);
+            prof_dispatch_count++;
+            _gpu_ret0_count++;
+            if (_gpu_ret0_count == 1) fprintf(stderr, "[GPU_RET0] first outside-grid at call %d\n", _entered_gpu_func);
             return 0;
         }
 
@@ -1613,6 +1841,11 @@ int dock_gpu_simplex_minimize(const float *ref_xyz,
             scores[i] = final_scores[i];
         }
 
+        prof_toc("total (single)", t_total);
+        prof_dispatch_count++;
+        _gpu_success_count++;
+        if (_gpu_success_count % 500 == 0) fprintf(stderr, "[GPU_OK] %d successes, %d ret0 (total calls: %d)\n",
+            _gpu_success_count, _gpu_ret0_count, _entered_gpu_func);
         return 1;
     }
 }
@@ -1756,6 +1989,9 @@ int dock_gpu_simplex_minimize_batch(
 
         memcpy(g_buf_mol_data.contents, &md, sizeof(md));
 
+        uint64_t t_total = prof_tic();
+        uint64_t t_pack  = prof_tic();
+
         /* ---- Pack N conformers into batch buffers ---- */
         float *vtx_dst = (float *)g_buf_vertex_dof.contents;
         float *scr_dst = (float *)g_buf_scores_batch.contents;
@@ -1847,8 +2083,19 @@ int dock_gpu_simplex_minimize_batch(
         [enc dispatchThreads:gridSize threadsPerThreadgroup:tgSize];
         [enc endEncoding];
 
+        prof_toc("pack (batch)", t_pack);
+        uint64_t t_gpu = prof_tic();
+
         [cmdbuf commit];
         [cmdbuf waitUntilCompleted];
+        prof_toc("gpu_wait (batch)", t_gpu);
+        /* Feed rolling GPU-wait buffer for dock_gpu_monitor() */
+        {
+            uint64_t _gd = clock_gettime_nsec_np(CLOCK_MONOTONIC) - t_gpu;
+            g_gpu_wait_us[g_gpu_wait_idx % GPU_WAIT_BUF_SIZE] = _gd / 1000;
+            g_gpu_wait_idx++;
+            g_gpu_wait_total++;
+        }
 
         if (cmdbuf.error) {
             NSLog(@"GPU-DOCK: batch simplex error: %@", cmdbuf.error);
@@ -1879,8 +2126,57 @@ int dock_gpu_simplex_minimize_batch(
             }
         }
 
+        prof_toc("total (batch)", t_total);
+        prof_dispatch_count++;
+        prof_total_conformers += N;
+
+        /* Iteration counter probe: report max iterations any conformer ran */
+        int max_iter = 0;
+        for (b = 0; b < N; b++) {
+            int st_base = b * 6;
+            int iters = st_dst[st_base + 1];  /* state[1] = iteration counter */
+            if (iters > max_iter) max_iter = iters;
+        }
+        NSLog(@"GPU-DOCK: [PROF] batch N=%d N_valid=%d max_iters=%d", N, N_valid, max_iter);
+
         return 1;
     }
+}
+
+
+
+
+/* ================================================================== */
+/*  dock_gpu_monitor — Report thermal state + GPU dispatch time trend */
+/* ================================================================== */
+
+void dock_gpu_monitor(int layer, int segment, int total_segments)
+{
+    if (!g_initialized) return;
+
+    /* Thermal state (Apple API, no special permissions) */
+    static const char *thermal_label[] = {
+        "Nominal", "Fair", "Serious", "Critical"
+    };
+    NSProcessInfoThermalState ts = [[NSProcessInfo processInfo] thermalState];
+    const char *ts_str = (ts >= 0 && ts <= 3) ? thermal_label[ts] : "?";
+
+    /* Rolling average over GPU_WAIT_BUF_SIZE measurements */
+    int n = (g_gpu_wait_total < GPU_WAIT_BUF_SIZE) ? g_gpu_wait_total : GPU_WAIT_BUF_SIZE;
+    double avg_us = 0.0;
+    if (n > 0) {
+        int base = g_gpu_wait_idx;
+        for (int k = 0; k < n; k++) {
+            int idx = (base - 1 - k + GPU_WAIT_BUF_SIZE) % GPU_WAIT_BUF_SIZE;
+            avg_us += (double)g_gpu_wait_us[idx];
+        }
+        avg_us /= (double)n;
+    }
+
+    /* Print to stdout (captured in dock output file with -v) */
+    std::cout << "GPU: thermal=" << ts_str
+              << " disp=" << g_gpu_wait_total
+              << " avg_wait_ms=" << (avg_us / 1000.0) << std::endl;
 }
 
 

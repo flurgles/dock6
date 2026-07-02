@@ -91,6 +91,15 @@ int dock_gpu_is_active(void);
 
 
 /* ------------------------------------------------------------------ */
+/*  GPU thermal/performance monitor (per-segment, -v only)              */
+/* ------------------------------------------------------------------ */
+
+/* Report thermal state and GPU dispatch time rolling average to stdout.
+   Caller should guard with -v verbose flag.  Thread-safe (no state). */
+void dock_gpu_monitor(int layer, int segment, int total_segments);
+
+
+/* ------------------------------------------------------------------ */
 /*  GPU-side Simplex Minimization API                                  */
 /* ------------------------------------------------------------------ */
 
