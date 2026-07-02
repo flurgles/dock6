@@ -905,7 +905,6 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                     if (bond_vectors[s_tbn[i]] != -1) { has_dir_torsions = true; break; }
                 }
 
-                bool gpu_simplex_ok = false;
                 if (!has_dir_torsions) {
                     s_child_starts.resize(nt);
                     s_child_counts.resize(nt);
@@ -1090,44 +1089,11 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                         }
                     }
 
-                    /* ---- C1: Immediate GPU dispatch (non-batch path) ---- */
-                    float eff_trans = trans_step_size / (float)(current_cycle + 1);
-                    float eff_rot   = rot_step_size   / (current_cycle + 1);
-                    float eff_tors  = tors_step_size  / (current_cycle + 1);
-
-                    gpu_simplex_ok = dock_gpu_simplex_minimize(
-                        s_ref_xyz.data(), s_active.data(), na,
-                        ref_mol.num_active_atoms, nt,
-                        s_ta1.data(), s_ta2.data(), s_ta3.data(), s_ta4.data(),
-                        s_child_idx.data(), s_child_starts.data(), s_child_counts.data(),
-                        torsion_scale_factors.data(),
-                        s_dof.data(), s_score.data(), size, nv,
-                        max_iterations, score_converge,
-                        eff_trans, eff_rot, eff_tors);
-
-                    if (gpu_simplex_ok) {
-                        for (i = 0; i < nv; i++) {
-                            for (j = 0; j < size; j++)
-                                p[i][j] = s_dof[i * size + j];
-                            y[i] = s_score[i];
-                        }
-                        ilo = 0;
-                        for (i = 1; i < nv; i++) if (y[i] < y[ilo]) ilo = i;
-                        ihi = 0;
-                        for (i = 1; i < nv; i++) if (y[i] > y[ihi]) ihi = i;
-                        iteration = max_iterations + 1;
-                    }
-                }
-
-                if (!gpu_simplex_ok) {
-                    use_gpu = false;
-                } else {
-                    goto end_of_simplex;
                 }
             }
 
             /* ---- CPU path: fallback (original code below) ---- */
-        } else {
+        }
 
             // Begin a new iteration
             for (i = 0; i < size; i++) pbar[i] = 0.0;
@@ -1324,7 +1290,6 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                 for (i = 0; i < size; i++) p[ihi][i] = pr[i];
                 y[ihi] = ypr;
             }
-            }  // end speculative-scope block
         }
 
         // ID Best & Worst vertices in current simplex
