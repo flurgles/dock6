@@ -117,6 +117,7 @@ ConformerPool::add(DOCKMol* mol, Base_Score* score,
     slot.iteration          = 0;
     slot.converged          = false;
     slot.ihi                = 0;
+    slot.inhi               = 0;
     slot.ilo                = 0;
     slot.trans_step_size    = trans_step_size;
     slot.rot_step_size      = rot_step_size;
@@ -317,30 +318,243 @@ ConformerPool::pack_slot(SimplexSlot& slot, int offset, int capacity)
 }
 
 
+/* ------------------------------------------------------------------ */
+/*  Static helpers for the Nelder-Mead decision tree                  */
+/* ------------------------------------------------------------------ */
+
+/* Rank vertices: find indices of best (ilo), worst (ihi), and
+   2nd-worst (inhi) by score.  Matches simplex.cpp ranking block. */
+static void rank_vertices(float* y, int nverts, int& ihi, int& inhi, int& ilo)
+{
+    ilo = 0;
+    if (y[0] > y[1]) {
+        ihi  = 0;
+        inhi = 1;
+    } else {
+        ihi  = 1;
+        inhi = 0;
+    }
+    for (int i = 0; i < nverts; i++) {
+        if (y[i] < y[ilo]) ilo = i;
+        if (y[i] > y[ihi]) {
+            inhi = ihi;
+            ihi  = i;
+        } else if (y[i] > y[inhi] && i != ihi) {
+            inhi = i;
+        }
+    }
+}
+
+
+/* Compute centroid (pbar) = average of all vertices except ihi,
+   and reflected point pr = (1+alpha)*pbar - alpha*p[ihi] with alpha = 1.0.
+   Matches the per-iteration computation in simplex.cpp. */
+static void compute_centroid_reflect(float** p, int N, int ihi,
+                                     float* pbar, float* pr)
+{
+    const float alpha = 1.0f;
+
+    for (int j = 0; j < N; j++) pbar[j] = 0.0f;
+    for (int vi = 0; vi < N + 1; vi++) {
+        if (vi == ihi) continue;
+        for (int j = 0; j < N; j++) pbar[j] += p[vi][j];
+    }
+    for (int j = 0; j < N; j++) {
+        pbar[j] /= (float)N;
+        pr[j]    = (1.0f + alpha) * pbar[j] - alpha * p[ihi][j];
+    }
+}
+
+
+/* ------------------------------------------------------------------ */
+/*  evaluate_slot — Nelder-Mead decision tree for one slot            */
+/* ------------------------------------------------------------------ */
+
+/* Process scored candidates and apply the appropriate simplex operation.
+   Called from step() after GPU scores are returned.
+
+   Scores array layout depends on slot phase:
+       INIT:    scores[0..N]  — one per initial vertex
+       REFLECT: scores[0..3]  — reflect, expand, cA, cB
+       SHRINK:  scores[0..N-1] — one for each vertex except ilo
+*/
 void
 ConformerPool::evaluate_slot(SimplexSlot& slot, const float* scores, int count)
 {
-    /* TODO (S4): Nelder-Mead decision tree — reflect/expand/contract/shrink path */
-    (void)slot;
-    (void)scores;
+    int     N   = slot.size;
+    float** p   = slot.p;
+    float*  y   = slot.y;
     (void)count;
+
+    switch (slot.phase) {
+
+    /* --- INIT: copy initial vertex scores, rank, compute first centroid --- */
+    case SlotPhase::INIT: {
+        for (int vi = 0; vi < N + 1; vi++) {
+            y[vi] = scores[vi];
+        }
+        rank_vertices(y, N + 1, slot.ihi, slot.inhi, slot.ilo);
+        compute_centroid_reflect(p, N, slot.ihi,
+                                  slot.centroid.data(),
+                                  slot.reflect_v.data());
+        slot.iteration++;
+        slot.phase = SlotPhase::REFLECT;
+        break;
+    }
+
+    /* --- REFLECT: full Nelder-Mead decision tree --- */
+    case SlotPhase::REFLECT: {
+        const float alpha = 1.0f, beta = 0.5f;
+        float* pbar      = slot.centroid.data();
+        float* pr        = slot.reflect_v.data();
+
+        float  ypr       = scores[0];   // reflected
+        float  yprr_exp  = scores[1];   // expanded
+        float  yprr_cA   = scores[2];   // contracted with pr
+        float  yprr_cB   = scores[3];   // contracted with p[ihi]
+
+        int    ihi       = slot.ihi;
+        int    ilo       = slot.ilo;
+        int    inhi      = slot.inhi;
+
+        bool replace_flag = false;
+
+        /* --- Expansion path --- */
+        if (ypr <= y[ilo]) {
+            if (yprr_exp < y[ilo]) {
+                /* Accept expansion point */
+                for (int j = 0; j < N; j++) {
+                    p[ihi][j] = (1.0f + alpha) * pr[j] - alpha * pbar[j];
+                }
+                y[ihi] = yprr_exp;
+            } else {
+                /* Accept reflected point */
+                for (int j = 0; j < N; j++) p[ihi][j] = pr[j];
+                y[ihi] = ypr;
+            }
+            replace_flag = true;
+
+        /* --- Contraction / Shrink path --- */
+        } else if (ypr >= y[inhi]) {
+
+            if (ypr < y[ihi]) {
+                /* Replace worst vertex with reflected point */
+                for (int j = 0; j < N; j++) p[ihi][j] = pr[j];
+                y[ihi] = ypr;
+                replace_flag = true;
+            }
+
+            float yprr_contract = (ypr < y[ihi]) ? yprr_cA : yprr_cB;
+
+            if (yprr_contract < y[ihi]) {
+                /* Accept the contracted point */
+                const float* contr_base = (ypr < y[ihi]) ? pr : p[ihi];
+                for (int j = 0; j < N; j++) {
+                    p[ihi][j] = beta * contr_base[j] + (1.0f - beta) * pbar[j];
+                }
+                y[ihi] = yprr_contract;
+                replace_flag = true;
+            }
+
+            if (!replace_flag) {
+                /* SHRINK: move all vertices toward ilo */
+                for (int vi = 0; vi < N + 1; vi++) {
+                    if (vi == ilo) continue;
+                    for (int j = 0; j < N; j++) {
+                        p[vi][j] = 0.5f * (p[vi][j] + p[ilo][j]);
+                    }
+                }
+                slot.phase = SlotPhase::SHRINK;
+                return;  /* scores are stale — skip ranking */
+            }
+
+        } else {
+            /* --- Middling: accept reflected point --- */
+            for (int j = 0; j < N; j++) p[ihi][j] = pr[j];
+            y[ihi] = ypr;
+            replace_flag = true;
+        }
+
+        /* Re-rank and compute centroid for next iteration */
+        rank_vertices(y, N + 1, slot.ihi, slot.inhi, slot.ilo);
+        slot.iteration++;
+        compute_centroid_reflect(p, N, slot.ihi,
+                                  slot.centroid.data(),
+                                  slot.reflect_v.data());
+        break;
+    }
+
+    /* --- SHRINK: copy rescored vertex scores --- */
+    case SlotPhase::SHRINK: {
+        int ci = 0;
+        for (int vi = 0; vi < N + 1; vi++) {
+            if (vi == slot.ilo) continue;
+            y[vi] = scores[ci++];
+        }
+        rank_vertices(y, N + 1, slot.ihi, slot.inhi, slot.ilo);
+        slot.iteration++;
+        compute_centroid_reflect(p, N, slot.ihi,
+                                  slot.centroid.data(),
+                                  slot.reflect_v.data());
+        slot.phase = SlotPhase::REFLECT;
+        break;
+    }
+
+    case SlotPhase::CONVERGED:
+    default:
+        break;
+    }
 }
 
+
+/* ------------------------------------------------------------------ */
+/*  fill_slot_from_mol — Update caller's DOCKMol with minimized pose  */
+/* ------------------------------------------------------------------ */
 
 bool
 ConformerPool::fill_slot_from_mol(SimplexSlot& slot, int slot_idx)
 {
-    /* TODO (S4): copy molecule state into slot after convergence */
-    (void)slot;
     (void)slot_idx;
+    if (!slot.converged) return false;
+
+    int ilo = slot.ilo;
+
+    /* Convert best vertex to molecule coordinates and copy to caller's mol */
+    copy_crds(*slot.m_tmpMol, *slot.m_refMol);
+
+    FLOATVec vertex_vec(slot.size);
+    for (int j = 0; j < slot.size; j++) vertex_vec[j] = slot.p[ilo][j];
+
+    FLOATVec new_vec;
+    m_minimizer->scale_vector(new_vec, vertex_vec,
+                               slot.trans_step_size,
+                               slot.rot_step_size,
+                               slot.tors_step_size);
+    m_minimizer->vector_to_dockmol(*slot.m_tmpMol, new_vec);
+    copy_crds(*slot.m_mol, *slot.m_tmpMol);
     return true;
 }
 
 
+/* ------------------------------------------------------------------ */
+/*  check_convergence — Score delta and iteration-limit test          */
+/* ------------------------------------------------------------------ */
+
 bool
 ConformerPool::check_convergence(SimplexSlot& slot)
 {
-    /* TODO (S5): score delta vs score_converge, iteration vs max_iterations */
-    (void)slot;
-    return false;
+    if (slot.converged) return true;
+    if (slot.phase == SlotPhase::INIT || slot.phase == SlotPhase::SHRINK) return false;
+    if (slot.phase == SlotPhase::CONVERGED) {
+        slot.converged = true;
+        return true;
+    }
+
+    float delta = fabs(slot.y[slot.ihi] - slot.y[slot.ilo]);
+    bool done = (delta <= slot.score_converge) || (slot.iteration >= slot.max_iterations);
+    if (done) {
+        slot.converged = true;
+        slot.phase     = SlotPhase::CONVERGED;
+    }
+    return done;
 }

@@ -75,6 +75,7 @@ struct SimplexSlot {
 
     // Vertex rankings (set by evaluate_slot, used by pack_slot)
     int            ihi;                // index of highest (worst)  score
+    int            inhi;               // index of 2nd-highest (2nd-worst) score
     int            ilo;                // index of lowest  (best)  score
 
     // Working buffers (pre-allocated per slot)
