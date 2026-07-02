@@ -626,8 +626,8 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
     int             i,
                     j,
                     x;
-    int             ihi,
-                    inhi;
+    int             ihi = 0,
+                    inhi = 0;
     int             ilo = 0;
     float         **p;
     float          *pr;
