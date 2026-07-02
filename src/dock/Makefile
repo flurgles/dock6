@@ -31,7 +31,9 @@ endif
 BIN= ../../bin
 PROGS= dock6$(DOCK_SUFFIX)
 
-OBJS= amber_typer.o base_grid.o base_mpi.o base_score.o bobyqa.o minimizer.o conf_gen_ag.o \
+OBJS= amber_typer.o base_grid.o base_mpi.o base_score.o bobyqa.o minimizer.o \
+      minimizer_transform.o minimizer_gpu.o minimizer_helpers.o \
+      conf_gen_ag.o \
       conf_gen_cg.o conf_gen_dn.o conf_gen_dn_ga.o conf_gen_ga.o conf_gen_hdb.o \
       conjugate_gradient.o steepest_descent.o \
       dock.o dockmol.o filter.o fingerprint.o fraggraph.o fragment.o \
@@ -39,7 +41,7 @@ OBJS= amber_typer.o base_grid.o base_mpi.o base_score.o bobyqa.o minimizer.o con
       orient.o sasa.o score.o score_amber.o score_chemgrid.o \
       score_descriptor.o score_footprint.o score_ph4.o score_volume.o \
       score_gist.o score_hbond.o score_internal.o score_multigrid.o score_sasa.o \
-      score_solvent.o simplex.o sphere.o trace.o utils.o iso_align.o mem_info.o rdtyper.o \
+      score_solvent.o simplex.o simplex_input.o simplex_stubs.o sphere.o trace.o utils.o iso_align.o mem_info.o rdtyper.o \
       rddrive.o \
       $(GPU_STUB) $(GPU_OBJS)
 
@@ -251,7 +253,22 @@ bobyqa.o: score_multigrid.h score_footprint.h score_ph4.h score_volume.h
 bobyqa.o: score_hbond.h score_internal.h score_descriptor.h fingerprint.h
 bobyqa.o: hungarian.h score_gist.h score_amber.h nab/nab.h defreal.h
 bobyqa.o: nab/nabtypes.h nab/defreal.h score_chemgrid.h base_grid.h
-minimizer.o: minimizer.cpp minimizer.h master_score.h utils.h
+minimizer.o: minimizer.cpp minimizer.h master_score.h utils.h dockmol.h
+	@$(CXX) -c $(CXXFLAGS) -o $@ $(DOCKBUILDFLAGS) $<
+
+minimizer_transform.o: minimizer_transform.cpp minimizer.h dockmol.h utils.h
+	@$(CXX) -c $(CXXFLAGS) -o $@ $(DOCKBUILDFLAGS) $<
+
+minimizer_gpu.o: minimizer_gpu.cpp minimizer.h score_dock_gpu.h dockmol.h
+	@$(CXX) -c $(CXXFLAGS) -o $@ $(DOCKBUILDFLAGS) $<
+
+minimizer_helpers.o: minimizer_helpers.cpp minimizer.h master_score.h dockmol.h
+	@$(CXX) -c $(CXXFLAGS) -o $@ $(DOCKBUILDFLAGS) $<
+
+simplex_input.o: simplex_input.cpp simplex.h minimizer.h master_score.h
+	@$(CXX) -c $(CXXFLAGS) -o $@ $(DOCKBUILDFLAGS) $<
+
+simplex_stubs.o: simplex_stubs.cpp minimizer.h
 	@$(CXX) -c $(CXXFLAGS) -o $@ $(DOCKBUILDFLAGS) $<
 
 bobyqa.o: score_solvent.h grid.h score_sasa.h sasa.h bobyqa.h minimizer.h
