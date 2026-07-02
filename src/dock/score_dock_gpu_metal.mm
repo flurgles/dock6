@@ -23,6 +23,7 @@ Two kernels:
 
 #import <Metal/Metal.h>
 #import <Foundation/Foundation.h>
+#import <IOKit/IOKitLib.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -1145,6 +1146,54 @@ int dock_gpu_is_active(void)
 
 
 
+
+
+/* ================================================================== */
+/*  dock_gpu_recommended_batch_size — Query GPU core count via IOKit  */
+/* ================================================================== */
+
+/* Query the exact number of GPU compute cores from IOKit using the
+   Metal device's registryID.  This avoids hardcoding chip names and
+   works on all current/future Apple Silicon GPUs. */
+static int dock_gpu_get_core_count(void)
+{
+    if (!g_device) return 0;
+
+    int core_count = 0;
+    io_service_t gpu_service = IOServiceGetMatchingService(
+        kIOMainPortDefault,
+        IORegistryEntryIDMatching(g_device.registryID));
+
+    if (gpu_service) {
+        CFNumberRef numberRef = (CFNumberRef)IORegistryEntryCreateCFProperty(
+            gpu_service, CFSTR("gpu-core-count"), kCFAllocatorDefault, 0);
+        if (numberRef) {
+            CFNumberGetValue(numberRef, kCFNumberSInt32Type, &core_count);
+            CFRelease(numberRef);
+        }
+        IOObjectRelease(gpu_service);
+    }
+
+    return core_count;
+}
+
+
+int dock_gpu_recommended_batch_size(void)
+{
+    if (!g_device) return 32;  /* safe default for unknown or inactive */
+
+    int cores = dock_gpu_get_core_count();
+    if (cores <= 0) return 32;  /* IOKit query failed — fallback */
+
+    /* Heuristic: each CU can sustain ~4 threadgroups for good occupancy.
+       Each threadgroup handles one conformer.  Cap at GPU_MAX_POSES/4
+       to stay within the per-batch xyz buffer allocation. */
+    int size = cores * 4;
+    int cap  = GPU_MAX_POSES / 4;
+    if (size > cap) size = cap;
+
+    return size;
+}
 
 
 /* ================================================================== */

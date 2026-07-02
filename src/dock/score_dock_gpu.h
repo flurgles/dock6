@@ -89,6 +89,13 @@ void dock_gpu_cleanup(void);
 /* Returns 1 if GPU is active and ready for batch scoring. */
 int dock_gpu_is_active(void);
 
+/* Recommended batch size for the conformer pool.
+   Queries the GPU's compute-unit count via IOKit and returns
+   (cores * 4) as the heuristic batch size.  Falls back to 32
+   on unknown devices or when GPU is inactive.
+   The conformer pool uses this as its default capacity. */
+int dock_gpu_recommended_batch_size(void);
+
 
 /* ------------------------------------------------------------------ */
 /*  GPU thermal/performance monitor (per-segment, -v only)              */

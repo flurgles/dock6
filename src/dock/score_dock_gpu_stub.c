@@ -60,6 +60,11 @@ int dock_gpu_is_active(void)
     return 0;
 }
 
+int dock_gpu_recommended_batch_size(void)
+{
+    return 32;  /* safe default when GPU unavailable */
+}
+
 
 void dock_gpu_monitor(int layer, int segment, int total_segments)
 {

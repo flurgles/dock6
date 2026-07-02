@@ -23,7 +23,7 @@ GPU_LIBS =
 
 ifeq ($(GPU_BACKEND),metal)
   GPU_OBJS += score_dock_gpu_metal.o
-  GPU_LIBS += -framework Metal -framework Foundation -lc++
+  GPU_LIBS += -framework Metal -framework Foundation -framework IOKit -lc++
   DOCKBUILDFLAGS += -DUSE_METAL
   GPU_STUB =
 endif
