@@ -6,8 +6,8 @@
 #include "minimizer.h"
 
 /* C1 Batch queue API */
-void enable_gpu_batch_mode(bool enabled);
-int  flush_gpu_batch(Minimizer &min);
+void enable_gpu_batch_mode(bool enabled);  /* P1: no-op */
+int  flush_gpu_batch(Minimizer &min);         /* P1: returns 0 */
 
 
 class           Simplex_Minimizer : public Minimizer {
