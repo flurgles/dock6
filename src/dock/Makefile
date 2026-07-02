@@ -32,7 +32,7 @@ BIN= ../../bin
 PROGS= dock6$(DOCK_SUFFIX)
 
 OBJS= amber_typer.o base_grid.o base_mpi.o base_score.o bobyqa.o minimizer.o \
-      minimizer_transform.o minimizer_gpu.o minimizer_helpers.o \
+      minimizer_transform.o minimizer_gpu.o minimizer_helpers.o conformer_pool.o \
       conf_gen_ag.o \
       conf_gen_cg.o conf_gen_dn.o conf_gen_dn_ga.o conf_gen_ga.o conf_gen_hdb.o \
       conjugate_gradient.o steepest_descent.o \
@@ -263,6 +263,10 @@ minimizer_gpu.o: minimizer_gpu.cpp minimizer.h score_dock_gpu.h dockmol.h
 	@$(CXX) -c $(CXXFLAGS) -o $@ $(DOCKBUILDFLAGS) $<
 
 minimizer_helpers.o: minimizer_helpers.cpp minimizer.h master_score.h dockmol.h
+	@$(CXX) -c $(CXXFLAGS) -o $@ $(DOCKBUILDFLAGS) $<
+
+conformer_pool.o: conformer_pool.cpp conformer_pool.h minimizer.h \
+                  score_dock_gpu.h dockmol.h
 	@$(CXX) -c $(CXXFLAGS) -o $@ $(DOCKBUILDFLAGS) $<
 
 simplex_input.o: simplex_input.cpp simplex.h minimizer.h master_score.h
