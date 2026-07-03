@@ -1468,6 +1468,7 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                                 FLOATVec vertex;
                                 for (int iv = 0; iv < 6; iv++) vertex.push_back(0.0f);
                                 simplex.id_torsions(exp_seeds[k].structure, vertex);
+                                simplex.torsion_scale_factors.resize(simplex.torsions.size(), 1);
 
                                 /* Backpressure: drain pool before adding if full */
                                 while (pool.active_count() >= pool.capacity()) {
