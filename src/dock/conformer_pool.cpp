@@ -53,9 +53,9 @@ ConformerPool::ConformerPool(int batch_max, Minimizer* minimizer, bool use_gpu)
     , m_minimizer(minimizer)
     , m_use_gpu(use_gpu)
     , m_num_atoms(0)
-    , m_dof(0)
     , m_xyz_buffer(nullptr)
     , m_score_buffer(nullptr)
+    , m_active_flags(nullptr)
     , m_dispatch_capacity(0)
 {
     m_slots.reserve(batch_max);
@@ -77,6 +77,7 @@ ConformerPool::~ConformerPool()
     }
     delete[] m_xyz_buffer;
     delete[] m_score_buffer;
+    delete[] m_active_flags;
 }
 
 
@@ -85,17 +86,42 @@ ConformerPool::~ConformerPool()
 /* ------------------------------------------------------------------ */
 
 int
-ConformerPool::add(DOCKMol* mol, Base_Score* score,
+ConformerPool::add(DOCKMol* mol,
                    const FLOATVec& initial_vertex,
                    float trans_step_size, float rot_step_size,
                    float tors_step_size, float score_converge,
-                   int max_iterations, bool skip_internal_energy,
+                   int max_iterations,
                    bool restrained, float coefficient_restraint,
                    DOCKMol* rmsd_ref, void* user_data)
 {
-    if ((int)m_slots.size() >= m_batch_max) return -1;
+    /* Find a recyclable (CONVERGED) slot, or append a new one.
+       Caller must poll() before add() so m_converged is drained —
+       conf_gen_ag does this in its backpressure / drain loops. */
+    int idx = -1;
+    for (int i = 0; i < (int)m_slots.size(); i++) {
+        if (m_slots[i].phase == SlotPhase::CONVERGED) {
+            idx = i;
+            /* Free old slot state before reuse */
+            if (m_slots[idx].p) {
+                for (int j = 0; j < m_slots[idx].size + 1; j++)
+                    delete[] m_slots[idx].p[j];
+                delete[] m_slots[idx].p;
+            }
+            delete[] m_slots[idx].y;
+            delete m_slots[idx].m_refMol;
+            delete m_slots[idx].m_tmpMol;
+            m_slots[idx].p = nullptr;
+            m_slots[idx].y = nullptr;
+            m_slots[idx].m_refMol = nullptr;
+            m_slots[idx].m_tmpMol = nullptr;
+            break;
+        }
+    }
+    if (idx < 0) {
+        if ((int)m_slots.size() >= m_batch_max) return -1;
+        idx = (int)m_slots.size();
+    }
 
-    int idx = (int)m_slots.size();
     int size = (int)initial_vertex.size();
 
     /* Lazy buffer allocation on first add().  All conformers in one
@@ -103,10 +129,12 @@ ConformerPool::add(DOCKMol* mol, Base_Score* score,
        conformer's dimensions define buffer sizing for the pool. */
     if (!m_xyz_buffer) {
         m_num_atoms = mol->num_atoms;
-        m_dof = size;
         int max_cand = m_batch_max * max(4, size + 1);
         m_xyz_buffer      = new float[max_cand * m_num_atoms * 3];
         m_score_buffer    = new float[max_cand];
+        m_active_flags    = new int[m_num_atoms];
+        for (int a = 0; a < m_num_atoms; a++)
+            m_active_flags[a] = mol->atom_active_flags[a] ? 1 : 0;
         m_dispatch_capacity = max_cand;
     }
 
@@ -124,8 +152,6 @@ ConformerPool::add(DOCKMol* mol, Base_Score* score,
     slot.tors_step_size     = tors_step_size;
     slot.score_converge     = score_converge;
     slot.max_iterations     = max_iterations;
-    slot.skip_internal_energy = skip_internal_energy;
-    slot.score              = score;
     slot.user_data          = user_data;
     slot.restrained         = restrained;
     slot.coefficient_restraint = coefficient_restraint;
@@ -156,7 +182,11 @@ ConformerPool::add(DOCKMol* mol, Base_Score* score,
     copy_molecule(*slot.m_refMol, *mol);
     copy_molecule(*slot.m_tmpMol, *mol);
 
-    m_slots.push_back(std::move(slot));
+    if (idx < (int)m_slots.size()) {
+        m_slots[idx] = std::move(slot);   /* recycle converged slot */
+    } else {
+        m_slots.push_back(std::move(slot));  /* new slot */
+    }
     return idx;
 }
 
@@ -207,10 +237,7 @@ ConformerPool::step()
     if (m_slots.empty()) return 0;
 
     int na = m_num_atoms;
-    int* active_flags = new int[na];
-    for (int a = 0; a < na; a++) {
-        active_flags[a] = m_slots[0].m_refMol->atom_active_flags[a] ? 1 : 0;
-    }
+    int* active_flags = m_active_flags;  // cached at first add()
 
     /* Phase 1: Pack ready candidates from all active slots */
     int total = 0;
@@ -221,7 +248,6 @@ ConformerPool::step()
 
     /* No GPU work pending — check convergence on remaining slots */
     if (total == 0) {
-        delete[] active_flags;
         int newly = 0;
         for (auto& slot : m_slots) {
             if (slot.converged || slot.phase == SlotPhase::CONVERGED) continue;
@@ -237,12 +263,21 @@ ConformerPool::step()
     /* Phase 2: Submit GPU dispatch */
     int ok = dock_gpu_batch_score_with_ie(
         m_xyz_buffer, total, na, active_flags, m_score_buffer);
-    delete[] active_flags;
 
     if (!ok) {
-        /* GPU scoring failed (e.g. IE data not uploaded) —
-           caller must handle fallback */
-        return 0;
+        /* GPU scoring failed (e.g. IE data not uploaded).
+           Mark all active slots converged with their current best
+           pose so the drain loop terminates instead of spinning. */
+        int newly = 0;
+        for (auto& slot : m_slots) {
+            if (slot.converged || slot.phase == SlotPhase::CONVERGED) continue;
+            slot.converged = true;
+            slot.phase = SlotPhase::CONVERGED;
+            fill_slot_from_mol(slot, slot.id);
+            m_converged.push_back(&slot);
+            newly++;
+        }
+        return newly;
     }
 
     /* Phase 3: Distribute scores back to each slot */
@@ -269,7 +304,10 @@ ConformerPool::step()
             }
         }
 
-        /* Sentinel check: outside-grid poses can't be scored */
+        /* Sentinel check (defense-in-depth: the current kernel
+           score_batch_kernel_atom_parallel never writes a sentinel —
+           out-of-grid atoms just get 0 grid contribution.  Kept in
+           case the kernel is changed to reject out-of-grid poses.) */
         bool sentinel_hit = false;
         for (int ci = 0; ci < ncan; ci++) {
             if (m_score_buffer[off + ci] < -1.0e30f) {
@@ -278,7 +316,8 @@ ConformerPool::step()
             }
         }
         if (sentinel_hit) {
-            /* Conformer outside scoring grid — mark converged and move on */
+            /* Out-of-grid: restore pre-min pose (matches CPU failure_exit) */
+            copy_crds(*slot.m_mol, *slot.m_refMol);
             slot.converged = true;
             slot.phase     = SlotPhase::CONVERGED;
             m_converged.push_back(&slot);
@@ -288,7 +327,7 @@ ConformerPool::step()
         }
 
         /* Run decision tree */
-        evaluate_slot(slot, m_score_buffer + off, ncan);
+        evaluate_slot(slot, m_score_buffer + off);
         off += ncan;
 
         if (check_convergence(slot)) {
@@ -345,7 +384,17 @@ int
 ConformerPool::pack_slot(SimplexSlot& slot, int offset, int capacity)
 {
     int N = slot.size;
-    (void)capacity;  /* caller guarantees enough space */
+    /* Safety: don't overflow the dispatch buffer.  This should never
+       trigger with correct sizing; if it does, the slot's candidates
+       are deferred to the next step() (no state advance). */
+    int need = 0;
+    switch (slot.phase) {
+    case SlotPhase::INIT:    need = N + 1; break;
+    case SlotPhase::REFLECT: need = 4;     break;
+    case SlotPhase::SHRINK:  need = N;     break;
+    default: return offset;
+    }
+    if (offset + need > capacity) return offset;
 
     switch (slot.phase) {
 
@@ -466,12 +515,11 @@ static void compute_centroid_reflect(float** p, int N, int ihi,
        SHRINK:  scores[0..N-1] — one for each vertex except ilo
 */
 void
-ConformerPool::evaluate_slot(SimplexSlot& slot, const float* scores, int count)
+ConformerPool::evaluate_slot(SimplexSlot& slot, const float* scores)
 {
     int     N   = slot.size;
     float** p   = slot.p;
     float*  y   = slot.y;
-    (void)count;
 
     switch (slot.phase) {
 

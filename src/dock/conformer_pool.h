@@ -88,7 +88,7 @@ struct SimplexSlot {
     float          tors_step_size;
     float          score_converge;
     int            max_iterations;
-    bool           skip_internal_energy;
+
 
     // Molecule state for dof→xyz
     // m_mol points to the caller's DOCKMol (updated in place on convergence).
@@ -103,8 +103,7 @@ struct SimplexSlot {
     float          coefficient_restraint;
     DOCKMol*       m_rmsd_ref;
 
-    // Scoring
-    Base_Score*    score;
+
 
     // Caller data (e.g. index into exp_seeds)
     void*          user_data;
@@ -129,11 +128,11 @@ public:
        Returns slot id on success, -1 if pool is full.
        The pool stores a pointer to the caller's DOCKMol (mol) and updates
        it in-place on convergence.  mol must remain alive until poll(). */
-    int add(DOCKMol* mol, Base_Score* score,
+    int add(DOCKMol* mol,
             const FLOATVec& initial_vertex,
             float trans_step_size, float rot_step_size,
             float tors_step_size, float score_converge,
-            int max_iterations, bool skip_internal_energy,
+            int max_iterations,
             bool restrained = false,
             float coefficient_restraint = 0.0f,
             DOCKMol* rmsd_ref = nullptr,
@@ -168,7 +167,6 @@ private:
     Minimizer*              m_minimizer;        // shared for dof→xyz
     bool                    m_use_gpu;
     int                     m_num_atoms;   // ligand atom count, set on first add()
-    int                     m_dof;          // degrees of freedom, set on first add()
 
     std::vector<SimplexSlot>  m_slots;
     std::vector<SimplexSlot*> m_converged;       // converged slots pending poll()
@@ -180,12 +178,13 @@ private:
     //   scores: max_candidates * sizeof(float)
     float*                  m_xyz_buffer;
     float*                  m_score_buffer;
+    int*                    m_active_flags;  // cached ligand active-atom flags
     int                     m_dispatch_capacity;  // max candidates per dispatch
 
     // Internal helpers
     int  pack_slot(SimplexSlot& slot, int offset, int capacity);
     void pack_vertex(SimplexSlot& slot, const float* vertex, int idx);
-    void evaluate_slot(SimplexSlot& slot, const float* scores, int count);
+    void evaluate_slot(SimplexSlot& slot, const float* scores);
     bool fill_slot_from_mol(SimplexSlot& slot, int slot_idx);
     bool check_convergence(SimplexSlot& slot);
 };
