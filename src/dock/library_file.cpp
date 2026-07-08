@@ -2058,7 +2058,7 @@ Library_File::submit_secondary_conformation(Master_Score & score, Minimizer & mi
     }
 
 
-    if(ranked_poses[0].mol.num_atoms > 0) {
+    if(!ranked_poses.empty() && ranked_poses[0].mol.num_atoms > 0) {
         DOCKMol tmp_dockmol;
         copy_molecule(tmp_dockmol, ranked_poses[0].mol);
         poses_for_rescore.push_back(tmp_dockmol);
