@@ -33,10 +33,11 @@ class WL_RMSD {
     // Returns -1000.0 if atom counts differ.
     double  calc_WL_RMSD(DOCKMol & refmol, DOCKMol & mol);
 
-  private:
-    // Weisfeiler-Lehman color refinement on heavy active atoms.
+    // Weisfeiler-Lehman color refinement on heavy atoms.
     // colors[i] = -1 for hydrogen/inactive atoms, else WL orbit color.
-    void    wl_color_refine(DOCKMol & mol, std::vector<int> & colors);
+    // When active_only=true, also checks atom_active_flags (for pruning).
+    void    wl_color_refine(DOCKMol & mol, std::vector<int> & colors,
+                            bool active_only = false);
 };
 
 #endif  // WEISFEILER_LEHMANN_H

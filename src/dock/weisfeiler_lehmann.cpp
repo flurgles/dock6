@@ -9,7 +9,8 @@ using namespace std;
 
 // +++++++++++++++++++++++++++++++++++++++++
 void
-WL_RMSD::wl_color_refine(DOCKMol & mol, vector<int> & colors)
+WL_RMSD::wl_color_refine(DOCKMol & mol, vector<int> & colors,
+                          bool active_only)
 {
     int N = mol.num_atoms;
 
@@ -19,7 +20,10 @@ WL_RMSD::wl_color_refine(DOCKMol & mol, vector<int> & colors)
         if (!mol.bond_active_flags[i]) continue;
         int u = mol.bonds_origin_atom[i];
         int v = mol.bonds_target_atom[i];
-        if (mol.amber_at_heavy_flag[u] && mol.amber_at_heavy_flag[v]) {
+        bool is_heavy = mol.amber_at_heavy_flag[u] && mol.amber_at_heavy_flag[v];
+        bool is_active = !active_only ||
+                         (mol.atom_active_flags[u] && mol.atom_active_flags[v]);
+        if (is_heavy && is_active) {
             adj[u].push_back(v);
             adj[v].push_back(u);
         }
@@ -31,7 +35,9 @@ WL_RMSD::wl_color_refine(DOCKMol & mol, vector<int> & colors)
     vector<int> cur(N, -1);  // -1 = hydrogen / skip
 
     for (int i = 0; i < N; i++) {
-        if (mol.amber_at_heavy_flag[i]) {
+        bool is_heavy = mol.amber_at_heavy_flag[i];
+        bool is_active = !active_only || mol.atom_active_flags[i];
+        if (is_heavy && is_active) {
             auto it = type_to_color.find(mol.atom_types[i]);
             if (it == type_to_color.end()) {
                 type_to_color[mol.atom_types[i]] = next_color;

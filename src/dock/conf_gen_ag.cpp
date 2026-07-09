@@ -10,6 +10,7 @@
 #include "conf_gen_ag.h"
 #include "fingerprint.h"
 #include "hungarian.h"
+#include "weisfeiler_lehmann.h"
 #include "master_score.h"
 #include "simplex.h"
 #include "conformer_pool.h"
@@ -212,92 +213,24 @@ AG_Conformer_Search::initialize_internal_energy_null(bool uie)
 static bool
 mol_has_symmetry(DOCKMol & mol)
 {
-    int i;
-    int N = mol.num_atoms;
+    // Use shared WL color refinement (active_only=true so only
+    // heavy, active atoms are considered — matches pruning logic).
+    WL_RMSD wl;
+    vector<int> colors;
+    wl.wl_color_refine(mol, colors, true);
 
-    // ----- Step 1: build adjacency for heavy, active atoms -----
-    vector<vector<int>> adj(N);
-    for (i = 0; i < mol.num_bonds; i++) {
-        if (!mol.bond_active_flags[i]) continue;
-        int u = mol.bonds_origin_atom[i];
-        int v = mol.bonds_target_atom[i];
-        if (mol.amber_at_heavy_flag[u] && mol.atom_active_flags[u] &&
-            mol.amber_at_heavy_flag[v] && mol.atom_active_flags[v]) {
-            adj[u].push_back(v);
-            adj[v].push_back(u);
-        }
+    // Count atoms per color group. Any group with >=2 atoms
+    // indicates symmetry (atoms that could be permuted).
+    int max_color = 0;
+    for (int c : colors) {
+        if (c > max_color) max_color = c;
     }
-
-    // ----- Step 2: assign initial colors from DOCK atom type -----
-    map<string, int> type_to_color;
-    int next_color = 0;
-    vector<int> cur(N, -1);  // -1 = hydrogen / inactive, skip
-    for (i = 0; i < N; i++) {
-        if (mol.amber_at_heavy_flag[i] && mol.atom_active_flags[i]) {
-            auto it = type_to_color.find(mol.atom_types[i]);
-            if (it == type_to_color.end()) {
-                type_to_color[mol.atom_types[i]] = next_color;
-                cur[i] = next_color;
-                next_color++;
-            } else {
-                cur[i] = it->second;
-            }
-        }
+    vector<int> color_counts(max_color + 1, 0);
+    for (int c : colors) {
+        if (c >= 0) color_counts[c]++;
     }
-
-    // ----- Step 3: WL color refinement -----
-    bool changed = true;
-    int iterations = 0;
-    const int MAX_ITER = N > 0 ? N : 1;
-
-    while (changed && iterations < MAX_ITER) {
-        changed = false;
-        iterations++;
-
-        // Map: (color, sorted_neighbor_colors) -> new_color
-        map<pair<int, vector<int>>, int> refine_map;
-        next_color = 0;
-        vector<int> nxt(N, -1);
-
-        for (i = 0; i < N; i++) {
-            if (cur[i] < 0) continue;
-
-            // Collect neighbor colors
-            vector<int> ncols;
-            for (int nb : adj[i]) {
-                if (cur[nb] >= 0)
-                    ncols.push_back(cur[nb]);
-            }
-            sort(ncols.begin(), ncols.end());
-
-            auto key = pair<int, vector<int>>(cur[i], ncols);
-            auto it = refine_map.find(key);
-            if (it == refine_map.end()) {
-                refine_map[key] = next_color;
-                nxt[i] = next_color;
-                next_color++;
-            } else {
-                nxt[i] = it->second;
-            }
-        }
-
-        // Check convergence
-        for (i = 0; i < N; i++) {
-            if (cur[i] >= 0 && cur[i] != nxt[i]) {
-                changed = true;
-                cur = move(nxt);
-                break;
-            }
-        }
-    }
-
-    // ----- Step 4: any color group with 2+ atoms? -----
-    vector<int> color_counts(next_color, 0);
-    for (i = 0; i < N; i++) {
-        if (cur[i] >= 0) color_counts[cur[i]]++;
-    }
-    for (int c : color_counts) {
-        if (c >= 2) return true;
+    for (int cnt : color_counts) {
+        if (cnt >= 2) return true;
     }
     return false;
 }
