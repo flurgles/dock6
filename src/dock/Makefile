@@ -42,7 +42,7 @@ OBJS= amber_typer.o base_grid.o base_mpi.o base_score.o bobyqa.o minimizer.o \
       score_descriptor.o score_footprint.o score_ph4.o score_volume.o \
       score_gist.o score_hbond.o score_internal.o score_multigrid.o score_sasa.o \
       score_solvent.o simplex.o simplex_input.o simplex_stubs.o sphere.o trace.o utils.o iso_align.o mem_info.o rdtyper.o \
-      rddrive.o \
+      rddrive.o weisfeiler_lehmann.o \
       $(GPU_STUB) $(GPU_OBJS)
 
 all:  $(PROGS)
@@ -279,6 +279,7 @@ bobyqa.o: score_solvent.h grid.h score_sasa.h sasa.h bobyqa.h minimizer.h
 sphere.o: sphere.h utils.h
 trace.o: trace.h trace.inl
 utils.o: utils.h dockmol.h
+weisfeiler_lehmann.o: weisfeiler_lehmann.h dockmol.h
 xlogp.o: xlogp.h dockmol.h utils.h
 rdtyper.o: rdtyper.h dockmol.h
 rddrive.o: rdtyper.h rddrive.h dockmol.h

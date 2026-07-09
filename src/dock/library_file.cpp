@@ -10,6 +10,7 @@
 #include "master_score.h"
 #include "simplex.h"
 #include "hungarian.h"
+#include "weisfeiler_lehmann.h"
 #include "trace.h"
 #include "filter.h"
 //#include <gzstream.h>
@@ -2623,6 +2624,8 @@ Library_File::calculate_rmsd(DOCKMol & refmol, DOCKMol & mol,double *rmsds)
     Hungarian_RMSD a;
     rmsds[1] = a.calc_Hungarian_RMSD(refmol,mol);
     rmsds[2] = calculate_min_rmsd(refmol,mol); // lower bound
+    WL_RMSD wl;
+    rmsds[3] = wl.calc_WL_RMSD(refmol,mol);
 }
 
 
@@ -2819,7 +2822,7 @@ Library_File::cluster_list(){
 
                 // if j-pose is not assigned to a cluster already
                 if (cluster_assignments[j] > 0) {
-                    double rmsds[3]; 
+                    double rmsds[4]; 
                     calculate_rmsd(ranked_poses[i].mol, ranked_poses[j].mol,rmsds);
                     if (final_pose_cluster_rmsd_type == "hungarian")
                         crmsd = rmsds[1];
@@ -3011,15 +3014,17 @@ string Library_File::calc_rmsd_string(DOCKMol & mol)  {
     Trace trace( "Library_File::calc_rmsd_string" );
     ostringstream   text;
     text.flags(ios::fixed);
-    double rmsds[3];
+    double rmsds[4];
     calculate_rmsd(mol,rmsds);
-    //cout << rmsds[0]<<","<<rmsds[1]<<","<<rmsds[2]<< endl;
+    //cout << rmsds[0]<<","<<rmsds[1]<<","<<rmsds[2]<<","<<rmsds[3]<< endl;
     text << DELIMITER << setw(STRING_WIDTH) << "HA_RMSDs:" 
          << setw(FLOAT_WIDTH) << fixed << setprecision (3) << rmsds[0] << endl;
     text << DELIMITER << setw(STRING_WIDTH) << "HA_RMSDh:" 
          << setw(FLOAT_WIDTH) << fixed << setprecision (3) << rmsds[1] << endl;
     text << DELIMITER << setw(STRING_WIDTH) << "HA_RMSDm:" 
          << setw(FLOAT_WIDTH) << fixed << setprecision (3) << rmsds[2] << endl;
+    text << DELIMITER << setw(STRING_WIDTH) << "HA_RMSDw:" 
+         << setw(FLOAT_WIDTH) << fixed << setprecision (3) << rmsds[3] << endl;
     return text.str();
 }
 
