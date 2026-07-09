@@ -10,7 +10,7 @@
 #include "master_score.h"
 #include "simplex.h"
 #include "hungarian.h"
-#include "weisfeiler_lehmann.h"
+#include "weisfeiler_leman.h"
 #include "trace.h"
 #include "filter.h"
 //#include <gzstream.h>
@@ -1051,7 +1051,7 @@ Library_File::input_parameters_output(Parameter_Reader & parm, Master_Score & sc
                 }
                 num_clusterheads_rescore = atoi(parm.query_param("num_clusterheads_for_rescore", "5").c_str());
                 final_pose_cluster_rmsd_type = parm.query_param(
-                        "final_pose_cluster_rmsd_type", "std", "std hungarian min");
+                        "final_pose_cluster_rmsd_type", "std", "std hungarian min weisfeiler");
             }
 
         } 
@@ -1121,7 +1121,7 @@ Library_File::input_parameters_output(Parameter_Reader & parm, Master_Score & sc
                     exit(0);
                 }
                 final_pose_cluster_rmsd_type = parm.query_param(
-                        "final_pose_cluster_rmsd_type", "std", "std hungarian min");
+                        "final_pose_cluster_rmsd_type", "std", "std hungarian min weisfeiler");
             }
         } 
         score_thres = atof(parm.query_param(
@@ -2828,6 +2828,8 @@ Library_File::cluster_list(){
                         crmsd = rmsds[1];
                     else if (final_pose_cluster_rmsd_type == "min")
                         crmsd = rmsds[2];
+                    else if (final_pose_cluster_rmsd_type == "weisfeiler")
+                        crmsd = rmsds[3];
                     else
                         crmsd = rmsds[0];
                     // if j-pose is close enough to i-pose, add it to i-cluster

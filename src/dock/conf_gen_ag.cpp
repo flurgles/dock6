@@ -10,7 +10,7 @@
 #include "conf_gen_ag.h"
 #include "fingerprint.h"
 #include "hungarian.h"
-#include "weisfeiler_lehmann.h"
+#include "weisfeiler_leman.h"
 #include "master_score.h"
 #include "simplex.h"
 #include "conformer_pool.h"
@@ -193,7 +193,7 @@ AG_Conformer_Search::initialize_internal_energy_null(bool uie)
 }
 
 // +++++++++++++++++++++++++++++++++++++++++
-// Weisfeiler-Lehman (WL) color refinement for molecular graph symmetry detection.
+// Weisfeiler-Leman (WL) color refinement for molecular graph symmetry detection.
 //
 // WL iteratively refines atom colors by hashing each atom's current color with
 // the sorted colors of its bonded neighbors. After ~3-6 rounds, colors converge

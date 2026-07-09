@@ -1,4 +1,4 @@
-#include "weisfeiler_lehmann.h"
+#include "weisfeiler_leman.h"
 #include "dockmol.h"
 #include <map>
 #include <algorithm>

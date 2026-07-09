@@ -1,11 +1,11 @@
-#ifndef WEISFEILER_LEHMANN_H
-#define WEISFEILER_LEHMANN_H 
+#ifndef WEISFEILER_LEMAN_H
+#define WEISFEILER_LEMAN_H 
 
 #include <vector>
 class DOCKMol;
 
 // +++++++++++++++++++++++++++++++++++++++++
-// WL_RMSD — Weisfeiler-Lehman guided symmetry-corrected RMSD.
+// WL_RMSD — Weisfeiler-Leman guided symmetry-corrected RMSD.
 //
 // Uses WL color refinement (graph automorphism partitioning) to identify
 // equivalent atom positions in a molecule, then finds the optimal
@@ -20,7 +20,7 @@ class DOCKMol;
 // produce graph-breaking assignments), WL respects the molecular graph
 // structure — only automorphic atoms are allowed to permute.
 //
-// Reference: Weisfeiler, B. & Lehman, A. A. (1968).
+// Reference: Weisfeiler, B. & Leman, A. A. (1968).
 
 class WL_RMSD {
 
@@ -33,11 +33,11 @@ class WL_RMSD {
     // Returns -1000.0 if atom counts differ.
     double  calc_WL_RMSD(DOCKMol & refmol, DOCKMol & mol);
 
-    // Weisfeiler-Lehman color refinement on heavy atoms.
+    // Weisfeiler-Leman color refinement on heavy atoms.
     // colors[i] = -1 for hydrogen/inactive atoms, else WL orbit color.
     // When active_only=true, also checks atom_active_flags (for pruning).
     void    wl_color_refine(DOCKMol & mol, std::vector<int> & colors,
                             bool active_only = false);
 };
 
-#endif  // WEISFEILER_LEHMANN_H
+#endif  // WEISFEILER_LEMAN_H

@@ -42,7 +42,7 @@ OBJS= amber_typer.o base_grid.o base_mpi.o base_score.o bobyqa.o minimizer.o \
       score_descriptor.o score_footprint.o score_ph4.o score_volume.o \
       score_gist.o score_hbond.o score_internal.o score_multigrid.o score_sasa.o \
       score_solvent.o simplex.o simplex_input.o simplex_stubs.o sphere.o trace.o utils.o iso_align.o mem_info.o rdtyper.o \
-      rddrive.o weisfeiler_lehmann.o \
+      rddrive.o weisfeiler_leman.o \
       $(GPU_STUB) $(GPU_OBJS)
 
 all:  $(PROGS)
@@ -104,7 +104,7 @@ base_score.o: amber_typer.h utils.h base_score.h dockmol.h trace.h trace.inl
 conf_gen_ag.o: conf_gen_ag.h dockmol.h utils.h fingerprint.h master_score.h limit_max_change.h
 conf_gen_ag.o: score.h base_score.h score_multigrid.h score_footprint.h
 conf_gen_ag.o: score_ph4.h score_volume.h score_hbond.h score_internal.h
-conf_gen_ag.o: score_descriptor.h hungarian.h weisfeiler_lehmann.h score_gist.h score_amber.h
+conf_gen_ag.o: score_descriptor.h hungarian.h weisfeiler_leman.h score_gist.h score_amber.h
 conf_gen_ag.o: nab/nab.h defreal.h nab/nabtypes.h nab/defreal.h
 conf_gen_ag.o: score_chemgrid.h base_grid.h score_solvent.h grid.h
 conf_gen_ag.o: score_sasa.h sasa.h simplex.h trace.h trace.inl
@@ -279,7 +279,7 @@ bobyqa.o: score_solvent.h grid.h score_sasa.h sasa.h bobyqa.h minimizer.h
 sphere.o: sphere.h utils.h
 trace.o: trace.h trace.inl
 utils.o: utils.h dockmol.h
-weisfeiler_lehmann.o: weisfeiler_lehmann.h dockmol.h
+weisfeiler_leman.o: weisfeiler_leman.h dockmol.h
 xlogp.o: xlogp.h dockmol.h utils.h
 rdtyper.o: rdtyper.h dockmol.h
 rddrive.o: rdtyper.h rddrive.h dockmol.h
