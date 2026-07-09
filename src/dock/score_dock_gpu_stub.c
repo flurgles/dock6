@@ -51,6 +51,15 @@ int dock_gpu_batch_score_with_ie(const float *xyz, int num_poses, int num_atoms,
     return 0;  /* not implemented on CPU */
 }
 
+int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses,
+                                              int num_atoms,
+                                              const int *active_flags,
+                                              float *out_scores)
+{
+    (void)xyz; (void)num_poses; (void)num_atoms; (void)active_flags; (void)out_scores;
+    return 0;  /* not implemented on CPU */
+}
+
 void dock_gpu_cleanup(void)
 {
 }

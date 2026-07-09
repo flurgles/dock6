@@ -107,6 +107,13 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
 
     size = vertex.size();
 
+    /* Ensure torsion_scale_factors is sized for this DOF count —
+       scale_vector() accesses it in the GPU batch path via
+       gpu_batch_eval_scores().  Base Minimizer::do_minimize()
+       does this resize automatically; Simplex_Minimizer subclass
+       must do it explicitly. */
+    torsion_scale_factors.resize(size, 1);
+
     // allocate arrays
     old_vertex = new float[size];
     memset(old_vertex, '\0', sizeof(float) * size);

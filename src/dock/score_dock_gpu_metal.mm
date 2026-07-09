@@ -271,6 +271,110 @@ kernel void score_batch_kernel_atom_parallel(
     }
 }
 
+/* ============ Persistent-threadgroup atom-parallel batch scoring kernel ============
+ * Same scoring logic as score_batch_kernel_atom_parallel, but uses an atomic
+ * work-counter so threadgroups grab the next unprocessed pose instead of being
+ * assigned one statically.  This gives better load balancing: fast poses finish
+ * quickly and the threadgroup grabs the next one, while slow poses don't hold
+ * up an entire GPU core.  On Apple Silicon M1 (8 cores) we launch 32 threadgroups;
+ * small batches get all cores engaged; large batches get seamless load spreading.
+ *
+ * Two extra buffer bindings vs the non-persistent variant:
+ *   buf 14: device atomic_uint* pose_counter (init to 0 before dispatch)
+ *   buf 15: constant uint&  num_poses (total poses to score)
+ */
+kernel void score_batch_kernel_atom_parallel_persistent(
+    device const float*    xyz            [[buffer(0)]],
+    texture3d<float>       grid_avdw      [[texture(0)]],
+    texture3d<float>       grid_bvdw      [[texture(1)]],
+    texture3d<float>       grid_es        [[texture(2)]],
+    device const float*    vdwA           [[buffer(1)]],
+    device const float*    vdwB           [[buffer(2)]],
+    device const float*    charges        [[buffer(3)]],
+    constant GridParams&   gp             [[buffer(4)]],
+    constant int&          num_atoms      [[buffer(5)]],
+    device const int*      active_flags   [[buffer(6)]],
+    device const float*    ie_vdwA        [[buffer(7)]],
+    device const int*      pair_starts    [[buffer(8)]],
+    device const int*      pair_indices   [[buffer(9)]],
+    constant int&          total_pairs    [[buffer(10)]],
+    constant float&        ie_soft_delta  [[buffer(11)]],
+    constant float&        ie_cutoff_sq   [[buffer(12)]],
+    device float*          out_scores     [[buffer(13)]],
+    device atomic_uint*    pose_counter  [[buffer(14)]],
+    constant uint&         num_poses      [[buffer(15)]],
+    uint tid       [[thread_position_in_threadgroup]],
+    uint tg_size   [[threads_per_threadgroup]])
+{
+    uint simd_idx = tid / 32;
+    uint num_simd = (tg_size + 31) / 32;
+    threadgroup float tg_partial[8];
+    threadgroup uint tg_candidate;
+
+    // Thread 0 grabs the first work item; barrier broadcasts to all threads
+    if (tid == 0) {
+        tg_candidate = atomic_fetch_add_explicit(pose_counter, 1, memory_order_relaxed);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    while (tg_candidate < num_poses) {
+        int stride = tg_candidate * num_atoms * 3;
+
+        float total = 0.0;
+        for (uint a = tid; a < num_atoms; a += tg_size) {
+            if (!active_flags[a]) continue;
+
+            float x = xyz[stride + a*3];
+            float y = xyz[stride + a*3 + 1];
+            float z = xyz[stride + a*3 + 2];
+
+            // Grid score — skip if outside grid
+            if (inside_grid(gp, x, y, z)) {
+                float vdw  = trilinear(grid_avdw, gp, x, y, z);
+                float bvdw = trilinear(grid_bvdw, gp, x, y, z);
+                float es   = trilinear(grid_es, gp, x, y, z);
+                total += vdwA[a]*vdw - vdwB[a]*bvdw + charges[a]*es;
+            }
+
+            // IE score — always runs, doesn't depend on grid position
+            int start = pair_starts[a];
+            int end   = pair_starts[a + 1];
+            for (int i = start; i < end; i++) {
+                int a2 = pair_indices[i];
+                float dx = xyz[stride + a*3]   - xyz[stride + a2*3];
+                float dy = xyz[stride + a*3+1] - xyz[stride + a2*3+1];
+                float dz = xyz[stride + a*3+2] - xyz[stride + a2*3+2];
+                float r2 = dx*dx + dy*dy + dz*dz;
+                if (r2 < ie_cutoff_sq) {
+                    float r2eff = r2 + ie_soft_delta;
+                    float denom = r2eff*r2eff*r2eff;
+                    total += (ie_vdwA[a]*ie_vdwA[a2]) / (denom*denom);
+                }
+            }
+        }
+
+        // Cross-SIMD reduction
+        total = simd_sum(total);
+        if (simd_is_first()) {
+            tg_partial[simd_idx] = total;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Thread 0: final sum and fetch next work item
+        if (tid == 0) {
+            float final = 0.0;
+            for (uint i = 0; i < num_simd; i++) {
+                final += tg_partial[i];
+            }
+            out_scores[tg_candidate] = final;
+            tg_candidate = atomic_fetch_add_explicit(pose_counter, 1, memory_order_relaxed);
+        }
+
+        // Barrier ensures all threads see the new tg_candidate or exit together
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+}
+
 struct MolData {
     float ref_xyz[MAX_ATOMS][3];
     int   active_flags[MAX_ATOMS];
@@ -536,6 +640,7 @@ static id<MTLCommandQueue>         g_cmdq       = nil;
 static id<MTLComputePipelineState> g_pso        = nil;  /* grid-only kernel */
 static id<MTLComputePipelineState> g_pso_ie    = nil;  /* grid+IE kernel */
 static id<MTLComputePipelineState> g_pso_atom_parallel = nil; /* atom-parallel scoring kernel */
+static id<MTLComputePipelineState> g_pso_atom_parallel_persistent = nil; /* persistent-threadgroup variant */
 
 /* GPU buffers (shared memory) */
 static id<MTLBuffer> g_buf_grid_avdw  = nil;
@@ -561,6 +666,7 @@ static id<MTLBuffer> g_buf_natoms     = nil;  /* int num_atoms */
 static id<MTLBuffer> g_buf_iep        = nil;  /* IEParams */
 static id<MTLBuffer> g_buf_nnp        = nil;  /* int num_nb_pairs */
 static id<MTLBuffer> g_buf_tg_header  = nil;  /* 2 ints: tg_size, num_simd_groups */
+static id<MTLBuffer> g_buf_pose_counter = nil; /* atomic uint for persistent threadgroup work-queue */
 
 /* Cache for redundant-ligand skip (B2 optimization) */
 static int  g_set_ligand_num_atoms   = -1;
@@ -734,6 +840,21 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
             return 0;
         }
 
+        /* Compile persistent-threadgroup atom-parallel batch scoring kernel */
+        id<MTLFunction> func_app = [lib newFunctionWithName:@"score_batch_kernel_atom_parallel_persistent"];
+        if (!func_app) {
+            fprintf(stderr, "GPU-DOCK: kernel 'score_batch_kernel_atom_parallel_persistent' not found\n");
+            dock_gpu_cleanup();
+            return 0;
+        }
+        g_pso_atom_parallel_persistent = [g_device newComputePipelineStateWithFunction:func_app error:&err];
+        if (!g_pso_atom_parallel_persistent) {
+            fprintf(stderr, "GPU-DOCK: persistent atom-parallel PSO creation failed: %s\n",
+                    [[err localizedDescription] UTF8String]);
+            dock_gpu_cleanup();
+            return 0;
+        }
+
         /* Cache grid parameters */
         g_params.origin_x = origin_x;
         g_params.origin_y = origin_y;
@@ -813,6 +934,7 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
         g_buf_nnp    = alloc_buffer(sizeof(int), "nnp");
         g_buf_active_flags = alloc_buffer(sizeof(int) * GPU_MAX_ATOMS, "active_flags");
         g_buf_tg_header   = alloc_buffer(sizeof(int) * 2, "tg_header");
+        g_buf_pose_counter = alloc_buffer(sizeof(unsigned int), "pose_counter");
 
         /* Allocate per-batch buffers */
         g_buf_xyz    = alloc_buffer(sizeof(float) * 3 * GPU_MAX_ATOMS * GPU_MAX_POSES, "xyz");
@@ -823,7 +945,7 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
             !g_buf_pair_starts || !g_buf_pair_indices ||
             !g_buf_xyz || !g_buf_scores ||
             !g_buf_params || !g_buf_natoms || !g_buf_iep || !g_buf_nnp ||
-            !g_buf_active_flags || !g_buf_tg_header) {
+            !g_buf_active_flags || !g_buf_tg_header || !g_buf_pose_counter) {
             fprintf(stderr, "GPU-DOCK: per-batch buffer allocation failed\n");
             dock_gpu_cleanup();
             return 0;
@@ -1098,6 +1220,97 @@ int dock_gpu_batch_score_with_ie(const float *xyz, int num_poses, int num_atoms,
 }
 
 
+int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses, int num_atoms,
+                                              const int *active_flags, float *out_scores)
+{
+    if (!g_initialized || !g_device) { return 0; }
+    if (g_num_nb_pairs == 0) {
+        return 0;
+    }
+
+    if (num_poses > GPU_MAX_POSES) {
+        fprintf(stderr, "GPU-DOCK: batch size %d exceeds max %d\n",
+                num_poses, GPU_MAX_POSES);
+        return 0;
+    }
+    if (num_atoms > GPU_MAX_ATOMS) {
+        fprintf(stderr, "GPU-DOCK: atoms/pose %d exceeds max %d\n",
+                num_atoms, GPU_MAX_ATOMS);
+        return 0;
+    }
+    @autoreleasepool {
+        size_t xyz_bytes = sizeof(float) * (size_t)num_poses * (size_t)num_atoms * 3;
+        memcpy([g_buf_xyz contents], xyz, xyz_bytes);
+
+        /* Upload active_flags if provided */
+        if (active_flags) {
+            memcpy([g_buf_active_flags contents], active_flags,
+                   sizeof(int) * (size_t)num_atoms);
+        }
+
+        /* Reset atomic work-counter to 0 */
+        unsigned int zero = 0;
+        memcpy([g_buf_pose_counter contents], &zero, sizeof(zero));
+
+        id<MTLCommandBuffer>  cmdbuf = [g_cmdq commandBuffer];
+        cmdbuf.label = @"DockBatchScorePersistent";
+
+        id<MTLComputeCommandEncoder> enc = [cmdbuf computeCommandEncoder];
+        enc.label = @"BatchScoreAPKernelPersistent";
+
+        [enc setComputePipelineState:g_pso_atom_parallel_persistent];
+
+        /* Bind buffers — must match score_batch_kernel_atom_parallel_persistent layout */
+        [enc setBuffer:g_buf_xyz         offset:0 atIndex:0];
+        [enc setTexture:g_tex_grid_avdw   atIndex:0];
+        [enc setTexture:g_tex_grid_bvdw   atIndex:1];
+        [enc setTexture:g_tex_grid_es     atIndex:2];
+        [enc setBuffer:g_buf_vdwA        offset:0 atIndex:1];
+        [enc setBuffer:g_buf_vdwB        offset:0 atIndex:2];
+        [enc setBuffer:g_buf_charges     offset:0 atIndex:3];
+        [enc setBuffer:g_buf_params      offset:0 atIndex:4];
+        write_natoms(num_atoms);
+        [enc setBuffer:g_buf_natoms      offset:0 atIndex:5];
+        [enc setBuffer:g_buf_active_flags offset:0 atIndex:6];
+        [enc setBuffer:g_buf_ie_vdwA     offset:0 atIndex:7];
+        [enc setBuffer:g_buf_pair_starts offset:0 atIndex:8];
+        [enc setBuffer:g_buf_pair_indices offset:0 atIndex:9];
+        [enc setBytes:&g_num_nb_pairs  length:sizeof(int)   atIndex:10];
+        [enc setBytes:&g_ie_soft_delta length:sizeof(float)  atIndex:11];
+        [enc setBytes:&g_ie_cutoff_sq  length:sizeof(float)  atIndex:12];
+        [enc setBuffer:g_buf_scores      offset:0 atIndex:13];
+        [enc setBuffer:g_buf_pose_counter offset:0 atIndex:14];
+        [enc setBytes:&num_poses      length:sizeof(unsigned int) atIndex:15];
+
+        /* Persistent dispatch: launch recommended_batch_size threadgroups,
+           each with 64 threads.  The kernel's atomic work-counter assigns
+           poses to threadgroups dynamically. */
+        unsigned int num_tg = (unsigned int)dock_gpu_recommended_batch_size();
+        NSUInteger tg = 64;
+        MTLSize threadgroupSize = MTLSizeMake(tg, 1, 1);
+        MTLSize threadsPerGrid  = MTLSizeMake((NSUInteger)num_tg * tg, 1, 1);
+
+        [enc dispatchThreads:threadsPerGrid
+           threadsPerThreadgroup:threadgroupSize];
+        [enc endEncoding];
+        [cmdbuf commit];
+        [cmdbuf waitUntilCompleted];
+
+        if (cmdbuf.error) {
+            NSLog(@"GPU-DOCK: command buffer error (persistent AP): %@", cmdbuf.error);
+            return 0;
+        }
+
+        /* Profiling counters */
+        prof_dispatch_count++;
+        prof_total_conformers += num_poses;
+    }
+
+    memcpy(out_scores, [g_buf_scores contents], sizeof(float) * (size_t)num_poses);
+    return 1;
+}
+
+
 void dock_gpu_cleanup(void)
 {
     @autoreleasepool {
@@ -1126,6 +1339,8 @@ void dock_gpu_cleanup(void)
         g_pso               = nil;
         g_pso_ie            = nil;
         g_pso_atom_parallel = nil;
+        g_pso_atom_parallel_persistent = nil;
+        g_buf_pose_counter  = nil;
         g_cmdq           = nil;
         g_device         = nil;
         g_initialized    = 0;

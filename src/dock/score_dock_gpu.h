@@ -74,6 +74,15 @@ int dock_gpu_set_ligand_ie(const float *ie_vdwA, const float *ie_vdwB,
 int dock_gpu_batch_score_with_ie(const float *xyz, int num_poses, int num_atoms,
                                   const int *active_flags, float *out_scores);
 
+/* Same as dock_gpu_batch_score_with_ie but uses persistent threadgroups
+   via atomic work-counter for better GPU core utilization across varying
+   batch sizes.  API identical — takes xyz, returns scores.  Backend
+   dispatches a fixed number of threadgroups that dynamically claim work. */
+int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses,
+                                              int num_atoms,
+                                              const int *active_flags,
+                                              float *out_scores);
+
 /* Upload per-atom scoring parameters (constant per ligand).
    vdwA, vdwB, charges: arrays of length num_atoms.
    These are the pre-resolved values used in the scoring kernel:
