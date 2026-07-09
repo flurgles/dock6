@@ -7,6 +7,15 @@
 #include "utils.h"  // XYZCRD
 
 
+/* Scratch buffer for reentrant grid interpolation.                       */
+/* Each thread or per-atom evaluation uses its own stack-local instance.  */
+struct GridInterpScratch {
+    int             neighbors[8];
+    float           cube_coords[3];
+    int             nearest_neighbor;
+};
+
+
 class           Base_Grid {
 
   public:
@@ -40,9 +49,15 @@ class           Base_Grid {
     void            find_grid_neighbors(float x, float y, float z);
     float           interpolate(float *grid);
 
+    // Reentrant (const) overloads using caller-provided scratch buffer.
+    void            find_grid_neighbors(float x, float y, float z,
+                                        GridInterpScratch &scratch) const;
+    float           interpolate(float *grid,
+                                const GridInterpScratch &scratch) const;
+
   //private: //inorder to compile properly after GIST addition LEP
 
-    int             find_grid_index(int, int, int);
+    int             find_grid_index(int, int, int) const;
 
 };
 

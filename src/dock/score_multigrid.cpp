@@ -576,21 +576,14 @@ Multigrid_Energy_Score::compute_multigrid(DOCKMol & mol,float * vdw_array, float
             for (atom = 0; atom < mol.num_atoms; atom++) {
    
                 if (mol.atom_active_flags[atom]) {
-   
-                    energy_grids[i].find_grid_neighbors(mol.x[atom], mol.y[atom], mol.z[atom]);
-   
-                    // if we account for weighting here we can't report the true grid values.
-                    // move scaling to compute_score
-                    //vdw_val +=
-                    //    ((vdwA[mol.amber_at_id[atom]] * energy_grids[i].interpolate(energy_grids[i].avdw)) -
-                    //     (vdwB[mol.amber_at_id[atom]] * energy_grids[i].interpolate(energy_grids[i].bvdw))) *
-                    //    vdw_scale;
-                    //es_val += mol.charges[atom] * energy_grids[i].interpolate(energy_grids[i].es) * es_scale;
+                    GridInterpScratch scratch;
+                    energy_grids[i].find_grid_neighbors(
+                        mol.x[atom], mol.y[atom], mol.z[atom], scratch);
 
                     vdw_val +=
-                        ((vdwA[mol.amber_at_id[atom]] * energy_grids[i].interpolate(energy_grids[i].avdw)) -
-                         (vdwB[mol.amber_at_id[atom]] * energy_grids[i].interpolate(energy_grids[i].bvdw))) ;
-                    es_val += mol.charges[atom] * energy_grids[i].interpolate(energy_grids[i].es);
+                        ((vdwA[mol.amber_at_id[atom]] * energy_grids[i].interpolate(energy_grids[i].avdw, scratch)) -
+                         (vdwB[mol.amber_at_id[atom]] * energy_grids[i].interpolate(energy_grids[i].bvdw, scratch))) ;
+                    es_val += mol.charges[atom] * energy_grids[i].interpolate(energy_grids[i].es, scratch);
                 }
             }
    
@@ -752,9 +745,9 @@ bool
 Multigrid_Energy_Score::compute_score(DOCKMol & mol)
 {
         // see whether pose is on the grid.
-        vdw_pose_array = new float[numgrids];
-        es_pose_array  = new float[numgrids];
-        bool ongrid = compute_multigrid(mol,vdw_pose_array, es_pose_array);
+        std::vector<float> vdw_local(numgrids);
+        std::vector<float> es_local(numgrids);
+        bool ongrid = compute_multigrid(mol, vdw_local.data(), es_local.data());
 
         //storing footprint information in the footprints field of DOCKMol object,
         //to enable printing of footprint as a text file.  Yuchen 11/1/2016
@@ -762,8 +755,8 @@ Multigrid_Energy_Score::compute_score(DOCKMol & mol)
             FOOTPRINT_ELEMENT temp_footprint_ele;
             temp_footprint_ele.resname = "grid";
             temp_footprint_ele.resid   = i;
-            temp_footprint_ele.vdw     = vdw_pose_array[i];
-            temp_footprint_ele.es      = es_pose_array[i];
+            temp_footprint_ele.vdw     = vdw_local[i];
+            temp_footprint_ele.es      = es_local[i];
             temp_footprint_ele.hb      = 0;
 
             mol.footprints.push_back(temp_footprint_ele);
@@ -780,18 +773,18 @@ Multigrid_Energy_Score::compute_score(DOCKMol & mol)
         else {
                 // weight the grids         
                 if (wt_txt) {
-                  vdw_sum = wt_sum(vdw_pose_array,mgweights_array,numgrids);
-                  es_sum = wt_sum(es_pose_array,mgweights_array,numgrids);
+                  vdw_sum = wt_sum(vdw_local.data(),mgweights_array,numgrids);
+                  es_sum = wt_sum(es_local.data(),mgweights_array,numgrids);
                 }
 		else {
                          if (bltzmn) {   //BCF
-                            partitionFunc(bltzmn_Z,vdw_pose_array,es_pose_array,bltzmn_weight_array,numgrids,bltzmn_temp);
-                            vdw_sum = bltzmn_sum(vdw_pose_array,bltzmn_weight_array,numgrids);
-                            es_sum  = bltzmn_sum(es_pose_array,bltzmn_weight_array,numgrids);
+                            partitionFunc(bltzmn_Z,vdw_local.data(),es_local.data(),bltzmn_weight_array,numgrids,bltzmn_temp);
+                            vdw_sum = bltzmn_sum(vdw_local.data(),bltzmn_weight_array,numgrids);
+                            es_sum  = bltzmn_sum(es_local.data(),bltzmn_weight_array,numgrids);
                          }
                          else {
-                            vdw_sum = sum(vdw_pose_array,numgrids);
-                            es_sum = sum(es_pose_array,numgrids);
+                            vdw_sum = sum(vdw_local.data(),numgrids);
+                            es_sum = sum(es_local.data(),numgrids);
                          }           
                 }
         }
@@ -806,8 +799,8 @@ Multigrid_Energy_Score::compute_score(DOCKMol & mol)
            //CS 06-06-16, Save the unweighted FPS score as a separate DOCKMol Object
            if (use_cor){
 
-               vdw_cor = correlation(vdw_pose_array,vdw_ref_array,numgrids);
-               es_cor = correlation(es_pose_array,es_ref_array,numgrids);
+               vdw_cor = correlation(vdw_local.data(),vdw_ref_array,numgrids);
+               es_cor = correlation(es_local.data(),es_ref_array,numgrids);
                mol.score_fps = vdw_cor + es_cor;//CS
                mol.current_score = mol.current_score + vdw_cor_scale * vdw_cor + es_cor_scale * es_cor;
        
@@ -815,8 +808,8 @@ Multigrid_Energy_Score::compute_score(DOCKMol & mol)
 
            else if (use_euc){
  
-               vdw_euc = euclidean(vdw_pose_array,vdw_ref_array,numgrids);
-               es_euc = euclidean(es_pose_array,es_ref_array,numgrids);
+               vdw_euc = euclidean(vdw_local.data(),vdw_ref_array,numgrids);
+               es_euc = euclidean(es_local.data(),es_ref_array,numgrids);
                mol.score_fps = vdw_euc + es_euc;//CS
                mol.current_score = mol.current_score + vdw_euc_scale * vdw_euc + es_euc_scale * es_euc;
 
@@ -826,13 +819,13 @@ Multigrid_Energy_Score::compute_score(DOCKMol & mol)
 
                float norm_vdw_pose[numgrids];
                float norm_vdw_ref[numgrids];
-               normalize(vdw_pose_array,numgrids,norm_vdw_pose);
+               normalize(vdw_local.data(),numgrids,norm_vdw_pose);
                normalize(vdw_ref_array,numgrids,norm_vdw_ref);
                vdw_norm = euclidean(norm_vdw_pose,norm_vdw_ref,numgrids);
            
                float norm_es_pose[numgrids];
                float norm_es_ref[numgrids];
-               normalize(es_pose_array,numgrids,norm_es_pose);
+               normalize(es_local.data(),numgrids,norm_es_pose);
                normalize(es_ref_array,numgrids,norm_es_ref);
                es_norm = euclidean(norm_es_pose,norm_es_ref,numgrids);
                mol.score_fps =  vdw_norm + es_norm;//CS
@@ -843,7 +836,7 @@ Multigrid_Energy_Score::compute_score(DOCKMol & mol)
         }
          
         mol.current_data = output_score_summary(mol);
-        delete[] vdw_pose_array; delete[] es_pose_array;
+        // vdw_local / es_local are stack-allocated vectors — no manual delete
     return true;
 }
 

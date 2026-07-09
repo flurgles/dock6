@@ -54,8 +54,6 @@ class           Multigrid_Energy_Score:public Base_Score {
     float           bltzmn_temp; // BCF kT
 
     // array
-    float           * vdw_pose_array;
-    float           * es_pose_array;
     float           * vdw_ref_array;
     float           * es_ref_array;
     float           * mgweights_array;

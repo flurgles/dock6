@@ -110,8 +110,8 @@ Base_Grid::is_inside_grid_box(float x, float y, float z)
 
 // +++++++++++++++++++++++++++++++++++++++++
 //computes index of array where value is stored
-int 
-Base_Grid::find_grid_index(int x, int y, int z)
+int
+Base_Grid::find_grid_index(int x, int y, int z) const
 {
     return span[0] * span[1] * z + span[0] * y + x;
 }
@@ -265,6 +265,130 @@ Base_Grid::interpolate(float *grid)
         return value;
     } else {
         return grid[nearest_neighbor];
+    }
+}
+
+
+/* ================================================================= */
+/*  Reentrant interpolation — caller provides the scratch buffer.    */
+/*  These are const: they only write to / read from the scratch,     */
+/*  never to the grid object itself.                                 */
+/* ================================================================= */
+
+void
+Base_Grid::find_grid_neighbors(float x, float y, float z,
+                               GridInterpScratch &scratch) const
+{
+    float x_int = x - origin[0];
+    float y_int = y - origin[1];
+    float z_int = z - origin[2];
+
+    int x_nearest = NINT(x_int / spacing);
+    int x_below = INTFLOOR(x_int / spacing);
+    int x_above = x_below + 1;
+    if (x_nearest >= span[0]) {
+        if (x_below >= span[0])
+            x_nearest = span[0] - 1;
+        else
+            x_nearest = x_below;
+    }
+    if (x_nearest < 0) {
+        if (x_above < 0)
+            x_nearest = 0;
+        else
+            x_nearest = x_above;
+    }
+
+    int y_nearest = NINT(y_int / spacing);
+    int y_below = INTFLOOR(y_int / spacing);
+    int y_above = y_below + 1;
+    if (y_nearest >= span[1]) {
+        if (y_below >= span[1])
+            y_nearest = span[1] - 1;
+        else
+            y_nearest = y_below;
+    }
+    if (y_nearest < 0) {
+        if (y_above < 0)
+            y_nearest = 0;
+        else
+            y_nearest = y_above;
+    }
+
+    int z_nearest = NINT(z_int / spacing);
+    int z_below = INTFLOOR(z_int / spacing);
+    int z_above = z_below + 1;
+    if (z_nearest >= span[2]) {
+        if (z_below >= span[2])
+            z_nearest = span[2] - 1;
+        else
+            z_nearest = z_below;
+    }
+    if (z_nearest < 0) {
+        if (z_above < 0)
+            z_nearest = 0;
+        else
+            z_nearest = z_above;
+    }
+
+    scratch.nearest_neighbor = find_grid_index(x_nearest, y_nearest, z_nearest);
+
+    scratch.neighbors[0] = find_grid_index(x_above, y_above, z_above);
+    scratch.neighbors[1] = find_grid_index(x_above, y_above, z_below);
+    scratch.neighbors[2] = find_grid_index(x_above, y_below, z_above);
+    scratch.neighbors[3] = find_grid_index(x_below, y_above, z_above);
+    scratch.neighbors[4] = find_grid_index(x_above, y_below, z_below);
+    scratch.neighbors[5] = find_grid_index(x_below, y_above, z_below);
+    scratch.neighbors[6] = find_grid_index(x_below, y_below, z_above);
+    scratch.neighbors[7] = find_grid_index(x_below, y_below, z_below);
+
+    float corrected_coords[3];
+    corrected_coords[0] = x - origin[0];
+    corrected_coords[1] = y - origin[1];
+    corrected_coords[2] = z - origin[2];
+
+    scratch.cube_coords[0] = corrected_coords[0] / spacing
+        - (float)(INTFLOOR(corrected_coords[0] / spacing));
+    scratch.cube_coords[1] = corrected_coords[1] / spacing
+        - (float)(INTFLOOR(corrected_coords[1] / spacing));
+    scratch.cube_coords[2] = corrected_coords[2] / spacing
+        - (float)(INTFLOOR(corrected_coords[2] / spacing));
+}
+
+
+float
+Base_Grid::interpolate(float *grid,
+                        const GridInterpScratch &scratch) const
+{
+    float           a1, a2, a3, a4, a5, a6, a7, a8;
+    float           value;
+    int             out_of_bounds, i;
+
+    out_of_bounds = 0;
+    for (i = 0; i < 8; i++)
+        if ((scratch.neighbors[i] > size) || (scratch.neighbors[i] < 0))
+            out_of_bounds = 1;
+
+    if (out_of_bounds == 0) {
+        a8 = grid[scratch.neighbors[7]];
+        a7 = grid[scratch.neighbors[6]] - a8;
+        a6 = grid[scratch.neighbors[5]] - a8;
+        a5 = grid[scratch.neighbors[4]] - a8;
+        a4 = grid[scratch.neighbors[3]] - a8 - a7 - a6;
+        a3 = grid[scratch.neighbors[2]] - a8 - a7 - a5;
+        a2 = grid[scratch.neighbors[1]] - a8 - a6 - a5;
+        a1 = grid[scratch.neighbors[0]] - a8 - a7 - a6 - a5 - a4 - a3 - a2;
+
+        value =
+            a1 * scratch.cube_coords[0] * scratch.cube_coords[1] * scratch.cube_coords[2] +
+            a2 * scratch.cube_coords[0] * scratch.cube_coords[1] +
+            a3 * scratch.cube_coords[0] * scratch.cube_coords[2] +
+            a4 * scratch.cube_coords[1] * scratch.cube_coords[2] + a5 * scratch.cube_coords[0] +
+            a6 * scratch.cube_coords[1] + a7 * scratch.cube_coords[2] + a8;
+
+        return value;
+    } else {
+        return grid[scratch.nearest_neighbor];
     }
 }
 
