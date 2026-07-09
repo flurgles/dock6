@@ -6,7 +6,7 @@
 ConformerPool — CPU-side orchestrator for batch simplex minimization.
 
 Packs ready candidates from active slots into a flat GPU dispatch buffer,
-calls dock_gpu_batch_score_with_ie(), distributes returned scores to each
+calls dock_gpu_batch_score_with_ie_persistent(), distributes returned scores to each
 slot's Nelder-Mead decision tree, and manages slot lifecycle (add, converge,
 poll).
 
@@ -261,7 +261,7 @@ ConformerPool::step()
     }
 
     /* Phase 2: Submit GPU dispatch */
-    int ok = dock_gpu_batch_score_with_ie(
+    int ok = dock_gpu_batch_score_with_ie_persistent(
         m_xyz_buffer, total, na, active_flags, m_score_buffer);
 
     if (!ok) {

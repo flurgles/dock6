@@ -51,7 +51,7 @@ Minimizer::gpu_batch_eval_scores(Base_Score & score,
     }
 
     /* Launch GPU batch with internal energy */
-    int ok = dock_gpu_batch_score_with_ie(xyz, n, na, active_flags, scores);
+    int ok = dock_gpu_batch_score_with_ie_persistent(xyz, n, na, active_flags, scores);
     delete[] xyz;
     delete[] active_flags;
 
