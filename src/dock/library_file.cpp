@@ -2822,16 +2822,22 @@ Library_File::cluster_list(){
 
                 // if j-pose is not assigned to a cluster already
                 if (cluster_assignments[j] > 0) {
-                    double rmsds[4]; 
-                    calculate_rmsd(ranked_poses[i].mol, ranked_poses[j].mol,rmsds);
-                    if (final_pose_cluster_rmsd_type == "hungarian")
-                        crmsd = rmsds[1];
-                    else if (final_pose_cluster_rmsd_type == "min")
-                        crmsd = rmsds[2];
-                    else if (final_pose_cluster_rmsd_type == "weisfeiler")
-                        crmsd = rmsds[3];
-                    else
-                        crmsd = rmsds[0];
+                    // Compute only the selected RMSD type:
+                    if (final_pose_cluster_rmsd_type == "hungarian") {
+                        Hungarian_RMSD h;
+                        crmsd = h.calc_Hungarian_RMSD(ranked_poses[i].mol,
+                                                      ranked_poses[j].mol);
+                    } else if (final_pose_cluster_rmsd_type == "min") {
+                        crmsd = calculate_min_rmsd(ranked_poses[i].mol,
+                                                   ranked_poses[j].mol);
+                    } else if (final_pose_cluster_rmsd_type == "weisfeiler") {
+                        WL_RMSD wl;
+                        crmsd = wl.calc_WL_RMSD(ranked_poses[i].mol,
+                                                ranked_poses[j].mol);
+                    } else {
+                        crmsd = calculate_std_rmsd(ranked_poses[i].mol,
+                                                   ranked_poses[j].mol);
+                    }
                     // if j-pose is close enough to i-pose, add it to i-cluster
                     if (crmsd < cluster_rmsd_threshold) {
                         ++ cluster_assignments[i];
