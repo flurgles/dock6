@@ -55,6 +55,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <map>
+#include <vector>
 #include "stdlib.h"
 #include "string.h"
 #include "amber_typer.h"
@@ -714,11 +715,10 @@ main(int argc, char **argv)
                   }
                   //cout << "Before sorting:  " << c_master_conf.c_hdb_conf.all_poses[0].first << endl;
                   //
-                  //int *top_X = new int [number_min]; // list of index for top x poses. 
-                  int top_X[number_min]; // list of index for top x poses. 
+                  std::vector<int> top_X(number_min);
                   
                   //c_library.sort_top_X_mol(c_master_conf.c_hdb_conf.all_poses, number_min, top_X);
-                  if (! c_library.sort_top_X_mol(c_master_conf.c_hdb_conf.all_poses, number_min, top_X)) { 
+                  if (! c_library.sort_top_X_mol(c_master_conf.c_hdb_conf.all_poses, number_min, top_X.data())) { 
                       
                       cout << "Warning... no poses found with min score." << endl;
                       //break;

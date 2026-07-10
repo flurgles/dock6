@@ -1730,12 +1730,12 @@ Library_File::sort_top_X_mol(vector <SCOREMol> & mol, int number, int *list)
            if ((list_mol[j] < min) && (!list_mol_bool[j])){ 
                 min_ind = j;
                 min = list_mol[j];
-                list_mol_bool[j] = true;
                 min_found = true;
                 all_min_found = true;
                 //cout << "index:" << min_ind << "   score:"<< min << endl;
            }
       }
+      if (min_found) list_mol_bool[min_ind] = true;
       if (! min_found ){
            //cout << "Error..." << endl;
            //exit(0);

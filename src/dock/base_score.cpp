@@ -2,7 +2,6 @@
 #include "amber_typer.h"
 #include "base_score.h"
 #include "dockmol.h"
-#include "trace.h"
 
 using namespace std;
 
@@ -27,11 +26,9 @@ Base_Score::Base_Score()
     ie_vdwA = NULL;
     ie_vdwB = NULL;
     ie_soft_delta = 0.0;
-    ie_vdw_cutoff_sq = 1e10f;  // large default = no effective cutoff
+    ie_vdw_cutoff_sq = 1e10f;  //default 1e10f for no effective cutoff. set to 25.0 for nb pair calc.
     nb_int.clear();
     rep_radius_scale = 1.0;
-    // consider scaling the repulsive energy during ligand growth
-    // add the question tree later?
 }
 
 // +++++++++++++++++++++++++++++++++++++++++
@@ -56,7 +53,6 @@ Base_Score::~Base_Score()
 float
 Base_Score::compute_ligand_internal_energy(DOCKMol & mol)
 {
-    Trace           trace( "Base_Score::compute_ligand_internal_energy" );
     float           distancesq;
     unsigned int    i;
     unsigned int    a1,a2;
@@ -64,46 +60,34 @@ Base_Score::compute_ligand_internal_energy(DOCKMol & mol)
     float           int_vdw_rep = 0.0;
 
     if (use_internal_energy) {
-        trace.note( "mol.title = " + mol.title );
-        trace.integer( "mol.num_atoms", mol.num_atoms );
-        trace.integer( "nb_int.size", nb_int.size() );
         for (i = 0; i < nb_int.size(); i++) {
             // nb_int is a neighbor list of all non-bonded pair of ligand atoms
                a1 = nb_int[i].first;
                a2 = nb_int[i].second;
 
-               // these traces produce a lot of output.
-               // trace.integer( "non-bonded pair 1st", a1 );
-               // trace.integer( "non-bonded pair 2nd", a2 );
                if ( mol.atom_active_flags[a1] && mol.atom_active_flags[a2] ) {
                         distancesq = ((mol.x[a1] - mol.x[a2])*(mol.x[a1] - mol.x[a2]))
                                    + ((mol.y[a1] - mol.y[a2])*(mol.y[a1] - mol.y[a2]))
                                    + ((mol.z[a1] - mol.z[a2])*(mol.z[a1] - mol.z[a2]));
 
-                        // Distance cutoff: pairs beyond ie_vdw_cutoff_sq contribute
-                        // negligible 1/r^12 repulsion and are skipped for speed.
-                        // Default 1e10 means no effective cutoff.
-                        if (distancesq < ie_vdw_cutoff_sq) {
-
+                    // Distance cutoff: pairs beyond ie_vdw_cutoff_sq contribute
+                    // negligible 1/r^12 repulsion and are skipped for speed.
+                    if (distancesq < ie_vdw_cutoff_sq) {
                         if (ie_soft_delta > 0.0) {
-                            // Soft-core: E = A / (r^2 + delta)^6
+                            // Soft-core Repulsive LJ: E = A / (r^2 + delta)^6
                             // No singularity at r=0, finite repulsive barrier
                             float denom = distancesq + ie_soft_delta;
                             float denom_cubed = denom * denom * denom;
                             int_vdw_rep += (ie_vdwA[a1]*ie_vdwA[a2]) / (denom_cubed * denom_cubed);
                         }
                         else if (ie_rep_exp == 12) {
-
                             float distance6;
                             distance6 = distancesq*distancesq*distancesq;
                             int_vdw_rep += (ie_vdwA[a1]*ie_vdwA[a2]) / (distance6*distance6);
-
                         }
-
                         else
                             int_vdw_rep += (ie_vdwA[a1]*ie_vdwA[a2]) / pow(distancesq, float(ie_rep_exp/2.0));
-
-                        }  // end distance cutoff
+                    }  // end distance cutoff
                 }
         }
     }
@@ -117,6 +101,7 @@ Base_Score::compute_ligand_internal_energy(DOCKMol & mol)
 // Compute VDW repulsion for one non-bonded atom pair.
 // Extracted from the inner loop of compute_ligand_internal_energy so that
 // Minimizer can sum over a reduced subset when only some torsions change.
+// Called by compute_internal_energy_subset() to speed up computation
 float
 Base_Score::compute_pair_internal_energy(const DOCKMol& mol, int a1, int a2) const
 {
@@ -154,6 +139,7 @@ Base_Score::compute_pair_internal_energy(const DOCKMol& mol, int a1, int a2) con
 // Sum VDW repulsion energy over a specific subset of nb_int pairs.
 // The \a indices vector contains indices into the nb_int array.
 // The same pair may appear multiple times (caller is responsible for dedup).
+// Called by Minimizer to speed up computation when only some torsions change.
 float
 Base_Score::compute_internal_energy_subset(const DOCKMol& mol,
                                             const std::vector<int>& indices) const
@@ -169,70 +155,6 @@ Base_Score::compute_internal_energy_subset(const DOCKMol& mol,
     return total;
 }
 
-/*
-// +++++++++++++++++++++++++++++++++++++++++
-// sudipto & trent - 14-11-08
-// Overloaded version of compute_ligand_internal_energy returns the components
-// should be exactly the same as function above in algorithm
-float
-Base_Score::compute_ligand_internal_energy(DOCKMol & mol, float& int_vdw_att, float& int_vdw_rep, float& int_es)
-{
-    float           distance;
-    unsigned int    a1, a2;
-
-    float           ligand_internal_energy = 0.0;
-    //float           ie_diel = 2.0;
-    //int             ie_rep_exp = 12;
-    //int             ie_att_exp = 6;
-
-    int_vdw_att = 0.0;
-    int_vdw_rep = 0.0;
-    int_es = 0.0;
-
-    if (use_internal_energy) {
-        for (a1 = 0; a1 < mol.num_atoms - 1; a1++) {
-            for (a2 = a1 + 1; a2 < mol.num_atoms; a2++) {
-
-               if ( (mol.atom_active_flags[a1]) // atom a1 is active
-                        && (mol.atom_active_flags[a2]) // atom a2 is active
-                        && (mol.get_bond(a1, a2) == -1) // a1 & a2 are non-bonded
-                        && (!mol.atoms_are_one_three(a1, a2)) // not 1-3
-                        && (!mol.atoms_are_one_four(a1, a2)) // not 1-4
-                        && ((mol.atom_segment_ids[a1] != mol.atom_segment_ids[a2])  //not within same segment
-                            ||((mol.atom_segment_ids[a1]==-1)&&(mol.atom_segment_ids[a2]==-1)))) {
-
-                        // DTM - 11-12-08 - check that atoms are from different segments, or that no segments have been assigned
-                        // && (mol.amber_at_heavy_flag[a1])
-                        // && (mol.amber_at_heavy_flag[a2])
-
-                        distance = pow((mol.x[a1] - mol.x[a2]), 2) + pow((mol.y[a1] - mol.y[a2]),
-                                         2) + pow((mol.z[a1] - mol.z[a2]), 2);
-
-                        distance = sqrt(distance);
-                        int_es += (mol.charges[a1] * mol.charges[a2] * ie_diel) / distance;
-
-                        int_vdw_att -= (vdwB[mol.amber_at_id[a1]] *
-                             vdwB[mol.amber_at_id[a2]]) / pow(distance, (ie_att_exp));
-
-                        int_vdw_rep += (vdwA[mol.amber_at_id[a1]] *
-                             vdwA[mol.amber_at_id[a2]]) / pow(distance, (ie_rep_exp));
-                }
-            }
-        }
-    }
-    //ligand_internal_energy = int_vdw_att + int_vdw_rep + int_es;
-
-    // Sudipto - 20-11-08
-    // Only return the repulsive component of the vdw energy
-    // Since dock does not have a Dihedral energy term, the attractive component of the vdw energy
-    // can cause the ligand to fold up on itself to make 'favorable' interactions while still
-    // remaining at optimal vdw repulsive distance.
-    ligand_internal_energy = int_vdw_rep;
-    return ligand_internal_energy;
-}
-
-*/
-
 
 // Bad design warning: sudipto
 // This function stores data for each specific ligand inside class base_score
@@ -246,8 +168,6 @@ Base_Score::compute_ligand_internal_energy(DOCKMol & mol, float& int_vdw_att, fl
 void
 Base_Score::initialize_internal_energy(DOCKMol & mol)
 {
-    Trace           trace( "Base_Score::initialize_internal_energy" );
-    //cout << "I AM here in Base_Score::initialize_internal_energy" <<endl;
     //ie_att_exp, ie_rep_exp, ie_diel must be set before calling this
     //clear the ie_vdw arrays
     delete[]ie_vdwA;
@@ -365,3 +285,67 @@ Base_Score::init_vdw_energy(AMBER_TYPER & typer, float att_exp, float rep_exp)
                  pow((2 * typer.atom_typer.types[i].radius), att_exp));
     }
 }
+
+/*
+// +++++++++++++++++++++++++++++++++++++++++
+// sudipto & trent - 14-11-08
+// Overloaded version of compute_ligand_internal_energy returns the components
+// should be exactly the same as function above in algorithm
+float
+Base_Score::compute_ligand_internal_energy(DOCKMol & mol, float& int_vdw_att, float& int_vdw_rep, float& int_es)
+{
+    float           distance;
+    unsigned int    a1, a2;
+
+    float           ligand_internal_energy = 0.0;
+    //float           ie_diel = 2.0;
+    //int             ie_rep_exp = 12;
+    //int             ie_att_exp = 6;
+
+    int_vdw_att = 0.0;
+    int_vdw_rep = 0.0;
+    int_es = 0.0;
+
+    if (use_internal_energy) {
+        for (a1 = 0; a1 < mol.num_atoms - 1; a1++) {
+            for (a2 = a1 + 1; a2 < mol.num_atoms; a2++) {
+
+               if ( (mol.atom_active_flags[a1]) // atom a1 is active
+                        && (mol.atom_active_flags[a2]) // atom a2 is active
+                        && (mol.get_bond(a1, a2) == -1) // a1 & a2 are non-bonded
+                        && (!mol.atoms_are_one_three(a1, a2)) // not 1-3
+                        && (!mol.atoms_are_one_four(a1, a2)) // not 1-4
+                        && ((mol.atom_segment_ids[a1] != mol.atom_segment_ids[a2])  //not within same segment
+                            ||((mol.atom_segment_ids[a1]==-1)&&(mol.atom_segment_ids[a2]==-1)))) {
+
+                        // DTM - 11-12-08 - check that atoms are from different segments, or that no segments have been assigned
+                        // && (mol.amber_at_heavy_flag[a1])
+                        // && (mol.amber_at_heavy_flag[a2])
+
+                        distance = pow((mol.x[a1] - mol.x[a2]), 2) + pow((mol.y[a1] - mol.y[a2]),
+                                         2) + pow((mol.z[a1] - mol.z[a2]), 2);
+
+                        distance = sqrt(distance);
+                        int_es += (mol.charges[a1] * mol.charges[a2] * ie_diel) / distance;
+
+                        int_vdw_att -= (vdwB[mol.amber_at_id[a1]] *
+                             vdwB[mol.amber_at_id[a2]]) / pow(distance, (ie_att_exp));
+
+                        int_vdw_rep += (vdwA[mol.amber_at_id[a1]] *
+                             vdwA[mol.amber_at_id[a2]]) / pow(distance, (ie_rep_exp));
+                }
+            }
+        }
+    }
+    //ligand_internal_energy = int_vdw_att + int_vdw_rep + int_es;
+
+    // Sudipto - 20-11-08
+    // Only return the repulsive component of the vdw energy
+    // Since dock does not have a Dihedral energy term, the attractive component of the vdw energy
+    // can cause the ligand to fold up on itself to make 'favorable' interactions while still
+    // remaining at optimal vdw repulsive distance.
+    ligand_internal_energy = int_vdw_rep;
+    return ligand_internal_energy;
+}
+
+*/

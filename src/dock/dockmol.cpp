@@ -4049,7 +4049,6 @@ HDB_Mol::~HDB_Mol(){
 void
 HDB_Mol::clear_molecule()
 {
-  delete[]name;
   delete[]atoms;
   delete[]bonds;
   delete[]coords;
@@ -4057,7 +4056,7 @@ HDB_Mol::clear_molecule()
   delete[]segs;
   delete[]confs;
 
-name = new char [100];
+name[0] = '\0';  // reuse existing buffer, no re-allocation needed
 atoms  = NULL;
 bonds  = NULL;
 coords = NULL;
