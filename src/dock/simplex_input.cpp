@@ -155,6 +155,17 @@ Simplex_Minimizer::input_parameters(Parameter_Reader & parm,
             cout << "Rotation step: " << rot_step_size << endl;
             cout << "Torsion step size: " << tors_step_size << endl;
 
+            // Adaptive Nelder-Mead (Gao & Han 2012): scale the expansion,
+            // contraction and shrink coefficients by the problem dimension n
+            // to prevent simplex collapse in high-dimensional problems.
+            // Defaults to OFF for backward compatibility (bit-identical
+            // output with the classical fixed coefficients).
+            simplex_adaptive =
+                (parm.query_param("simplex_adaptive", "no",
+                                  "yes no") == "yes");
+            cout << "Adaptive Nelder-Mead (Gao & Han 2012): "
+                 << (simplex_adaptive ? "yes" : "no") << endl;
+
             // Minimization parameters for rigid anchor
             // If these are not set in the input file, the values previously
             // read are used.

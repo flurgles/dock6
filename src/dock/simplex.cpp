@@ -52,9 +52,14 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
 
     float           ypr = 0;
     float           yprr = 0;
-    float           alpha = 1.0;        /* range: 0=no extrap, 1=unit step
-                                         * extrap, higher OK */
-    float           beta = 0.5; /* range: 0=no contraction, 1=full contraction */
+    // Classical Nelder-Mead coefficients (Lagarias et al. 1998).  In the
+    // non-adaptive case alpha (reflection) doubles as the expansion step
+    // size via (1+alpha)*pr - alpha*pbar, giving an effective gamma=2.0.
+    // The adaptive case (Gao & Han 2012) uses a separate gamma.
+    float           alpha = 1.0;        /* reflection (always 1.0 in Nelder-Mead) */
+    float           gamma = 2.0;        /* expansion  (standard 2.0; adaptive: 1+2/n) */
+    float           beta  = 0.5;        /* contraction/rho (standard 0.5; adaptive: 0.75-0.5/n) */
+    float           sigma = 0.5;        /* shrink (standard 0.5; adaptive: 1-1/n) */
     float           optimum;
     int             replace_flag;       /* flag for whether bad vertex replaced 
                                          */
@@ -106,6 +111,24 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
     //srand(random_seed); // reset the seed so that molecule order in the file does not mater. 
 
     size = vertex.size();
+
+    // Adaptive Nelder-Mead parameters (Gao & Han 2012): when enabled, scale
+    // the expansion (gamma), contraction (rho/beta), and shrink (sigma)
+    // coefficients by the problem dimension n = size to prevent simplex
+    // collapse in high-dimensional problems (common in flexible docking:
+    // 3 trans + 3 rot + n_tors DOF).  Reflection (alpha) is NOT adapted.
+    //   gamma = 1.0 + 2.0/n   rho = 0.75 - 0.5/n   sigma = 1.0 - 1.0/n
+    // With simplex_adaptive=false (default) the classical fixed coefficients
+    // (alpha=1.0, gamma=2.0, beta=0.5, sigma=0.5) are used and output is
+    // bit-identical to prior DOCK versions.
+    //   Gao, F. & Han, L. (2012), Comput. Optim. Appl. 51(1), 259--277,
+    //   DOI: 10.1007/s10589-010-9329-3
+    if (simplex_adaptive) {
+        const float n = (float) size;
+        gamma = 1.0f + 2.0f / n;
+        beta  = 0.75f - 0.5f / n;
+        sigma = 1.0f  - 1.0f  / n;
+    }
 
     /* Ensure torsion_scale_factors is sized for this DOF count —
        scale_vector() accesses it in the GPU batch path via
@@ -300,16 +323,18 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
             /* ---- Pre-compute all candidate vertex vectors for GPU speculative batch ---- */
             /* Candidates:
                0: reflected point (pr)  — always needed
-               1: expanded point (prr_exp = (1+alpha)*pr - alpha*pbar)
-               2: contracted-with-pr (prr_cA = beta*pr + (1-beta)*pbar)
-               3: contracted-with-orig (prr_cB = beta*p[ihi] + (1-beta)*pbar)
+               1: expanded point  (prr_exp = gamma*pr + (1-gamma)*pbar)
+               2: contracted-pr   (prr_cA  = beta*pr + (1-beta)*pbar)
+               3: contracted-orig (prr_cB  = beta*p[ihi] + (1-beta)*pbar)
+               With classical coefficients (gamma=2.0) the expansion reduces to
+               the original DOCK form (1+alpha)*pr - alpha*pbar since alpha=1.0.
             */
             {
             int use_speculative = use_gpu;
             float batch_scores[4];
             FLOATVec prr_exp(size), prr_cA(size), prr_cB(size);
             for (i = 0; i < size; i++) {
-                prr_exp[i] = (1.0 + alpha) * pr[i] - alpha * pbar[i];
+                prr_exp[i] = gamma * pr[i] + (1.0 - gamma) * pbar[i];
                 prr_cA[i]  = beta * pr[i] + (1.0 - beta) * pbar[i];
                 prr_cB[i]  = beta * p[ihi][i] + (1.0 - beta) * pbar[i];
             }
@@ -429,7 +454,9 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                         if (i != ilo) {
                             FLOATVec sv(size);
                             for (j = 0; j < size; j++) {
-                                sv[j] = p[i][j] = 0.5 * (p[i][j] + p[ilo][j]);
+                                // Shrink toward best vertex:  x_i <- sigma*x_i + (1-sigma)*x_best
+                                // Standard sigma=0.5 gives the classic 0.5*(x_i + x_best).
+                                sv[j] = p[i][j] = sigma * p[i][j] + (1.0f - sigma) * p[ilo][j];
                             }
                             shrink_verts.push_back(sv);
                         }
