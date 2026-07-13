@@ -155,16 +155,36 @@ Simplex_Minimizer::input_parameters(Parameter_Reader & parm,
             cout << "Rotation step: " << rot_step_size << endl;
             cout << "Torsion step size: " << tors_step_size << endl;
 
-            // Adaptive Nelder-Mead (Gao & Han 2012): scale the expansion,
-            // contraction and shrink coefficients by the problem dimension n
-            // to prevent simplex collapse in high-dimensional problems.
-            // Defaults to OFF for backward compatibility (bit-identical
-            // output with the classical fixed coefficients).
-            simplex_adaptive =
-                (parm.query_param("simplex_adaptive", "no",
-                                  "yes no") == "yes");
-            cout << "Adaptive Nelder-Mead (Gao & Han 2012): "
-                 << (simplex_adaptive ? "yes" : "no") << endl;
+            // Adaptive Nelder-Mead (Gao & Han 2012): controls whether the
+            // expansion/contraction/shrink coefficients are scaled by the
+            // problem dimension n to prevent simplex collapse in
+            // high-dimensional flexible docking problems.
+            //   "no"         — classical fixed coefficients (default)
+            //   "yes"        — full adaptive coefficients
+            //   "dim_aware"  — sigmoid blend from fixed to adaptive based
+            //                  on problem dimensionality
+            {
+                string mode_str =
+                    parm.query_param("simplex_adaptive", "no",
+                                     "yes no dim_aware");
+                if (mode_str == "yes")
+                    simplex_mode = 1;
+                else if (mode_str == "dim_aware")
+                    simplex_mode = 2;
+                else
+                    simplex_mode = 0;
+
+                cout << "Adaptive Nelder-Mead (Gao & Han 2012): "
+                     << mode_str;
+                if (simplex_mode == 2) {
+                    simplex_crossover =
+                        atoi(parm.query_param("simplex_adaptive_crossover",
+                                              "17").c_str());
+                    cout << " (crossover: " << simplex_crossover
+                         << " bonds)";
+                }
+                cout << endl;
+            }
 
             // Minimization parameters for rigid anchor
             // If these are not set in the input file, the values previously

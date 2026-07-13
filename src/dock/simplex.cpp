@@ -112,23 +112,43 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
 
     size = vertex.size();
 
-    // Adaptive Nelder-Mead parameters (Gao & Han 2012): when enabled, scale
-    // the expansion (gamma), contraction (rho/beta), and shrink (sigma)
-    // coefficients by the problem dimension n = size to prevent simplex
-    // collapse in high-dimensional problems (common in flexible docking:
-    // 3 trans + 3 rot + n_tors DOF).  Reflection (alpha) is NOT adapted.
-    //   gamma = 1.0 + 2.0/n   rho = 0.75 - 0.5/n   sigma = 1.0 - 1.0/n
-    // With simplex_adaptive=false (default) the classical fixed coefficients
-    // (alpha=1.0, gamma=2.0, beta=0.5, sigma=0.5) are used and output is
-    // bit-identical to prior DOCK versions.
+    // Adaptive Nelder-Mead (Gao & Han 2012): controls the expansion (gamma),
+    // contraction (rho/beta), and shrink (sigma) coefficients.
+    //   simplex_mode=0 (no):     classical fixed coefficients — gamma=2.0,
+    //                            beta=0.5, sigma=0.5 (bit-identical to
+    //                            prior DOCK versions).
+    //   simplex_mode=1 (yes):    full adaptive — gamma=1+2/n, rho=0.75-0.5/n,
+    //                            sigma=1-1/n.
+    //   simplex_mode=2 (dim_aware): sigmoid blend from fixed (low n) to
+    //                            adaptive (high n), centered at
+    //                            simplex_crossover + 6 DOF.
+    // Reflection (alpha=1.0) is never adapted.
+    // Reference:
     //   Gao, F. & Han, L. (2012), Comput. Optim. Appl. 51(1), 259--277,
     //   DOI: 10.1007/s10589-010-9329-3
-    if (simplex_adaptive) {
+    if (simplex_mode == 1) {
         const float n = (float) size;
         gamma = 1.0f + 2.0f / n;
         beta  = 0.75f - 0.5f / n;
         sigma = 1.0f  - 1.0f  / n;
+    } else if (simplex_mode == 2) {
+        // Dimension-aware blend: sigmoid blends from fixed (w=1 at n_path)
+        // to full adaptive (w=0 at high n), centered at crossover+6 DOF.
+        const float n    = (float) size;
+        const float n0   = (float)(simplex_crossover + 6);
+        const float k    = 0.5f;              // sigmoid steepness
+        float w = 1.0f - 1.0f / (1.0f + expf(-k * (n - n0)));
+        if (w < 0.0f) w = 0.0f;
+        if (w > 1.0f) w = 1.0f;
+        const float ga = 1.0f + 2.0f / n;     // adaptive gamma
+        const float rb = 0.75f - 0.5f / n;    // adaptive rho/beta
+        const float sg = 1.0f  - 1.0f  / n;   // adaptive sigma
+        gamma = w * 2.0f + (1.0f - w) * ga;
+        beta  = w * 0.5f + (1.0f - w) * rb;
+        sigma = w * 0.5f + (1.0f - w) * sg;
     }
+    // simplex_mode == 0: use fixed coefficients (gamma=2.0, beta=0.5,
+    // sigma=0.5) already set at declaration
 
     /* Ensure torsion_scale_factors is sized for this DOF count —
        scale_vector() accesses it in the GPU batch path via
