@@ -105,11 +105,12 @@ AG_Conformer_Search::input_parameters(Parameter_Reader & parm)
             }
 
             // RMSD type for pruning clustering during anchor+growth:
-            //   "std"      — standard layer-weighted heavy-atom RMSD (default)
-            //   "hungarian" — symmetry-corrected via Hungarian algorithm, layer-weighted
-            //   "min"      — one-way minimum RMSD, layer-weighted
+            //   "std"        — standard layer-weighted heavy-atom RMSD (default)
+            //   "hungarian"  — symmetry-corrected via Hungarian algorithm, layer-weighted
+            //   "min"        — one-way minimum RMSD, layer-weighted
+            //   "weisfeiler" — WL graph-coloring symmetry RMSD, layer-weighted
             // For final pose clustering, see final_pose_cluster_rmsd_type in library_file.cpp.
-            pruning_cluster_rmsd_type = parm.query_param("pruning_cluster_rmsd_type", "std", "std hungarian min");
+            pruning_cluster_rmsd_type = parm.query_param("pruning_cluster_rmsd_type", "std", "std hungarian min weisfeiler");
 
             anchor_score_cutoff = 1000.0;
             num_growth_poses = INT_MAX;
@@ -1069,6 +1070,68 @@ AG_Conformer_Search::calc_active_rmsd(CONFORMER & ref, CONFORMER & conf)
     return rmsd;
 }
 
+
+// +++++++++++++++++++++++++++++++++++++++++
+// Layer-weighted Weisfeiler-Leman symmetry-corrected RMSD for pruning
+// clustering. Uses pre-computed WL colors (one refinement per growth layer)
+// and a per-atom weight array derived from the growth layer structure, then
+// delegates to WL_RMSD::calc_WL_RMSD_weighted which finds the optimal
+// within-orbit permutation to minimize the weighted RMSD.
+//
+// colors must come from wl_color_refine(...,  true) on a representative
+// conformer at this growth stage so that only heavy, active atoms get
+// WL colors (inactive/hydrogen atoms have colors[i] < 0 and are skipped).
+//
+// weights[i] = (layer_index + 1) for atoms grown at layer i, 0 otherwise;
+// built by the caller (once per layer) using the same traversal as
+// calc_layer_rmsd_hungarian().
+//
+// Falls back to calc_layer_rmsd() if the WL RMSD returns a negative
+// sentinel (-1000.0) — this should not happen during normal growth
+// (same num_atoms, colors sized to match), but guards defensively.
+//
+namespace {
+    // Pre-compute per-atom weights for WL-RMSD growth pruning.
+    // Atoms at layer i get weight (i+1), matching the standard
+    // calc_layer_rmsd() layer-weighting scheme. Uses local loop
+    // variables to avoid corrupting the outer grow_periphery state.
+    void compute_wl_weights(const vector<LAYER>& layers,
+                            const vector<LAYER_SEGMENT>& layer_segments,
+                            vector<double>& weights)
+    {
+        fill(weights.begin(), weights.end(), 0.0);
+        for (int li = 0; li < (int)layers.size(); li++) {
+            const INTVec& segs = layers[li].segments;
+            for (int lj = 0; lj < (int)segs.size(); lj++) {
+                const LAYER_SEGMENT& seg = layer_segments[segs[lj]];
+                for (int lk = 0; lk < (int)seg.atoms.size(); lk++) {
+                    weights[seg.atoms[lk]] = (double)(li + 1);
+                }
+            }
+        }
+    }
+}
+
+
+float
+AG_Conformer_Search::calc_layer_rmsd_weisfeiler(CONFORMER & a,
+                                                  CONFORMER & b,
+                                                  const vector<int> & colors,
+                                                  const double * weights)
+{
+    if (a.structure.num_atoms != b.structure.num_atoms)
+        return calc_layer_rmsd(a, b);
+
+    static WL_RMSD wl;
+    double rmsd = wl.calc_WL_RMSD_weighted(a.structure, b.structure,
+                                           colors, weights);
+    if (rmsd < 0.0)
+        return calc_layer_rmsd(a, b);
+
+    return (float)rmsd;
+}
+
+
 // +++++++++++++++++++++++++++++++++++++++++
 void
 AG_Conformer_Search::grow_periphery(Master_Score & score,
@@ -1234,22 +1297,43 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
     // remove confs that fail the rank/rmsd test
     if(cluster){
         float RMSD_CUTOFF = pruning_clustering_cutoff;
+
+        // Pre-compute WL colors + per-atom weights for weisfeiler pruning so
+        // the O(n^2) pairwise loop pays one wl_color_refine (expensive) and one
+        // layer-weight traversal, not one per pair. Colors depend only on the
+        // graph (atom types + active bonds), which is shared across all
+        // conformers at this growth stage.
+        vector<int>  wl_colors;
+        vector<double> wl_weights;
+        if (pruning_cluster_rmsd_type == "weisfeiler" && ligand_mol_symmetric
+            && !exp_seeds.empty()) {
+            compute_wl_weights(layers, layer_segments, wl_weights);
+            {
+                static WL_RMSD wl;
+                wl.wl_color_refine(exp_seeds[0].structure, wl_colors, true);
+            }
+        }
+
         for (j = 0; j < exp_seeds.size(); j++) {
                if (!exp_seeds[j].used) {
                     for (k = j + 1; k < exp_seeds.size(); k++) {
                        if (!exp_seeds[k].used) {
 
                             // Dispatch to RMSD function based on pruning_cluster_rmsd_type.
-                            // If no graph symmetry detected, Hungarian/min fall back to std
-                            // to avoid paying the Hungarian O(n^4) cost for no benefit.
+                            // If no graph symmetry detected, Hungarian/min/weisfeiler fall
+                            // back to std to avoid paying symmetry cost for no benefit.
                             if ((pruning_cluster_rmsd_type == "hungarian" ||
-                                 pruning_cluster_rmsd_type == "min") &&
+                                 pruning_cluster_rmsd_type == "min" ||
+                                 pruning_cluster_rmsd_type == "weisfeiler") &&
                                 (!ligand_mol_symmetric))
                                 rmsd = calc_layer_rmsd(exp_seeds[j], exp_seeds[k]);
                             else if (pruning_cluster_rmsd_type == "hungarian")
                                 rmsd = calc_layer_rmsd_hungarian(exp_seeds[j], exp_seeds[k]);
                             else if (pruning_cluster_rmsd_type == "min")
                                 rmsd = calc_layer_rmsd_min(exp_seeds[j], exp_seeds[k]);
+                            else if (pruning_cluster_rmsd_type == "weisfeiler")
+                                rmsd = calc_layer_rmsd_weisfeiler(exp_seeds[j], exp_seeds[k],
+                                                                  wl_colors, wl_weights.data());
                             else
                                 rmsd = calc_layer_rmsd(exp_seeds[j], exp_seeds[k]);
                             rmsd = MAX(rmsd, 0.001);
@@ -1526,21 +1610,43 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
             // remove confs that fail the rank/rmsd test
             if(cluster) {
                 float RMSD_CUTOFF = pruning_clustering_cutoff;
+
+                // Pre-compute WL colors + per-atom weights for weisfeiler pruning
+                // so the O(n^2) pairwise loop pays one wl_color_refine (expensive)
+                // and one layer-weight traversal, not one per pair. Colors depend
+                // only on the graph (atom types + active bonds), shared across all
+                // conformers at this growth stage. (Same scheme as the anchor
+                // pruning block above.)
+                vector<int>  wl_colors2;
+                vector<double> wl_weights2;
+                if (pruning_cluster_rmsd_type == "weisfeiler" && ligand_mol_symmetric
+                    && !exp_seeds.empty()) {
+                    compute_wl_weights(layers, layer_segments, wl_weights2);
+                    {
+                        static WL_RMSD wl;
+                        wl.wl_color_refine(exp_seeds[0].structure, wl_colors2, true);
+                    }
+                }
+
                 for (j = 0; j < exp_seeds.size(); j++) {
                     if (!exp_seeds[j].used) {
                         for (k = j + 1; k < exp_seeds.size(); k++) {
                             if (!exp_seeds[k].used) {
 
                                 // Dispatch to RMSD function based on pruning_cluster_rmsd_type.
-                                // Short-circuit: no symmetry → fall back to std (avoids Hungarian cost).
+                                // Short-circuit: no symmetry → fall back to std (avoids symmetry cost).
                                 if ((pruning_cluster_rmsd_type == "hungarian" ||
-                                     pruning_cluster_rmsd_type == "min") &&
+                                     pruning_cluster_rmsd_type == "min" ||
+                                     pruning_cluster_rmsd_type == "weisfeiler") &&
                                     (!ligand_mol_symmetric))
                                     rmsd = calc_layer_rmsd(exp_seeds[j], exp_seeds[k]);
                                 else if (pruning_cluster_rmsd_type == "hungarian")
                                     rmsd = calc_layer_rmsd_hungarian(exp_seeds[j], exp_seeds[k]);
                                 else if (pruning_cluster_rmsd_type == "min")
                                     rmsd = calc_layer_rmsd_min(exp_seeds[j], exp_seeds[k]);
+                                else if (pruning_cluster_rmsd_type == "weisfeiler")
+                                    rmsd = calc_layer_rmsd_weisfeiler(exp_seeds[j], exp_seeds[k],
+                                                                      wl_colors2, wl_weights2.data());
                                 else
                                     rmsd = calc_layer_rmsd(exp_seeds[j], exp_seeds[k]);
                                 rmsd = MAX(rmsd, 0.001);

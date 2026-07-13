@@ -33,6 +33,19 @@ class WL_RMSD {
     // Returns -1000.0 if atom counts differ.
     double  calc_WL_RMSD(DOCKMol & refmol, DOCKMol & mol);
 
+    // Weighted variant: same as calc_WL_RMSD but each atom's contribution is
+    // scaled by weights[atom_idx] (when non-null) and normalized by the sum
+    // of weights instead of the heavy atom count. Used by growth-time pruning
+    // where atoms in later growth layers carry higher weight.
+    //
+    // Accepts pre-computed WL colors (from wl_color_refine) so the caller can
+    // compute colors once per growth layer and reuse across all pairwise
+    // comparisons — critical for the O(n^2) pruning loop.
+    // Returns -1000.0 if atom counts differ.
+    double  calc_WL_RMSD_weighted(DOCKMol & refmol, DOCKMol & mol,
+                                  const std::vector<int> & colors,
+                                  const double * weights = nullptr);
+
     // Weisfeiler-Leman color refinement on heavy atoms.
     // colors[i] = -1 for hydrogen/inactive atoms, else WL orbit color.
     // When active_only=true, also checks atom_active_flags (for pruning).
