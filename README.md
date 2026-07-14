@@ -1,52 +1,69 @@
-### DOCK 6.13.1
+### DOCK 6.13.1-flurgles
+Forked from [docking-org/dock6](https://github.com/docking-org/dock6) around mid June 2026.
+---
 
-You can access the tar/zip files of the source code in the [Releases](https://github.com/docking-org/dock6/releases) section at right on the GitHub main repo. -->
+## Energy Score Minimization Changes
 
-## Quick Overview
-DOCK is molecular modeling program used to identify potential binding geometries and interactions of a molecule to a target. Specifically, docking is the identification of the low-energy binding modes of a small molecule, or ligand, within the active site of a macromolecule, or receptor, whose structure is known. A compound that interacts strongly with, or binds, a receptor associated with a disease may inhibit its function and thus act as a drug. Solving the docking problem computationally requires an accurate representation of the molecular energetics as well as an efficient algorithm to search the potential binding modes.
+### Class Refactoring and New Minimizers
+- **Minimizer base class** — abstract class makes adding new minimizer types simpler 
+- **Conjugate gradient minimizer** — standard Hestenes–Stiefel conjugate gradient method.
+- **Steepest descent minimizer** — Cauchy gradient-descent method with Armijo-type backtracking line search.
 
-Historically, the DOCK algorithm addressed rigid body docking using a geometric matching algorithm to superimpose the ligand onto a negative image of the binding pocket. Important features that improved the algorithm's ability to find the lowest-energy binding mode, including force-field based scoring, on-the-fly optimization, an improved matching algorithm for rigid body docking and an algorithm for flexible ligand docking, have been added over the years. For more information on past versions of DOCK, click here.
+### BOBYQA Minimizer
 
-With the release of DOCK 6, we continue to improve the algorithm's ability to predict ligand binding poses by adding new features like force-field scoring, enhanced solvation models, reference-based scoring options, and de novo design. For more information about the current release of DOCK, click here.
+- **derivative-free optimizer** — Bound Optimization BY Quadratic Approximation (BOBYQA) constructs a quadratic model of the objective function from 2n+1 interpolation points and solves a trust-region subproblem at each iteration. No analytical gradients required.
+- **adaptive restart** — `bobyqa_restarts_per_torsion` (default 5) scales the number of restarts by rot bond count. Without DOF scaling, BOBYQA converges too greedily for flexible ligands (>12 bonds) and cannot escape poor local minima.
+- **Lanczos eigenvalue estimation** — computes eigenvalue estimates of the quadratic model Hessian via Lanczos iteration, enabling curvature diagnostics without building the full n×n matrix.
+- **Hessian estimation strategy** — `lanczos` (eigenvalue estimates, slower), `cg` (conjugate gradient approximation, faster), or `off` (disable curvature estimation entirely).
+- **Jacobi PCG solver** — Jacobi-preconditioned conjugate gradient solver for the trust-region subproblem, improving convergence for ill-conditioned models.
+- **noise-aware trust region management** — dynamic trust-region radius adjustment that detects stagnation due to model noise and triggers restarts with a fresh interpolation set.
 
+Powell, M. J. D. The BOBYQA Algorithm for Bound Constrained Optimization Without Derivatives. Technical Report NA2009/06, Department of Applied Mathematics and Theoretical Physics, University of Cambridge, 2009.
 
-## What can DOCK6 do for you?
-We and others have used DOCK for the following applications:
+Powell, M. J. D. The NEWUOA Software for Unconstrained Optimization Without Derivatives. In *Large-Scale Nonlinear Optimization*; Di Pillo, G., Roma, M., Eds.; Springer: New York, 2006; pp 255–297.
 
-- predict binding modes of small molecule-protein complexes
-- search databases of ligands for compounds that mimic the inhibitory binding interactions of an experimentally validated inhibitor
-- search databases of ligands for compounds that bind a particular site of a specific protein
-- search databases of ligands for compounds that bind nucleic acid targets
-- examine possible binding orientations of protein-protein and protein-DNA complexes
-- help guide synthetic efforts by examining small molecules that are computationally derived
-- many more...
+Powell, M. J. D. On the Use of Quadratic Models in Unconstrained Minimization Without Derivatives. *Optim. Methods Softw.* **2004**, *19* (3–4), 399–411.
 
-## New to DOCK6.13:
+### Simplex Minimizer
+- **Gao & Han 2012 adaptive coefficients** — `simplex_adaptive yes` scales expansion (γ), contraction (ρ), and shrink (σ) by DOF (rot bonds+6). The standard fixed coefficients (γ=2, ρ=½, σ=½) correspond to n=2 in the adaptive scheme. Adaptive Nelder–Mead samples more for more flexible ligands (slower)
+- **dim_aware sigmoid blend** — `simplex_adaptive dim_aware` smoothly transitions from fixed (n=2 behavior) to full adaptive coefficients using a configurable crossover (`simplex_adaptive_crossover`, default 17 rot bonds).
 
-New methodologies have been added to DOCK_DN that allow for users to bias the selection of both fragments and torsions toward those of higher frequency in the provided set. This provides users with finer control over the fragment and torsion compositions of their final ensembles. This method can be enabled in a standard DOCK_DN run with no additional processing or input files, so long as the libraries provided have associated frequencies that would be output with standard fragment library generation in DOCK6. [Bickel et al., J.Comput. Chem. 2024](https://onlinelibrary.wiley.com/doi/10.1002/jcc.27508)
+Gao, F.; Han, L. Implementing the Nelder–Mead Simplex Algorithm with Adaptive Parameters. *Comput. Optim. Appl.* **2012**, *51* (1), 259–277.
 
-Filtering molecules in DOCK_GA by a soft molecular weight cutoff has been added. Now, users can allow a chance for molecules to be accepted beyond this cutoff, enabling some deviation around the cutoffs. Changes to mutation selection and how fragments are chosen for mutation have been modified such that DOCK_GA will no longer select fragments incompatible with the attempted mutation type.
+### Internal Energy
+- **Soft-core Lennard-Jones** (`internal_energy_soft_delta`) — softened repulsion at short range
+- **5Å repulsive VDW cutoff** — limits non-bonded pair evaluation for internal energy (speedup)
+- **Cache internal energy** — precomputed and reused during rigid anchor minimization (speedup)
 
-Users can now toggle the use of Ligand Efficiency (introduced in DOCK6.12) when using Grid Score via Descriptor Score. This new feature can be used alongside Grid Score and will be calculated as: Ligand Efficiency = (Grid Score)/(# Active Heavy Atoms)
+### GPU Acceleration (Apple/Metal)
+- **GPU-accelerated grid generation** — src/grid/score_grid_gpu*
+- **Atom-parallel texture-based grid score** — Replace CPU interpolation with GPU trilinear filtering primitive
+- **GPU simplex minimizer** — full Nelder-Mead iteration running on the GPU with persistent threadgroup dispatch
+- **SIMD-parallel internal energy** — fast IE evaluation on GPU with pairlists
+- **Scale with GPU core count** — queries IOKit GPU core count to set optimal batch size
+ - **GPU-side ConformerPool** — ConformerPool class manages GPU Simplex minimizer slot state without CPU round trips
 
-Users now have explicit control over the number of conformers DOCK stores during anchor-and-grow docking prior to clustering. The old parameter num_scored_conformers has been removed and replaced with two new parameters num_final_scored_poses and num_preclustered_conformers. Previously, this control was grouped under a single parameter that also controlled the final number of scored poses written out.
+### Symmetric RMSD types
+- **Hungarian RMSD optimizations** — O(N³) Hungarian algorithm is slow (speedup)
+- **Select pruning clustering rmsd type** — Pick RMSD algo used for clustering
+- **Short circuit to std rmsd** — check if molecules have no symmetry `mol_has_symmetry()` (speedup)
+- **Weisfeiler–Leman graph isomorphism RMSD** (`weisfeiler_lehmann.h/cpp`) — color refinement using Weisfeiler–Leman graph isomorphism test
+- **Weisfeiler–Leman per-layer color caching** — avoids O(N²) recomputation during flex growth (speedup)
 
-## Documentation and Installation
-The documentation is online at `http://dock.compbio.ucsf.edu/DOCK_6/dock6_manual.htm` and located in this repository in `~/docs/dock6_manual.html`
+Weisfeiler, B. Yu.; Leman, A. A. The Reduction of a Graph to Canonical Form and the Algebra Which Appears Therein. *Nauchno-Tekh. Inf.* **1968**, *2* (9), 12–16. [English translation: https://iti.zcu.cz/wl2018/pdf/wl_paper_translation.pdf]
 
-For complete installation instructions, including the use of other compilers, RDKit, and Docker, see the installation section of the User's Manual.
+### Code Quality & Memory Safety
+- **Variable length arrays → `std::vector`** - in `dock.cpp` growth loop
+- **`sort_top_X_mol` bookkeeping** — `list_mol_bool[min_ind]` moved outside the inner comparison loop
+- **`HDB_Mol::clear_molecule()`** — `name[0] = '\0'` reuse instead of unconditional reallocation
+- **Container-overflow** — `ranked_poses[0]` guarded with `!empty()` check
+- **Segfault fix** — `torsion_scale_factors.resize()` called after `id_torsions()`
 
-To start, you can obtain this code by cloning the repository (or getting a previous release version from the [Releases page](https://github.com/docking-org/dock6/releases)).
+### Build Infrastructure
+- **Apple Silicon config templates** — `install/clang` (CPU-only) and `install/clang.gpu` (CPU+Metal) with `-O3 -ffast-math` and no `-flto` on GPU builds
 
-`git clone https://github.com/docking-org/dock6.git`
+---
 
-Once unpacked, installation starts with `./configure -help` in the `~/install` directory.  That is, in a terminal window type this (and then press the "enter" key):
+Detailed GPU architecture and benchmark results are documented in [`src/dock/GPU_DOCK.md`](src/dock/GPU_DOCK.md).
 
-`cd install; ./configure -help`
-
-For more information, including tutorials, bug fixes, etc., please consult
-the UCSF DOCK Web page:
-
-http://dock.compbio.ucsf.edu/
-
-
+---
