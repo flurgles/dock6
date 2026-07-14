@@ -38,10 +38,16 @@ Simplex_Minimizer::input_parameters(Parameter_Reader & parm,
             "------------------------------------------------------------------------------------------"
             << endl;
 
-        // Advanced minimizer parameters
-        advanced_min_params =
-            (parm.query_param("advanced_minimizer_parameters", "no",
-                              "yes no") == "yes");
+        // Advanced minimizer parameters (accept both DOCK6.12 and current names)
+        if (parm.param_exists("use_advanced_simplex_parameters")) {
+            advanced_min_params =
+                (parm.query_param("use_advanced_simplex_parameters", "no",
+                                  "yes no") == "yes");
+        } else {
+            advanced_min_params =
+                (parm.query_param("advanced_minimizer_parameters", "no",
+                                  "yes no") == "yes");
+        }
 
         if (advanced_min_params) {
             cout <<
@@ -171,14 +177,14 @@ Simplex_Minimizer::input_parameters(Parameter_Reader & parm,
             // If these are not set in the input file, the values previously
             // read are used.
             use_min_rigid_anchor =
-                (parm.query_param("minimize_rigid_anchor", "yes",
+                (parm.query_param("minimize_anchor", "yes",
                                   "yes no") == "yes");
             if (use_min_rigid_anchor) {
                 cout << "\nAnchor Minimization Parameters" << endl;
                 cout <<
                     "--------------------------------------------------------------------------------"
                     << endl;
-                cout << "minimize_rigid_anchor = yes" << endl;
+                cout << "minimize_anchor = yes" << endl;
                 anchor_min_max_iterations =
                     atoi(parm.query_param("simplex_anchor_max_iterations",
                                           "500").c_str());
@@ -414,9 +420,21 @@ Simplex_Minimizer::input_parameters(Parameter_Reader & parm,
             }
 
             // Minimization parameters for final pose minimization
-            final_min =
-                (parm.query_param("final_min_pose", "no",
-                                  "yes no") == "yes");
+            // Accept both DOCK6.12 (simplex_final_min) and current name
+            if (parm.param_exists("simplex_final_min")) {
+                final_min =
+                    (parm.query_param("simplex_final_min", "no",
+                                      "yes no") == "yes");
+            } else {
+                final_min =
+                    (parm.query_param("final_min_pose", "no",
+                                      "yes no") == "yes");
+            }
+
+            // General simplex parameters (DOCK6.12 / FLX.sh names)
+            random_seed = atoi(parm.query_param("simplex_random_seed", "0").c_str());
+            restrained_min = (parm.query_param("simplex_restraint_min", "no", "yes no") == "yes");
+
             if (final_min) {
                 cout << "\nFinal Pose Minimization Parameters" << endl;
                 cout <<

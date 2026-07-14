@@ -144,6 +144,7 @@ class           Parameter_Reader {
     bool            parameter_input_successful();
     std::string     query_param(std::string name, std::string default_value,
                                 std::string legal_values = "");
+    bool            param_exists(const std::string& name) const;
     void            read_params();
     void            write_params();
 

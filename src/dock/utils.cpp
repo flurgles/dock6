@@ -647,6 +647,14 @@ Parameter_Reader::parameter_input_successful()
 
 
 // +++++++++++++++++++++++++++++++++++++++++
+bool
+Parameter_Reader::param_exists(const std::string& name) const
+{
+    return params_in.find(name) != params_in.end();
+}
+
+
+// +++++++++++++++++++++++++++++++++++++++++
 int             get_matrix_from_quaternion(float m[3][3],       /* rotation
                                                                  * matrix */
                                            float qin[3] /* input independent

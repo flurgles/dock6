@@ -1083,7 +1083,12 @@ Library_File::input_parameters_output(Parameter_Reader & parm, Master_Score & sc
         }
     } else {
         num_secondary_scored_poses = 0;
-        num_scored_poses = atoi(parm.query_param("num_final_scored_poses", "1").c_str());
+        // Accept both DOCK6.12 (num_scored_conformers) and DOCK6.13 (num_final_scored_poses) names
+        if (parm.param_exists("num_scored_conformers")) {
+            num_scored_poses = atoi(parm.query_param("num_scored_conformers", "1").c_str());
+        } else {
+            num_scored_poses = atoi(parm.query_param("num_final_scored_poses", "1").c_str());
+        }
         if (num_scored_poses <= 0) {
             cout << "ERROR:  Parameter must be an integer greater than zero."
                     "  Program will terminate."
