@@ -67,31 +67,6 @@ Simplex_Minimizer::input_parameters(Parameter_Reader & parm,
                 << endl;
         }
 
-        // for now, set the simplex parameters automatically
-        // user can override the defaults
-        // if advanced parameters are used, individual step sizes override
-        // auto values for trans_rot step size and tors step size
-        if (advanced_min_params) {
-            trans_step_size =
-                atof(parm.query_param("trans_step_size", "2.0").c_str());
-            rot_step_size =
-                atof(parm.query_param("rot_step_size", "0.05").c_str());
-            tors_step_size =
-                atof(parm.query_param("tors_step_size", "10.0").c_str());
-        } else {
-            // auto set the step size for rigid anchor
-            trans_step_size =
-                atof(parm.query_param("trans_step_size", "2.0").c_str());
-            rot_step_size =
-                atof(parm.query_param("rot_step_size", "0.05").c_str());
-            tors_step_size =
-                atof(parm.query_param("tors_step_size", "10.0").c_str());
-        }
-
-        cout << "trans_step_size = " << trans_step_size << endl;
-        cout << "rot_step_size = " << rot_step_size << endl;
-        cout << "tors_step_size = " << tors_step_size << endl;
-
         // DTM - 05-09-08 - Minimization Parameters
         //               - moving away from basic / advanced to one set of
         //               minimizer parameters
@@ -127,6 +102,9 @@ Simplex_Minimizer::input_parameters(Parameter_Reader & parm,
                 tors_step_size =
                     atof(parm.query_param("simplex_tors_step_size",
                                           "10.0").c_str());
+                max_cycles =
+                    atoi(parm.query_param("simplex_max_cycles",
+                                          "1").c_str());
             } else {
                 max_iterations =
                     atoi(parm.query_param("simplex_max_iterations",
@@ -138,14 +116,17 @@ Simplex_Minimizer::input_parameters(Parameter_Reader & parm,
                     atof(parm.query_param("simplex_cycle_converge",
                                           "1.0").c_str());
                 trans_step_size =
-                    atof(parm.query_param("simplex_trans_step_size",
-                                          "2.0").c_str());
+                    atof(parm.query_param("simplex_trans_step",
+                                          "1.0").c_str());
                 rot_step_size =
-                    atof(parm.query_param("simplex_rot_step_size",
-                                          "0.05").c_str());
+                    atof(parm.query_param("simplex_rot_step",
+                                          "0.1").c_str());
                 tors_step_size =
-                    atof(parm.query_param("simplex_tors_step_size",
+                    atof(parm.query_param("simplex_tors_step",
                                           "10.0").c_str());
+                max_cycles =
+                    atoi(parm.query_param("simplex_max_cycles",
+                                          "1").c_str());
             }
 
             cout << "Maximum iterations: " << max_iterations << endl;
@@ -199,28 +180,79 @@ Simplex_Minimizer::input_parameters(Parameter_Reader & parm,
                     << endl;
                 cout << "minimize_rigid_anchor = yes" << endl;
                 anchor_min_max_iterations =
-                    atoi(parm.query_param("anchor_min_max_iterations",
+                    atoi(parm.query_param("simplex_anchor_max_iterations",
                                           "500").c_str());
-                anchor_min_max_cycles =
-                    atoi(parm.query_param("anchor_min_max_cycles",
-                                          "1").c_str());
-                anchor_min_score_converge =
-                    atof(parm.query_param("anchor_min_score_converge",
-                                          "0.1").c_str());
-                anchor_min_cycle_converge =
-                    atof(parm.query_param("anchor_min_cycle_converge",
-                                          "1.0").c_str());
-                anchor_min_trans_step_size =
-                    atof(parm.query_param("anchor_min_trans_step_size",
-                                          "2.0").c_str());
-                anchor_min_rot_step_size =
-                    atof(parm.query_param("anchor_min_rot_step_size",
-                                          "0.05").c_str());
-                anchor_min_tors_step_size =
-                    atof(parm.query_param("anchor_min_tors_step_size",
-                                          "10.0").c_str());
                 cout << "Maximum iterations: " << anchor_min_max_iterations <<
                     endl;
+
+                if (advanced_min_params) {
+                    anchor_min_max_cycles =
+                        atoi(parm.query_param("simplex_anchor_max_cycles",
+                                              "1").c_str());
+                    if (anchor_min_max_cycles <= 0) {
+                        cout <<
+                            "ERROR:  Parameter must be an integer greater than zero.  Program will terminate."
+                            << endl;
+                        exit(0);
+                    }
+                    anchor_min_score_converge =
+                        atof(parm.
+                             query_param("simplex_anchor_score_converge",
+                                         "0.1").c_str());
+                    if (anchor_min_score_converge <= 0.0) {
+                        cout <<
+                            "ERROR:  Parameter must be a float greater than zero.  Program will terminate."
+                            << endl;
+                        exit(0);
+                    }
+                    anchor_min_cycle_converge =
+                        atof(parm.
+                             query_param("simplex_anchor_cycle_converge",
+                                         "1.0").c_str());
+                    if (anchor_min_cycle_converge <= 0.0) {
+                        cout <<
+                            "ERROR:  Parameter must be a float greater than zero.  Program will terminate."
+                            << endl;
+                        exit(0);
+                    }
+                    anchor_min_trans_step_size =
+                        atof(parm.
+                             query_param("simplex_anchor_trans_step",
+                                         "1.0").c_str());
+                    if (anchor_min_trans_step_size <= 0.0) {
+                        cout <<
+                            "ERROR:  Parameter must be a float greater than zero.  Program will terminate."
+                            << endl;
+                        exit(0);
+                    }
+                    anchor_min_rot_step_size =
+                        atof(parm.
+                             query_param("simplex_anchor_rot_step",
+                                         "0.1").c_str());
+                    if (anchor_min_rot_step_size <= 0.0) {
+                        cout <<
+                            "ERROR:  Parameter must be a float greater than zero.  Program will terminate."
+                            << endl;
+                        exit(0);
+                    }
+                    anchor_min_tors_step_size =
+                        atof(parm.
+                             query_param("simplex_anchor_tors_step",
+                                         "10.0").c_str());
+                    if (anchor_min_tors_step_size <= 0.0) {
+                        cout <<
+                            "ERROR:  Parameter must be a float greater than zero.  Program will terminate."
+                            << endl;
+                        exit(0);
+                    }
+                } else {
+                    anchor_min_max_cycles = max_cycles;
+                    anchor_min_score_converge = score_converge;
+                    anchor_min_cycle_converge = cycle_converge;
+                    anchor_min_trans_step_size = trans_step_size;
+                    anchor_min_rot_step_size = rot_step_size;
+                    anchor_min_tors_step_size = tors_step_size;
+                }
                 cout << "Maximum cycles: " << anchor_min_max_cycles << endl;
                 cout << "Score convergence: " << anchor_min_score_converge <<
                     endl;
@@ -243,34 +275,104 @@ Simplex_Minimizer::input_parameters(Parameter_Reader & parm,
                     "--------------------------------------------------------------------------------"
                     << endl;
                 cout << "minimize_flexible_growth = yes" << endl;
-                flex_min_max_iterations =
-                    atoi(parm.query_param("flex_min_max_iterations",
-                                          "500").c_str());
-                flex_min_torsion_iterations =
-                    atoi(parm.query_param("flex_min_torsion_iterations",
-                                          "500").c_str());
-                flex_min_max_cycles =
-                    atoi(parm.query_param("flex_min_max_cycles",
-                                          "1").c_str());
-                flex_min_score_converge =
-                    atof(parm.query_param("flex_min_score_converge",
-                                          "0.1").c_str());
-                flex_min_cycle_converge =
-                    atof(parm.query_param("flex_min_cycle_converge",
-                                          "1.0").c_str());
-                flex_min_trans_step_size =
-                    atof(parm.query_param("flex_min_trans_step_size",
-                                          "2.0").c_str());
-                flex_min_rot_step_size =
-                    atof(parm.query_param("flex_min_rot_step_size",
-                                          "0.05").c_str());
-                flex_min_tors_step_size =
-                    atof(parm.query_param("flex_min_tors_step_size",
-                                          "10.0").c_str());
+
+                // If ramp is on, default is 250; otherwise 500
+                if (use_min_flex_growth_ramp) {
+                    flex_min_max_iterations =
+                        atoi(parm.query_param("simplex_grow_max_iterations",
+                                              "250").c_str());
+                } else {
+                    flex_min_max_iterations =
+                        atoi(parm.query_param("simplex_grow_max_iterations",
+                                              "500").c_str());
+                }
+                if (flex_min_max_iterations < 0) {
+                    cout <<
+                        "ERROR:  simplex_grow_max_iterations cannot be negative.  Program will terminate."
+                        << endl;
+                    exit(0);
+                }
+
                 cout << "Maximum iterations: " << flex_min_max_iterations <<
                     endl;
+
+                flex_min_torsion_iterations =
+                    atoi(parm.query_param("simplex_grow_tors_premin_iterations",
+                                          "0").c_str());
+                if (flex_min_torsion_iterations < 0) {
+                    cout <<
+                        "ERROR:  simplex_grow_tors_premin_iterations cannot be negative. Program will terminate."
+                        << endl;
+                    exit(0);
+                }
+
                 cout << "Torsion-only iterations: " <<
                     flex_min_torsion_iterations << endl;
+
+                if (advanced_min_params) {
+                    flex_min_max_cycles =
+                        atoi(parm.query_param("simplex_grow_max_cycles",
+                                              "1").c_str());
+                    if (flex_min_max_cycles <= 0) {
+                        cout <<
+                            "ERROR:  simplex_grow_max_cycles must be an integer greater than zero.  Program will terminate."
+                            << endl;
+                        exit(0);
+                    }
+                    flex_min_score_converge =
+                        atof(parm.query_param("simplex_grow_score_converge",
+                                              "0.1").c_str());
+                    if (flex_min_score_converge <= 0.0) {
+                        cout <<
+                            "ERROR:  simplex_grow_score_converge must be a float greater than zero.  Program will terminate."
+                            << endl;
+                        exit(0);
+                    }
+                    flex_min_cycle_converge =
+                        atof(parm.query_param("simplex_grow_cycle_converge",
+                                              "1.0").c_str());
+                    if (flex_min_cycle_converge <= 0.0) {
+                        cout <<
+                            "ERROR:  simplex_grow_cycle_converge must be a float greater than zero.  Program will terminate."
+                            << endl;
+                        exit(0);
+                    }
+                    flex_min_trans_step_size =
+                        atof(parm.query_param("simplex_grow_trans_step",
+                                              "1.0").c_str());
+                    if (flex_min_trans_step_size <= 0.0) {
+                        cout <<
+                            "ERROR:  simplex_grow_trans_step must be a float greater than zero.  Program will terminate."
+                            << endl;
+                        exit(0);
+                    }
+                    flex_min_rot_step_size =
+                        atof(parm.query_param("simplex_grow_rot_step",
+                                              "0.1").c_str());
+                    if (flex_min_rot_step_size <= 0.0) {
+                        cout <<
+                            "ERROR:  simplex_grow_rot_step must be a float greater than zero.  Program will terminate."
+                            << endl;
+                        exit(0);
+                    }
+                    flex_min_tors_step_size =
+                        atof(parm.query_param("simplex_grow_tors_step",
+                                              "10.0").c_str());
+                    if (flex_min_tors_step_size <= 0.0) {
+                        cout <<
+                            "ERROR:  simplex_grow_tors_step must be a float greater than zero.  Program will terminate."
+                            << endl;
+                        exit(0);
+                    }
+                } else {
+                    flex_min_max_cycles = max_cycles;
+                    flex_min_score_converge = score_converge;
+                    flex_min_cycle_converge = cycle_converge;
+                    flex_min_trans_step_size = trans_step_size;
+                    flex_min_rot_step_size = rot_step_size;
+                    flex_min_tors_step_size = tors_step_size;
+                }
+
                 cout << "Maximum cycles: " << flex_min_max_cycles << endl;
                 cout << "Score convergence: " << flex_min_score_converge <<
                     endl;
@@ -296,49 +398,19 @@ Simplex_Minimizer::input_parameters(Parameter_Reader & parm,
                     "--------------------------------------------------------------------------------"
                     << endl;
                 cout << "minimize_flexible_growth_ramp = yes" << endl;
-                flex_min_max_iterations =
-                    atoi(parm.query_param("flex_min_max_iterations",
-                                          "500").c_str());
-                flex_min_torsion_iterations =
-                    atoi(parm.query_param("flex_min_torsion_iterations",
-                                          "500").c_str());
-                flex_min_max_cycles =
-                    atoi(parm.query_param("flex_min_max_cycles",
-                                          "1").c_str());
+
                 initial_score_converge =
-                    atof(parm.query_param("initial_score_converge",
-                                          "10.0").c_str());
-                flex_min_score_converge =
-                    atof(parm.query_param("flex_min_score_converge",
-                                          "0.1").c_str());
-                flex_min_cycle_converge =
-                    atof(parm.query_param("flex_min_cycle_converge",
-                                          "1.0").c_str());
-                flex_min_trans_step_size =
-                    atof(parm.query_param("flex_min_trans_step_size",
-                                          "2.0").c_str());
-                flex_min_rot_step_size =
-                    atof(parm.query_param("flex_min_rot_step_size",
-                                          "0.05").c_str());
-                flex_min_tors_step_size =
-                    atof(parm.query_param("flex_min_tors_step_size",
-                                          "10.0").c_str());
-                cout << "Maximum iterations: " << flex_min_max_iterations <<
-                    endl;
-                cout << "Torsion-only iterations: " <<
-                    flex_min_torsion_iterations << endl;
-                cout << "Maximum cycles: " << flex_min_max_cycles << endl;
+                    atof(parm.query_param("simplex_initial_score_coverge",
+                                          "5").c_str());
+                if (initial_score_converge <= flex_min_score_converge) {
+                    cout <<
+                        "ERROR:  simplex_initial_score_coverge must be larger than score converge value.  Program will terminate."
+                        << endl;
+                    exit(0);
+                }
+
                 cout << "Initial score convergence: " <<
                     initial_score_converge << endl;
-                cout << "Final score convergence: " <<
-                    flex_min_score_converge << endl;
-                cout << "Cycle convergence: " << flex_min_cycle_converge <<
-                    endl;
-                cout << "Translation step: " << flex_min_trans_step_size <<
-                    endl;
-                cout << "Rotation step: " << flex_min_rot_step_size << endl;
-                cout << "Torsion step size: " << flex_min_tors_step_size <<
-                    endl;
             }
 
             // Minimization parameters for final pose minimization
