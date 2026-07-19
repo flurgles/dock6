@@ -81,7 +81,6 @@ layout(push_constant) uniform Params {
     float origin_x, origin_y, origin_z;
     int   span_x, span_y, span_z;
     float spacing;
-    int   grid_size;
     int   num_atoms;
     float ie_soft_delta;
     float ie_cutoff_sq;
@@ -191,7 +190,6 @@ layout(push_constant) uniform Params {
     float origin_x, origin_y, origin_z;
     int   span_x, span_y, span_z;
     float spacing;
-    int   grid_size;
     int   num_atoms;
     float ie_soft_delta;
     float ie_cutoff_sq;
@@ -233,18 +231,17 @@ void main() {
 }
 )glsl";
 
-/* Push constant block matching the GLSL Params layout exactly (std430, 52 bytes). */
+/* Push constant block matching the GLSL Params layout exactly (std430, 48 bytes). */
 struct PushConstants {
     float origin_x, origin_y, origin_z;   // offset  0
     int   span_x, span_y, span_z;         // offset 12
     float spacing;                         // offset 24
-    int   grid_size;                       // offset 28
-    int   num_atoms;                       // offset 32
-    float ie_soft_delta;                   // offset 36
-    float ie_cutoff_sq;                    // offset 40
-    int   num_nb_pairs;                    // offset 44
-    int   num_poses;                       // offset 48
-};                                         // total: 52 bytes
+    int   num_atoms;                       // offset 28
+    float ie_soft_delta;                   // offset 32
+    float ie_cutoff_sq;                    // offset 36
+    int   num_nb_pairs;                    // offset 40
+    int   num_poses;                       // offset 44
+};                                         // total: 48 bytes
 
 /* ================================================================== */
 /*  Static state                                                       */
@@ -620,7 +617,7 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     VkPushConstantRange pcr = {};
     pcr.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     pcr.offset = 0;
-    pcr.size = sizeof(PushConstants);  /* 52 bytes matching GLSL Params block */
+    pcr.size = sizeof(PushConstants);  /* 48 bytes matching GLSL Params block */
     plci.pushConstantRangeCount = 1;
     plci.pPushConstantRanges = &pcr;
     vkCreatePipelineLayout(g_dev, &plci, NULL, &g_playout);
@@ -693,6 +690,21 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     alloc_buffer(sizeof(float)*GPU_MAX_POSES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_scores, &g_mem_scores);
     alloc_buffer(sizeof(int)*GPU_MAX_ATOMS, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_active_flags, &g_mem_active_flags);
     alloc_buffer(sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, &g_buf_pose_counter, &g_mem_pose_counter);
+
+    /* Create descriptor pool once (reused across dispatches via free+realloc) */
+    {
+        VkDescriptorPoolSize dps[2] = {
+            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 },
+            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 }
+        };
+        VkDescriptorPoolCreateInfo dpci = {};
+        dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        dpci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+        dpci.maxSets = 1;
+        dpci.poolSizeCount = 2;
+        dpci.pPoolSizes = dps;
+        vkCreateDescriptorPool(g_dev, &dpci, NULL, &g_descpool);
+    }
 
     g_initialized = 1;
     g_active = 0;
@@ -834,23 +846,12 @@ int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
     pc.span_y   = g_params.span_y;
     pc.span_z   = g_params.span_z;
     pc.spacing  = g_params.spacing;
-    pc.grid_size    = g_params.grid_size;
+
     pc.num_atoms    = num_atoms;
     pc.ie_soft_delta = 0.0f;
     pc.ie_cutoff_sq  = 1e10f;
     pc.num_nb_pairs  = 0;
     pc.num_poses     = num_poses;
-
-    VkDescriptorPoolSize dps[2] = {
-        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 },
-        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 }
-    };
-    VkDescriptorPoolCreateInfo dpci = {};
-    dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    dpci.maxSets = 1;
-    dpci.poolSizeCount = 2;
-    dpci.pPoolSizes = dps;
-    vkCreateDescriptorPool(g_dev, &dpci, NULL, &g_descpool);
 
     VkDescriptorSet set = make_desc_set();
 
@@ -890,8 +891,7 @@ int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
 
     memcpy(out_scores, buf_map(g_mem_scores), sizeof(float) * (size_t)num_poses);
 
-    vkDestroyDescriptorPool(g_dev, g_descpool, NULL);
-    g_descpool = VK_NULL_HANDLE;
+    vkFreeDescriptorSets(g_dev, g_descpool, 1, &set);
 
     prof_dispatch_count++;
     prof_total_conformers += num_poses;
@@ -925,17 +925,6 @@ int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses, int
     uint32_t zero = 0;
     memcpy(buf_map(g_mem_pose_counter), &zero, sizeof(zero));
 
-    VkDescriptorPoolSize dps2[2] = {
-        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 },
-        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 }
-    };
-    VkDescriptorPoolCreateInfo dpci = {};
-    dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    dpci.maxSets = 1;
-    dpci.poolSizeCount = 2;
-    dpci.pPoolSizes = dps2;
-    vkCreateDescriptorPool(g_dev, &dpci, NULL, &g_descpool);
-
     VkDescriptorSet set = make_desc_set();
 
     /* Wait for previous dispatch to finish before reusing command buffer */
@@ -950,7 +939,6 @@ int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses, int
     pc.span_y   = g_params.span_y;
     pc.span_z   = g_params.span_z;
     pc.spacing  = g_params.spacing;
-    pc.grid_size     = g_params.grid_size;
     pc.num_atoms     = num_atoms;
     pc.ie_soft_delta = g_ie_soft_delta;
     pc.ie_cutoff_sq  = g_ie_cutoff_sq;
@@ -988,8 +976,7 @@ int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses, int
 
     memcpy(out_scores, buf_map(g_mem_scores), sizeof(float) * (size_t)num_poses);
 
-    vkDestroyDescriptorPool(g_dev, g_descpool, NULL);
-    g_descpool = VK_NULL_HANDLE;
+    vkFreeDescriptorSets(g_dev, g_descpool, 1, &set);
 
     prof_dispatch_count++;
     prof_total_conformers += num_poses;
@@ -1016,6 +1003,7 @@ void dock_gpu_cleanup(void)
         if (g_mem_img_bvdw) vkFreeMemory(g_dev, g_mem_img_bvdw, NULL);
         if (g_mem_img_es)   vkFreeMemory(g_dev, g_mem_img_es, NULL);
         if (g_sampler)   vkDestroySampler(g_dev, g_sampler, NULL);
+        if (g_descpool)  vkDestroyDescriptorPool(g_dev, g_descpool, NULL);
         /* Host-visible buffers */
         if (g_buf_vdwB)     { vkDestroyBuffer(g_dev, g_buf_vdwB, NULL);     vkFreeMemory(g_dev, g_mem_vdwB, NULL); }
         if (g_buf_charges)  { vkDestroyBuffer(g_dev, g_buf_charges, NULL);  vkFreeMemory(g_dev, g_mem_charges, NULL); }
