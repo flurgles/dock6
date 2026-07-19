@@ -27,7 +27,7 @@
       number of workgroups.
     * SIMD-group reduction becomes subgroup reduction via
       subgroupAdd() (VK 1.1 shaderSubgroupArithmetic, available on
-      RADV).  A shared-memory fallback is used if subgroups are absent.
+      RADV).  Requires subgroup size ≤ workgroup size (guaranteed by spec).
     * Memory allocation uses VMA (Vulkan Memory Allocator) for optimal
       sub-allocation and reduced vkAllocateMemory overhead.
     * Descriptors use VK_KHR_push_descriptor to eliminate descriptor
@@ -59,7 +59,6 @@
 #include <math.h>
 #include <sys/stat.h>
 #include <vector>
-#include <iostream>
 
 #define GPU_MAX_POSES       4096
 #define GPU_MAX_ATOMS       512
@@ -113,7 +112,7 @@ float sample_grid(sampler3D grid, float x, float y, float z) {
     return texture(grid, coord).r;
 }
 
-shared float tg_partial[8];
+shared float tg_partial[64];
 shared uint tg_candidate;
 
 void kernel_persistent() {
@@ -307,7 +306,6 @@ static VkWriteDescriptorSet   g_pd_w[NUM_BINDINGS];
 
 static DockGridParams g_params;
 static int  g_initialized = 0;
-static int  g_active      = 0;
 static int  g_num_atoms   = 0;
 static int  g_num_nb_pairs = 0;
 static float g_ie_soft_delta = 0.0;
@@ -447,7 +445,12 @@ static bool upload_all_3d_images(const float *data[3], int sx, int sy, int sz,
     }
 
     void *mapped = NULL;
-    vmaMapMemory(g_vma, staging_alloc, &mapped);
+    r = vmaMapMemory(g_vma, staging_alloc, &mapped);
+    if (r != VK_SUCCESS || !mapped) {
+        fprintf(stderr, "GPU-VK: staging map failed (%d)\n", (int)r);
+        vmaDestroyBuffer(g_vma, staging_buf, staging_alloc);
+        return false;
+    }
     for (int i = 0; i < 3; i++)
         memcpy((char*)mapped + per_image * i, data[i], (size_t)per_image);
     vmaUnmapMemory(g_vma, staging_alloc);
@@ -635,6 +638,7 @@ static VkShaderModule compile_module(const char *src, const char *label) {
 }
 
 static const char *g_pipeline_cache_path = "/tmp/dock6_vulkan_pipeline_cache.bin";
+static int g_pipeline_cache_from_disk = 0;
 
 static void load_pipeline_cache(void) {
     FILE *f = fopen(g_pipeline_cache_path, "rb");
@@ -655,11 +659,12 @@ static void load_pipeline_cache(void) {
     pcci.pInitialData = data;
     vkCreatePipelineCache(g_dev, &pcci, NULL, &g_pcache);
     free(data);
+    g_pipeline_cache_from_disk = 1;
     fprintf(stderr, "GPU-VK: loaded pipeline cache (%ld bytes)\n", sz);
 }
 
 static void save_pipeline_cache(void) {
-    if (!g_pcache) return;
+    if (!g_pcache || g_pipeline_cache_from_disk) return;
     size_t sz = 0;
     vkGetPipelineCacheData(g_dev, g_pcache, &sz, NULL);
     if (sz == 0) return;
@@ -965,7 +970,6 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     prepare_push_descriptors();
 
     g_initialized = 1;
-    g_active = 0;
     g_num_nb_pairs = 0;
     fprintf(stderr, "GPU-VK: ready. Grid %dx%dx%d = %d pts\n",
             span_x, span_y, span_z, g_params.grid_size);
@@ -990,7 +994,6 @@ int dock_gpu_set_ligand(const float *vdwA, const float *vdwB,
     for (int i = 0; i < num_atoms; i++) af[i] = 1;
 
     g_num_atoms = num_atoms;
-    g_active = 1;
     return 1;
 }
 
@@ -1010,8 +1013,13 @@ int dock_gpu_set_ligand_ie(const float *ie_vdwA, const float *ie_vdwB,
     /* Build per-atom pair lists (same as Metal backend) */
     int na = g_num_atoms;
     int *counts = (int *)calloc(na, sizeof(int));
-    int *starts = (int *)g_pair_starts.map;
     int *offsets = (int *)malloc(na * sizeof(int));
+    if (!counts || !offsets) {
+        fprintf(stderr, "GPU-VK: set_ligand_ie alloc failed\n");
+        free(counts); free(offsets);
+        return 0;
+    }
+    int *starts = (int *)g_pair_starts.map;
     int total = 0;
     for (int p = 0; p < num_nb_pairs; p++) {
         int a1 = nb_int_pairs[p*2];
@@ -1146,7 +1154,7 @@ void dock_gpu_cleanup(void)
     g_vma = VK_NULL_HANDLE;
     fp_vkCmdPushDescriptorSetKHR = NULL;
     memset(&g_params, 0, sizeof(g_params));
-    g_initialized = 0; g_active = 0; g_num_atoms = 0; g_num_nb_pairs = 0;
+    g_initialized = 0; g_num_atoms = 0; g_num_nb_pairs = 0;
     g_ie_soft_delta = 0.0f; g_ie_cutoff_sq = 1e10f;
     prof_dispatch_count = 0; prof_total_conformers = 0;
     prof_total_dispatch_ms = 0.0; prof_last_dispatch_ms = 0.0;
