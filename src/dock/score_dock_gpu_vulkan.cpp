@@ -29,6 +29,11 @@
     * SIMD-group reduction becomes subgroup reduction via
       subgroupAdd() (VK 1.1 shaderSubgroupArithmetic, available on
       RADV).  A shared-memory fallback is used if subgroups are absent.
+    * Memory allocation uses VMA (Vulkan Memory Allocator) for optimal
+      sub-allocation and reduced vkAllocateMemory overhead.
+    * Descriptors use VK_KHR_push_descriptor to eliminate descriptor
+      pool/set allocation; writes are pushed into the command buffer
+      at dispatch time.
  */
 
 #include "score_dock_gpu.h"
@@ -36,6 +41,17 @@
 
 #include <vulkan/vulkan.h>
 #include <shaderc/shaderc.h>
+
+#define VMA_IMPLEMENTATION
+#define VMA_STATIC_VULKAN_FUNCTIONS 0
+#define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
+#define VMA_SYSTEM_ALIGNED_MALLOC(size, alignment) ({ \
+    void *ptr = NULL; \
+    posix_memalign(&ptr, (alignment) < sizeof(void*) ? sizeof(void*) : (alignment), (size)); \
+    ptr; \
+})
+#define VMA_SYSTEM_ALIGNED_FREE(ptr) free(ptr)
+#include "vk_mem_alloc.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -259,9 +275,6 @@ static uint32_t         g_queue_idx  = 0;
 static VkCommandPool     g_cmdpool    = VK_NULL_HANDLE;
 #define DISPATCH_RING 2
 static VkCommandBuffer   g_cmd[DISPATCH_RING] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-static VkDescriptorPool  g_descpool   = VK_NULL_HANDLE;
-static VkDescriptorSet   g_desc_ring[DISPATCH_RING] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-static unsigned          g_ring_idx   = 0;
 
 static VkShaderModule    g_mod_grid   = VK_NULL_HANDLE;
 static VkShaderModule    g_mod_ie     = VK_NULL_HANDLE;
@@ -269,34 +282,43 @@ static VkPipelineLayout  g_playout    = VK_NULL_HANDLE;
 static VkPipeline        g_pl_grid    = VK_NULL_HANDLE;  /* grid-only kernel */
 static VkPipeline        g_pl_ie      = VK_NULL_HANDLE;  /* persistent IE kernel */
 static VkDescriptorSetLayout g_dslayout = VK_NULL_HANDLE;
+static unsigned          g_ring_idx   = 0;
 
-/* Buffers (host-visible, coherent) */
-static VkBuffer g_buf_vdwA = VK_NULL_HANDLE, g_buf_vdwB = VK_NULL_HANDLE, g_buf_charges = VK_NULL_HANDLE;
-static VkBuffer g_buf_ie_vdwA = VK_NULL_HANDLE, g_buf_nb_int = VK_NULL_HANDLE;
-static VkBuffer g_buf_pair_starts = VK_NULL_HANDLE, g_buf_pair_indices = VK_NULL_HANDLE;
-static VkBuffer g_buf_xyz = VK_NULL_HANDLE, g_buf_scores = VK_NULL_HANDLE;
-static VkBuffer g_buf_active_flags = VK_NULL_HANDLE, g_buf_pose_counter = VK_NULL_HANDLE;
-static VkDeviceMemory g_mem_vdwA = VK_NULL_HANDLE, g_mem_vdwB = VK_NULL_HANDLE, g_mem_charges = VK_NULL_HANDLE;
-static VkDeviceMemory g_mem_ie_vdwA = VK_NULL_HANDLE, g_mem_nb_int = VK_NULL_HANDLE;
-static VkDeviceMemory g_mem_pair_starts = VK_NULL_HANDLE, g_mem_pair_indices = VK_NULL_HANDLE;
-static VkDeviceMemory g_mem_xyz = VK_NULL_HANDLE, g_mem_scores = VK_NULL_HANDLE;
-static VkDeviceMemory g_mem_active_flags = VK_NULL_HANDLE, g_mem_pose_counter = VK_NULL_HANDLE;
+/* VMA allocator */
+static VmaAllocator g_vma = VK_NULL_HANDLE;
 
-/* 3D textures for hardware trilinear filtering (replaces grid SSBOs) */
+/* Buffer wrapper: VkBuffer + VmaAllocation + cached mapped pointer */
+struct GpuBuf {
+    VkBuffer      buf = VK_NULL_HANDLE;
+    VmaAllocation alloc = VK_NULL_HANDLE;
+    void         *map  = NULL;
+};
+
+static GpuBuf g_xyz, g_vdwA, g_vdwB, g_charges, g_scores;
+static GpuBuf g_active_flags, g_ie_vdwA, g_nb_int;
+static GpuBuf g_pair_starts, g_pair_indices, g_pose_counter;
+
+/* 3D textures for hardware trilinear filtering */
 static VkImage         g_img_avdw = VK_NULL_HANDLE, g_img_bvdw = VK_NULL_HANDLE, g_img_es = VK_NULL_HANDLE;
-static VkDeviceMemory  g_mem_img_avdw = VK_NULL_HANDLE, g_mem_img_bvdw = VK_NULL_HANDLE, g_mem_img_es = VK_NULL_HANDLE;
+static VmaAllocation   g_img_alloc_avdw = VK_NULL_HANDLE, g_img_alloc_bvdw = VK_NULL_HANDLE, g_img_alloc_es = VK_NULL_HANDLE;
 static VkImageView     g_iv_avdw = VK_NULL_HANDLE, g_iv_bvdw = VK_NULL_HANDLE, g_iv_es = VK_NULL_HANDLE;
 static VkSampler       g_sampler = VK_NULL_HANDLE;
 
-/* Cached buffer pointers (mapped once at init, used by all writes/reads) */
-static void *g_map_vdwA = NULL, *g_map_vdwB = NULL, *g_map_charges = NULL;
-static void *g_map_ie_vdwA = NULL, *g_map_nb_int = NULL;
-static void *g_map_pair_starts = NULL, *g_map_pair_indices = NULL;
-static void *g_map_xyz = NULL, *g_map_scores = NULL;
-static void *g_map_active_flags = NULL, *g_map_pose_counter = NULL;
-
 /* Pipeline cache for faster reinitialization */
 static VkPipelineCache g_pcache = VK_NULL_HANDLE;
+
+/* Push descriptor function pointer (VK_KHR_push_descriptor) */
+static PFN_vkCmdPushDescriptorSetKHR fp_vkCmdPushDescriptorSetKHR = NULL;
+
+/* Pre-built push descriptor write array (built once at init, used every dispatch).
+ * The underlying VkDescriptorBufferInfo / VkDescriptorImageInfo references
+ * are static and never change, so the entire write array is reusable. */
+#define NUM_BINDINGS 13
+#define NUM_BUF_INFOS 10
+#define NUM_IMG_INFOS 3
+static VkDescriptorBufferInfo g_pd_bi[NUM_BUF_INFOS];
+static VkDescriptorImageInfo  g_pd_ii[NUM_IMG_INFOS];
+static VkWriteDescriptorSet   g_pd_w[NUM_BINDINGS];
 
 static DockGridParams g_params;
 static int  g_initialized = 0;
@@ -340,11 +362,8 @@ static void fill_push_constants(PushConstants *pc, int num_atoms, int num_poses,
 }
 
 /* ================================================================== */
-/*  Vulkan helpers                                                     */
+/*  Vulkan / VMA helpers                                               */
 /* ================================================================== */
-
-/* Cached memory properties (set once at init, used by all alloc calls) */
-static VkPhysicalDeviceMemoryProperties g_mprops;
 
 static void vk_check(VkResult r, const char *where) {
     if (r != VK_SUCCESS) {
@@ -352,47 +371,38 @@ static void vk_check(VkResult r, const char *where) {
     }
 }
 
-static uint32_t find_memory_type(uint32_t type_bits, VkMemoryPropertyFlags required) {
-    for (uint32_t i = 0; i < g_mprops.memoryTypeCount; i++) {
-        if ((type_bits & (1u << i)) &&
-            (g_mprops.memoryTypes[i].propertyFlags & required) == required)
-            return i;
-    }
-    fprintf(stderr, "GPU-VK: no suitable memory type found\n");
-    return UINT32_MAX;
-}
-
-static VkDeviceMemory alloc_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
-                                  VkBuffer *buf, VkDeviceMemory *mem) {
+/* Allocate a host-visible, coherent buffer via VMA. */
+static bool alloc_buf(VkDeviceSize size, VkBufferUsageFlags usage, GpuBuf *b) {
     VkBufferCreateInfo bci = {};
     bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bci.size = size;
     bci.usage = usage;
     bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (vkCreateBuffer(g_dev, &bci, NULL, buf) != VK_SUCCESS) return VK_NULL_HANDLE;
 
-    VkMemoryRequirements mr;
-    vkGetBufferMemoryRequirements(g_dev, *buf, &mr);
+    VmaAllocationCreateInfo vci = {};
+    vci.usage = VMA_MEMORY_USAGE_AUTO;
+    vci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
 
-    VkMemoryAllocateInfo mai = {};
-    mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    mai.allocationSize = mr.size;
-    mai.memoryTypeIndex = find_memory_type(mr.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (vkAllocateMemory(g_dev, &mai, NULL, mem) != VK_SUCCESS) return VK_NULL_HANDLE;
-    vkBindBufferMemory(g_dev, *buf, *mem, 0);
-    return *mem;
+    VkResult r = vmaCreateBuffer(g_vma, &bci, &vci, &b->buf, &b->alloc, NULL);
+    if (r != VK_SUCCESS) return false;
+
+    r = vmaMapMemory(g_vma, b->alloc, &b->map);
+    return r == VK_SUCCESS;
 }
 
-static void *buf_map(VkDeviceMemory mem) {
-    void *ptr = NULL;
-    vkMapMemory(g_dev, mem, 0, VK_WHOLE_SIZE, 0, &ptr);
-    return ptr;
+static void destroy_buf(GpuBuf *b) {
+    if (b->alloc) {
+        vmaUnmapMemory(g_vma, b->alloc);
+        vmaDestroyBuffer(g_vma, b->buf, b->alloc);
+    }
+    b->buf = VK_NULL_HANDLE;
+    b->alloc = VK_NULL_HANDLE;
+    b->map = NULL;
 }
 
-/* Create a 3D texture image (device-local, optimal tiling) */
+/* Create a 3D texture image (device-local, optimal tiling) via VMA */
 static void create_3d_image(int sx, int sy, int sz,
-                            VkImage *img, VkDeviceMemory *mem, VkImageView *view) {
+                            VkImage *img, VmaAllocation *alloc, VkImageView *view) {
     VkImageCreateInfo ici = {};
     ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ici.imageType = VK_IMAGE_TYPE_3D;
@@ -404,18 +414,11 @@ static void create_3d_image(int sx, int sy, int sz,
     ici.tiling = VK_IMAGE_TILING_OPTIMAL;
     ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    vkCreateImage(g_dev, &ici, NULL, img);
 
-    VkMemoryRequirements mr;
-    vkGetImageMemoryRequirements(g_dev, *img, &mr);
+    VmaAllocationCreateInfo vci = {};
+    vci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
 
-    VkMemoryAllocateInfo mai = {};
-    mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    mai.allocationSize = mr.size;
-    mai.memoryTypeIndex = find_memory_type(mr.memoryTypeBits,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    vkAllocateMemory(g_dev, &mai, NULL, mem);
-    vkBindImageMemory(g_dev, *img, *mem, 0);
+    vmaCreateImage(g_vma, &ici, &vci, img, alloc, NULL);
 
     VkImageViewCreateInfo ivci = {};
     ivci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -428,16 +431,27 @@ static void create_3d_image(int sx, int sy, int sz,
     vkCreateImageView(g_dev, &ivci, NULL, view);
 }
 
-/* Upload float data to a 3D image via staging buffer + command buffer */
+/* Upload float data to a 3D image via VMA staging buffer + command buffer */
 static void upload_3d_image(const float *data, int sx, int sy, int sz, VkImage img) {
     VkDeviceSize bytes = sizeof(float) * (VkDeviceSize)sx * sy * sz;
 
     VkBuffer staging_buf;
-    VkDeviceMemory staging_mem;
-    alloc_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging_buf, &staging_mem);
-    void *mapped = buf_map(staging_mem);
+    VmaAllocation staging_alloc;
+    VkBufferCreateInfo bci = {};
+    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bci.size = bytes;
+    bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VmaAllocationCreateInfo vci = {};
+    vci.usage = VMA_MEMORY_USAGE_AUTO;
+    vci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+
+    vmaCreateBuffer(g_vma, &bci, &vci, &staging_buf, &staging_alloc, NULL);
+    void *mapped = NULL;
+    vmaMapMemory(g_vma, staging_alloc, &mapped);
     memcpy(mapped, data, (size_t)bytes);
-    vkUnmapMemory(g_dev, staging_mem);
+    vmaUnmapMemory(g_vma, staging_alloc);
 
     vkResetCommandBuffer(g_cmd[0], 0);
     VkCommandBufferBeginInfo cbbi = {};
@@ -489,8 +503,42 @@ static void upload_3d_image(const float *data, int sx, int sy, int sz, VkImage i
     vkWaitForFences(g_dev, 1, &upload_fence, VK_TRUE, UINT64_MAX);
     vkDestroyFence(g_dev, upload_fence, NULL);
 
-    vkDestroyBuffer(g_dev, staging_buf, NULL);
-    vkFreeMemory(g_dev, staging_mem, NULL);
+    vmaDestroyBuffer(g_vma, staging_buf, staging_alloc);
+}
+
+/* Build the static push descriptor write array.
+ * Called once after all buffers + images are created. */
+static void prepare_push_descriptors(void) {
+    g_pd_bi[0]  = {g_xyz.buf,          0, VK_WHOLE_SIZE};
+    g_pd_bi[1]  = {g_vdwA.buf,         0, VK_WHOLE_SIZE};
+    g_pd_bi[2]  = {g_vdwB.buf,         0, VK_WHOLE_SIZE};
+    g_pd_bi[3]  = {g_charges.buf,      0, VK_WHOLE_SIZE};
+    g_pd_bi[4]  = {g_scores.buf,       0, VK_WHOLE_SIZE};
+    g_pd_bi[5]  = {g_active_flags.buf, 0, VK_WHOLE_SIZE};
+    g_pd_bi[6]  = {g_ie_vdwA.buf,      0, VK_WHOLE_SIZE};
+    g_pd_bi[7]  = {g_pair_starts.buf,  0, VK_WHOLE_SIZE};
+    g_pd_bi[8]  = {g_pair_indices.buf, 0, VK_WHOLE_SIZE};
+    g_pd_bi[9]  = {g_pose_counter.buf, 0, VK_WHOLE_SIZE};
+    g_pd_ii[0]  = {g_sampler, g_iv_avdw, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    g_pd_ii[1]  = {g_sampler, g_iv_bvdw, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    g_pd_ii[2]  = {g_sampler, g_iv_es,   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+
+    int bi_idx = 0, ii_idx = 0;
+    for (int i = 0; i < NUM_BINDINGS; i++) {
+        g_pd_w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        g_pd_w[i].pNext = NULL;
+        g_pd_w[i].dstSet = VK_NULL_HANDLE;  /* ignored for push descriptors */
+        g_pd_w[i].dstBinding = (uint32_t)i;
+        g_pd_w[i].dstArrayElement = 0;
+        g_pd_w[i].descriptorCount = 1;
+        if (i >= 4 && i <= 6) {
+            g_pd_w[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            g_pd_w[i].pImageInfo = &g_pd_ii[ii_idx++];
+        } else {
+            g_pd_w[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            g_pd_w[i].pBufferInfo = &g_pd_bi[bi_idx++];
+        }
+    }
 }
 
 /* Compile GLSL -> SPIR-V via shaderc, return a VkShaderModule. */
@@ -603,9 +651,6 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     vkEnumeratePhysicalDevices(g_inst, &ndev, devs.data());
     g_phys = devs[0];
 
-    /* Cache memory properties once for all alloc calls */
-    vkGetPhysicalDeviceMemoryProperties(g_phys, &g_mprops);
-
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(g_phys, &props);
     fprintf(stderr, "GPU-VK: device: %s\n", props.deviceName);
@@ -629,6 +674,9 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
         if (qf[i].queueFlags & VK_QUEUE_COMPUTE_BIT) { g_queue_idx = i; break; }
     }
 
+    /* Enable VK_KHR_push_descriptor extension */
+    const char *dev_exts[] = { VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME };
+
     float qprio = 1.0f;
     VkDeviceQueueCreateInfo dqci = {};
     dqci.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
@@ -640,13 +688,41 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &dqci;
+    dci.enabledExtensionCount = 1;
+    dci.ppEnabledExtensionNames = dev_exts;
     if (vkCreateDevice(g_phys, &dci, NULL, &g_dev) != VK_SUCCESS) {
         fprintf(stderr, "GPU-VK: device creation failed — CPU fallback\n");
         return 0;
     }
     vkGetDeviceQueue(g_dev, g_queue_idx, 0, &g_queue);
 
-    /* Command pool + (one reusable) command buffer */
+    /* Load push descriptor function pointer */
+    fp_vkCmdPushDescriptorSetKHR = (PFN_vkCmdPushDescriptorSetKHR)
+        vkGetDeviceProcAddr(g_dev, "vkCmdPushDescriptorSetKHR");
+    if (!fp_vkCmdPushDescriptorSetKHR) {
+        fprintf(stderr, "GPU-VK: vkCmdPushDescriptorSetKHR not available — CPU fallback\n");
+        dock_gpu_cleanup();
+        return 0;
+    }
+
+    /* Create VMA allocator */
+    VmaAllocatorCreateInfo vaci = {};
+    vaci.flags = 0;
+    vaci.vulkanApiVersion = VK_API_VERSION_1_1;
+    vaci.physicalDevice = g_phys;
+    vaci.device = g_dev;
+    vaci.instance = g_inst;
+    VmaVulkanFunctions vulkanFunctions = {};
+    vulkanFunctions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
+    vulkanFunctions.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
+    vaci.pVulkanFunctions = &vulkanFunctions;
+    if (vmaCreateAllocator(&vaci, &g_vma) != VK_SUCCESS) {
+        fprintf(stderr, "GPU-VK: VMA allocator creation failed — CPU fallback\n");
+        dock_gpu_cleanup();
+        return 0;
+    }
+
+    /* Command pool + double-buffered command buffers */
     VkCommandPoolCreateInfo cpci = {};
     cpci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     cpci.queueFamilyIndex = g_queue_idx;
@@ -677,9 +753,10 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     }
 
     /* Descriptor set layout: bindings 0-3,7-12 = storage buffers,
-     * bindings 4-6 = combined image samplers (3D textures for grids) */
-    VkDescriptorSetLayoutBinding binds[13];
-    for (int i = 0; i < 13; i++) {
+     * bindings 4-6 = combined image samplers (3D textures for grids).
+     * Created with PUSH_DESCRIPTOR_BIT_KHR — no descriptor sets allocated. */
+    VkDescriptorSetLayoutBinding binds[NUM_BINDINGS];
+    for (int i = 0; i < NUM_BINDINGS; i++) {
         binds[i].binding = (uint32_t)i;
         binds[i].descriptorType = (i >= 4 && i <= 6)
             ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
@@ -690,7 +767,8 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     }
     VkDescriptorSetLayoutCreateInfo dslci = {};
     dslci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dslci.bindingCount = 13;
+    dslci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
+    dslci.bindingCount = NUM_BINDINGS;
     dslci.pBindings = binds;
     vkCreateDescriptorSetLayout(g_dev, &dslci, NULL, &g_dslayout);
 
@@ -743,10 +821,10 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     g_params.grid_size = span_x * span_y * span_z;
 
     /* Create 3D textures for hardware trilinear filtering */
-    create_3d_image(span_x, span_y, span_z, &g_img_avdw, &g_mem_img_avdw, &g_iv_avdw);
-    create_3d_image(span_x, span_y, span_z, &g_img_bvdw, &g_mem_img_bvdw, &g_iv_bvdw);
-    create_3d_image(span_x, span_y, span_z, &g_img_es,   &g_mem_img_es,   &g_iv_es);
-    if (!g_mem_img_avdw || !g_mem_img_bvdw || !g_mem_img_es) {
+    create_3d_image(span_x, span_y, span_z, &g_img_avdw, &g_img_alloc_avdw, &g_iv_avdw);
+    create_3d_image(span_x, span_y, span_z, &g_img_bvdw, &g_img_alloc_bvdw, &g_iv_bvdw);
+    create_3d_image(span_x, span_y, span_z, &g_img_es,   &g_img_alloc_es,   &g_iv_es);
+    if (!g_img_alloc_avdw || !g_img_alloc_bvdw || !g_img_alloc_es) {
         fprintf(stderr, "GPU-VK: 3D texture alloc failed\n");
         dock_gpu_cleanup();
         return 0;
@@ -768,99 +846,26 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     sci.maxLod = 0.0f;
     vkCreateSampler(g_dev, &sci, NULL, &g_sampler);
 
-    /* Per-ligand / per-batch buffers — cache mapped pointers at init */
-    #define ALLOC_BUF(sz, usage, buf, mem) \
-        do { if (!alloc_buffer(sz, usage, buf, mem)) { \
+    /* Per-ligand / per-batch buffers via VMA */
+    #define ALLOC_BUF(sz, usage, b) \
+        do { if (!alloc_buf(sz, usage, b)) { \
             fprintf(stderr, "GPU-VK: buffer alloc failed\n"); dock_gpu_cleanup(); return 0; \
         } } while(0)
-    ALLOC_BUF(sizeof(float)*GPU_MAX_ATOMS,             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_vdwA,          &g_mem_vdwA);
-    ALLOC_BUF(sizeof(float)*GPU_MAX_ATOMS,             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_vdwB,          &g_mem_vdwB);
-    ALLOC_BUF(sizeof(float)*GPU_MAX_ATOMS,             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_charges,       &g_mem_charges);
-    ALLOC_BUF(sizeof(float)*GPU_MAX_ATOMS,             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_ie_vdwA,       &g_mem_ie_vdwA);
-    ALLOC_BUF(sizeof(int)*GPU_MAX_NB_PAIRS*2,          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_nb_int,        &g_mem_nb_int);
-    ALLOC_BUF(sizeof(int)*(GPU_MAX_ATOMS+1),           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_pair_starts,   &g_mem_pair_starts);
-    ALLOC_BUF(sizeof(int)*GPU_MAX_NB_PAIRS,            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_pair_indices,  &g_mem_pair_indices);
-    ALLOC_BUF(sizeof(float)*3*GPU_MAX_ATOMS*GPU_MAX_POSES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_xyz,      &g_mem_xyz);
-    ALLOC_BUF(sizeof(float)*GPU_MAX_POSES,             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_scores,        &g_mem_scores);
-    ALLOC_BUF(sizeof(int)*GPU_MAX_ATOMS,               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_active_flags,  &g_mem_active_flags);
-    ALLOC_BUF(sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, &g_buf_pose_counter, &g_mem_pose_counter);
+    ALLOC_BUF(sizeof(float)*GPU_MAX_ATOMS,             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_vdwA);
+    ALLOC_BUF(sizeof(float)*GPU_MAX_ATOMS,             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_vdwB);
+    ALLOC_BUF(sizeof(float)*GPU_MAX_ATOMS,             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_charges);
+    ALLOC_BUF(sizeof(float)*GPU_MAX_ATOMS,             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_ie_vdwA);
+    ALLOC_BUF(sizeof(int)*GPU_MAX_NB_PAIRS*2,          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_nb_int);
+    ALLOC_BUF(sizeof(int)*(GPU_MAX_ATOMS+1),           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_pair_starts);
+    ALLOC_BUF(sizeof(int)*GPU_MAX_NB_PAIRS,            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_pair_indices);
+    ALLOC_BUF(sizeof(float)*3*GPU_MAX_ATOMS*GPU_MAX_POSES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_xyz);
+    ALLOC_BUF(sizeof(float)*GPU_MAX_POSES,             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_scores);
+    ALLOC_BUF(sizeof(int)*GPU_MAX_ATOMS,               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_active_flags);
+    ALLOC_BUF(sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, &g_pose_counter);
     #undef ALLOC_BUF
 
-    g_map_vdwA          = buf_map(g_mem_vdwA);
-    g_map_vdwB          = buf_map(g_mem_vdwB);
-    g_map_charges       = buf_map(g_mem_charges);
-    g_map_ie_vdwA       = buf_map(g_mem_ie_vdwA);
-    g_map_nb_int        = buf_map(g_mem_nb_int);
-    g_map_pair_starts   = buf_map(g_mem_pair_starts);
-    g_map_pair_indices  = buf_map(g_mem_pair_indices);
-    g_map_xyz           = buf_map(g_mem_xyz);
-    g_map_scores        = buf_map(g_mem_scores);
-    g_map_active_flags  = buf_map(g_mem_active_flags);
-    g_map_pose_counter  = buf_map(g_mem_pose_counter);
-
-    /* Create descriptor pool once — pre-allocate DISPATCH_RING sets (never freed/recycled) */
-    {
-        VkDescriptorPoolSize dps[2] = {
-            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 * DISPATCH_RING },
-            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 * DISPATCH_RING }
-        };
-        VkDescriptorPoolCreateInfo dpci = {};
-        dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        dpci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-        dpci.maxSets = DISPATCH_RING;
-        dpci.poolSizeCount = 2;
-        dpci.pPoolSizes = dps;
-        vkCreateDescriptorPool(g_dev, &dpci, NULL, &g_descpool);
-    }
-
-    /* Pre-allocate and write DISPATCH_RING descriptor sets (bindings are static) */
-    {
-        VkDescriptorSetLayout dsl_all[DISPATCH_RING];
-        for (int i = 0; i < DISPATCH_RING; i++) dsl_all[i] = g_dslayout;
-        VkDescriptorSetAllocateInfo dsai = {};
-        dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        dsai.descriptorPool = g_descpool;
-        dsai.descriptorSetCount = DISPATCH_RING;
-        dsai.pSetLayouts = dsl_all;
-        vkAllocateDescriptorSets(g_dev, &dsai, g_desc_ring);
-
-        /* Write each set once — they never change */
-        for (int ri = 0; ri < DISPATCH_RING; ri++) {
-            VkDescriptorBufferInfo bi[10];
-            VkDescriptorImageInfo  ii[3];
-            bi[0]  = {g_buf_xyz,          0, VK_WHOLE_SIZE};
-            bi[1]  = {g_buf_vdwA,         0, VK_WHOLE_SIZE};
-            bi[2]  = {g_buf_vdwB,         0, VK_WHOLE_SIZE};
-            bi[3]  = {g_buf_charges,      0, VK_WHOLE_SIZE};
-            bi[4]  = {g_buf_scores,       0, VK_WHOLE_SIZE};
-            bi[5]  = {g_buf_active_flags, 0, VK_WHOLE_SIZE};
-            bi[6]  = {g_buf_ie_vdwA,      0, VK_WHOLE_SIZE};
-            bi[7]  = {g_buf_pair_starts,  0, VK_WHOLE_SIZE};
-            bi[8]  = {g_buf_pair_indices, 0, VK_WHOLE_SIZE};
-            bi[9]  = {g_buf_pose_counter, 0, VK_WHOLE_SIZE};
-            ii[0] = {g_sampler, g_iv_avdw, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-            ii[1] = {g_sampler, g_iv_bvdw, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-            ii[2] = {g_sampler, g_iv_es,   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-
-            VkWriteDescriptorSet wds[13] = {};
-            int buf_idx = 0;
-            for (int i = 0; i < 13; i++) {
-                wds[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                wds[i].dstSet = g_desc_ring[ri];
-                wds[i].dstBinding = (uint32_t)i;
-                wds[i].dstArrayElement = 0;
-                wds[i].descriptorCount = 1;
-                if (i >= 4 && i <= 6) {
-                    wds[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                    wds[i].pImageInfo = &ii[i - 4];
-                } else {
-                    wds[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                    wds[i].pBufferInfo = &bi[buf_idx++];
-                }
-            }
-            vkUpdateDescriptorSets(g_dev, 13, wds, 0, NULL);
-        }
-    }
+    /* Build push descriptor writes (static — reused every dispatch) */
+    prepare_push_descriptors();
 
     g_initialized = 1;
     g_active = 0;
@@ -879,9 +884,9 @@ int dock_gpu_set_ligand(const float *vdwA, const float *vdwB,
         return 0;
     }
     size_t bytes = sizeof(float) * (size_t)num_atoms;
-    memcpy(g_map_vdwA, vdwA, bytes);
-    memcpy(g_map_vdwB, vdwB, bytes);
-    memcpy(g_map_charges, charges, bytes);
+    memcpy(g_vdwA.map, vdwA, bytes);
+    memcpy(g_vdwB.map, vdwB, bytes);
+    memcpy(g_charges.map, charges, bytes);
     g_num_atoms = num_atoms;
     g_active = 1;
     return 1;
@@ -898,15 +903,15 @@ int dock_gpu_set_ligand_ie(const float *ie_vdwA, const float *ie_vdwB,
         return 0;
     }
     size_t ie_bytes = sizeof(float) * (size_t)g_num_atoms;
-    memcpy(g_map_ie_vdwA, ie_vdwA, ie_bytes);
+    memcpy(g_ie_vdwA.map, ie_vdwA, ie_bytes);
 
     size_t nb_bytes = sizeof(int) * (size_t)num_nb_pairs * 2;
-    memcpy(g_map_nb_int, nb_int_pairs, nb_bytes);
+    memcpy(g_nb_int.map, nb_int_pairs, nb_bytes);
 
     /* Build per-atom pair lists (same as Metal backend) */
     int na = g_num_atoms;
     int *counts = (int *)calloc(na, sizeof(int));
-    int *starts = (int *)g_map_pair_starts;
+    int *starts = (int *)g_pair_starts.map;
     int *offsets = (int *)malloc(na * sizeof(int));
     int total = 0;
     for (int p = 0; p < num_nb_pairs; p++) {
@@ -921,7 +926,7 @@ int dock_gpu_set_ligand_ie(const float *ie_vdwA, const float *ie_vdwB,
     starts[na] = total;
     free(counts);
 
-    int *pair_indices = (int *)g_map_pair_indices;
+    int *pair_indices = (int *)g_pair_indices.map;
     for (int p = 0; p < num_nb_pairs; p++) {
         int a1 = nb_int_pairs[p*2];
         int a2 = nb_int_pairs[p*2+1];
@@ -945,7 +950,7 @@ int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
     g_ring_idx = (g_ring_idx + 1) % DISPATCH_RING;
 
     size_t xyz_bytes = sizeof(float) * (size_t)num_poses * (size_t)num_atoms * 3;
-    memcpy(g_map_xyz, xyz, xyz_bytes);
+    memcpy(g_xyz.map, xyz, xyz_bytes);
 
     PushConstants pc = {};
     fill_push_constants(&pc, num_atoms, num_poses, 0.0f, 1e10f, 0);
@@ -962,11 +967,12 @@ int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
     cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     vkBeginCommandBuffer(cmd, &cbbi);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_pl_grid);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_playout, 0, 1, &g_desc_ring[ri], 0, NULL);
+    fp_vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                 g_playout, 0, NUM_BINDINGS, g_pd_w);
     vkCmdPushConstants(cmd, g_playout, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(PushConstants), &pc);
 
-    /* grid-only kernel: 1 thread/pose, local_size_x=64 → ceil(num_poses/64) workgroups */
+    /* grid-only kernel: 1 thread/pose, local_size_x=64 -> ceil(num_poses/64) workgroups */
     uint32_t num_wg = ((uint32_t)num_poses + 63u) / 64u;
     vkCmdResetQueryPool(cmd, g_tq_pool, 0, 2);
     vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g_tq_pool, 0);
@@ -987,7 +993,7 @@ int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
                           VK_QUERY_RESULT_64_BIT);
     double dispatch_ms = (double)(ts[1] - ts[0]) * g_timestamp_period_ns * 1e-6;
 
-    memcpy(out_scores, g_map_scores, sizeof(float) * (size_t)num_poses);
+    memcpy(out_scores, g_scores.map, sizeof(float) * (size_t)num_poses);
 
     prof_dispatch_count++;
     prof_total_conformers += num_poses;
@@ -1016,17 +1022,17 @@ int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses, int
     g_ring_idx = (g_ring_idx + 1) % DISPATCH_RING;
 
     size_t xyz_bytes = sizeof(float) * (size_t)num_poses * (size_t)num_atoms * 3;
-    memcpy(g_map_xyz, xyz, xyz_bytes);
+    memcpy(g_xyz.map, xyz, xyz_bytes);
     if (active_flags) {
-        memcpy(g_map_active_flags, active_flags, sizeof(int) * (size_t)num_atoms);
+        memcpy(g_active_flags.map, active_flags, sizeof(int) * (size_t)num_atoms);
     } else {
-        int *af = (int *)g_map_active_flags;
+        int *af = (int *)g_active_flags.map;
         for (int i = 0; i < num_atoms; i++) af[i] = 1;
     }
 
     /* reset atomic work-counter to 0 */
     uint32_t zero = 0;
-    memcpy(g_map_pose_counter, &zero, sizeof(zero));
+    memcpy(g_pose_counter.map, &zero, sizeof(zero));
 
     /* Non-blocking check: if prev fence already signaled, skip kernel wait */
     VkResult fr = vkGetFenceStatus(g_dev, g_fence[ri]);
@@ -1043,7 +1049,8 @@ int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses, int
     cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     vkBeginCommandBuffer(cmd, &cbbi);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_pl_ie);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_playout, 0, 1, &g_desc_ring[ri], 0, NULL);
+    fp_vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                 g_playout, 0, NUM_BINDINGS, g_pd_w);
     vkCmdPushConstants(cmd, g_playout, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(PushConstants), &pc);
 
@@ -1067,7 +1074,7 @@ int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses, int
                           VK_QUERY_RESULT_64_BIT);
     double dispatch_ms = (double)(ts[1] - ts[0]) * g_timestamp_period_ns * 1e-6;
 
-    memcpy(out_scores, g_map_scores, sizeof(float) * (size_t)num_poses);
+    memcpy(out_scores, g_scores.map, sizeof(float) * (size_t)num_poses);
 
     prof_dispatch_count++;
     prof_total_conformers += num_poses;
@@ -1083,30 +1090,32 @@ void dock_gpu_cleanup(void)
 {
     if (g_dev) {
         vkDeviceWaitIdle(g_dev);
-        /* 3D textures (images + views + device-local memory) */
+
+        /* 3D textures */
         if (g_iv_avdw)   vkDestroyImageView(g_dev, g_iv_avdw, NULL);
         if (g_iv_bvdw)   vkDestroyImageView(g_dev, g_iv_bvdw, NULL);
         if (g_iv_es)     vkDestroyImageView(g_dev, g_iv_es, NULL);
-        if (g_img_avdw)  vkDestroyImage(g_dev, g_img_avdw, NULL);
-        if (g_img_bvdw)  vkDestroyImage(g_dev, g_img_bvdw, NULL);
-        if (g_img_es)    vkDestroyImage(g_dev, g_img_es, NULL);
-        if (g_mem_img_avdw) vkFreeMemory(g_dev, g_mem_img_avdw, NULL);
-        if (g_mem_img_bvdw) vkFreeMemory(g_dev, g_mem_img_bvdw, NULL);
-        if (g_mem_img_es)   vkFreeMemory(g_dev, g_mem_img_es, NULL);
+        if (g_img_alloc_avdw) vmaDestroyImage(g_vma, g_img_avdw, g_img_alloc_avdw);
+        if (g_img_alloc_bvdw) vmaDestroyImage(g_vma, g_img_bvdw, g_img_alloc_bvdw);
+        if (g_img_alloc_es)   vmaDestroyImage(g_vma, g_img_es, g_img_alloc_es);
         if (g_sampler)   vkDestroySampler(g_dev, g_sampler, NULL);
-        if (g_descpool)  vkDestroyDescriptorPool(g_dev, g_descpool, NULL);
-        /* Host-visible buffers */
-        if (g_buf_vdwA)     { vkDestroyBuffer(g_dev, g_buf_vdwA, NULL);     vkFreeMemory(g_dev, g_mem_vdwA, NULL); }
-        if (g_buf_vdwB)     { vkDestroyBuffer(g_dev, g_buf_vdwB, NULL);     vkFreeMemory(g_dev, g_mem_vdwB, NULL); }
-        if (g_buf_charges)  { vkDestroyBuffer(g_dev, g_buf_charges, NULL);  vkFreeMemory(g_dev, g_mem_charges, NULL); }
-        if (g_buf_ie_vdwA)  { vkDestroyBuffer(g_dev, g_buf_ie_vdwA, NULL);  vkFreeMemory(g_dev, g_mem_ie_vdwA, NULL); }
-        if (g_buf_nb_int)   { vkDestroyBuffer(g_dev, g_buf_nb_int, NULL);   vkFreeMemory(g_dev, g_mem_nb_int, NULL); }
-        if (g_buf_pair_starts){ vkDestroyBuffer(g_dev, g_buf_pair_starts, NULL); vkFreeMemory(g_dev, g_mem_pair_starts, NULL); }
-        if (g_buf_pair_indices){ vkDestroyBuffer(g_dev, g_buf_pair_indices, NULL); vkFreeMemory(g_dev, g_mem_pair_indices, NULL); }
-        if (g_buf_xyz)      { vkDestroyBuffer(g_dev, g_buf_xyz, NULL);      vkFreeMemory(g_dev, g_mem_xyz, NULL); }
-        if (g_buf_scores)   { vkDestroyBuffer(g_dev, g_buf_scores, NULL);   vkFreeMemory(g_dev, g_mem_scores, NULL); }
-        if (g_buf_active_flags){ vkDestroyBuffer(g_dev, g_buf_active_flags, NULL); vkFreeMemory(g_dev, g_mem_active_flags, NULL); }
-        if (g_buf_pose_counter){ vkDestroyBuffer(g_dev, g_buf_pose_counter, NULL); vkFreeMemory(g_dev, g_mem_pose_counter, NULL); }
+
+        /* Host-visible buffers via VMA */
+        destroy_buf(&g_vdwA);
+        destroy_buf(&g_vdwB);
+        destroy_buf(&g_charges);
+        destroy_buf(&g_ie_vdwA);
+        destroy_buf(&g_nb_int);
+        destroy_buf(&g_pair_starts);
+        destroy_buf(&g_pair_indices);
+        destroy_buf(&g_xyz);
+        destroy_buf(&g_scores);
+        destroy_buf(&g_active_flags);
+        destroy_buf(&g_pose_counter);
+
+        /* VMA allocator */
+        if (g_vma) { vmaDestroyAllocator(g_vma); g_vma = VK_NULL_HANDLE; }
+
         if (g_tq_pool)  vkDestroyQueryPool(g_dev, g_tq_pool, NULL);
         for (int i = 0; i < DISPATCH_RING; i++)
             if (g_fence[i]) vkDestroyFence(g_dev, g_fence[i], NULL);
@@ -1121,22 +1130,22 @@ void dock_gpu_cleanup(void)
         vkDestroyDevice(g_dev, NULL);
     }
     if (g_inst) vkDestroyInstance(g_inst, NULL);
+
+    /* Reset all handles */
     g_inst = VK_NULL_HANDLE; g_phys = VK_NULL_HANDLE; g_dev = VK_NULL_HANDLE;
     g_queue = VK_NULL_HANDLE; g_cmdpool = VK_NULL_HANDLE;
-    for (int i = 0; i < DISPATCH_RING; i++) { g_cmd[i] = VK_NULL_HANDLE; g_fence[i] = VK_NULL_HANDLE; g_desc_ring[i] = VK_NULL_HANDLE; }
+    for (int i = 0; i < DISPATCH_RING; i++) {
+        g_cmd[i] = VK_NULL_HANDLE; g_fence[i] = VK_NULL_HANDLE;
+    }
     g_mod_grid = g_mod_ie = VK_NULL_HANDLE;
     g_pl_grid = g_pl_ie = VK_NULL_HANDLE; g_playout = VK_NULL_HANDLE; g_dslayout = VK_NULL_HANDLE;
     g_tq_pool = VK_NULL_HANDLE; g_pcache = VK_NULL_HANDLE;
-    g_descpool = VK_NULL_HANDLE; g_sampler = VK_NULL_HANDLE;
-    g_buf_vdwA = g_buf_vdwB = g_buf_charges = g_buf_ie_vdwA = g_buf_nb_int = VK_NULL_HANDLE;
-    g_buf_pair_starts = g_buf_pair_indices = g_buf_xyz = g_buf_scores = VK_NULL_HANDLE;
-    g_buf_active_flags = g_buf_pose_counter = VK_NULL_HANDLE;
+    g_sampler = VK_NULL_HANDLE;
     g_img_avdw = g_img_bvdw = g_img_es = VK_NULL_HANDLE;
-    g_mem_img_avdw = g_mem_img_bvdw = g_mem_img_es = VK_NULL_HANDLE;
+    g_img_alloc_avdw = g_img_alloc_bvdw = g_img_alloc_es = VK_NULL_HANDLE;
     g_iv_avdw = g_iv_bvdw = g_iv_es = VK_NULL_HANDLE;
-    g_map_vdwA = g_map_vdwB = g_map_charges = g_map_ie_vdwA = g_map_nb_int = NULL;
-    g_map_pair_starts = g_map_pair_indices = g_map_xyz = g_map_scores = NULL;
-    g_map_active_flags = g_map_pose_counter = NULL;
+    g_vma = VK_NULL_HANDLE;
+    fp_vkCmdPushDescriptorSetKHR = NULL;
     memset(&g_params, 0, sizeof(g_params));
     g_initialized = 0; g_active = 0; g_num_atoms = 0; g_num_nb_pairs = 0;
     g_ie_soft_delta = 0.0f; g_ie_cutoff_sq = 1e10f;
