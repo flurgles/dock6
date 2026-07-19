@@ -1,6 +1,6 @@
 /*                                                                    */
 /*                        Copyright UCSF, 2026                        */
-/*
+/*                                                                    */
 
 /*
   Vulkan GPU backend for dock6 scoring — internal declarations.

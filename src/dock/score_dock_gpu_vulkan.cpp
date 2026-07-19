@@ -1,6 +1,6 @@
 /*                                                                    */
 /*                        Copyright UCSF, 2026                        */
-/*
+/*                                                                    */
 
 /*
   Vulkan GPU backend for dock6 batch scoring.
@@ -12,7 +12,7 @@
   Design notes / differences from the Metal backend:
     * Grid data is stored as 3D textures (VkImage TYPE_3D, R32_SFLOAT)
       with hardware trilinear filtering via sampler3D, matching the
-      Metal backend's texture3d<float> approach.  inside_grid() uses
+      Metal backend's texture3d<float> approach.  Bounds checking uses
       > 0.0 (not > 1.0 like Metal) to avoid the 1-voxel safety margin
       divergence noted in the Metal backend.
     * Buffers use HOST_VISIBLE | HOST_COHERENT storage.  The Deck is a
@@ -55,8 +55,8 @@
 /* GLSL source for every compute kernel, compiled to SPIR-V at runtime. */
 static const char* shader_src = R"glsl(
 #version 450
-#extension GL_EXT_shader_subgroup_arithmetic : enable
-#extension GL_EXT_shader_atomic_counter_buffer : enable
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
 
 layout(local_size_x = 64) in;
 
@@ -114,7 +114,7 @@ shared uint tg_candidate;
 void kernel_persistent() {
     uint tid = gl_LocalInvocationID.x;
     uint tg_size = gl_WorkGroupSize.x;
-    uint simd_idx = tid / 32u;
+    uint simd_idx = tid / gl_SubgroupSize;
 
     if (tid == 0u) {
         tg_candidate = atomicAdd(pose_counter[0], 1u);
@@ -138,6 +138,7 @@ void kernel_persistent() {
             int end   = pair_starts[a + 1];
             for (int i = start; i < end; i++) {
                 int a2 = pair_indices[i];
+                if (a2 < 0 || a2 >= p.num_atoms) continue;
                 float dx = xyz[stride + int(a)*3]     - xyz[stride + a2*3];
                 float dy = xyz[stride + int(a)*3 + 1] - xyz[stride + a2*3 + 1];
                 float dz = xyz[stride + int(a)*3 + 2] - xyz[stride + a2*3 + 2];
@@ -157,7 +158,10 @@ void kernel_persistent() {
         barrier();
 
         if (tid == 0u) {
-            float final_score = tg_partial[0] + tg_partial[1];
+            float final_score = 0.0;
+            uint num_subgroups = tg_size / gl_SubgroupSize;
+            for (uint i = 0u; i < num_subgroups; i++)
+                final_score += tg_partial[i];
             out_scores[tg_candidate] = final_score;
             tg_candidate = atomicAdd(pose_counter[0], 1u);
         }
@@ -220,7 +224,7 @@ void main() {
     for (int a = 0; a < p.num_atoms; a++) {
         int o3 = stride + a*3;
         float x = xyz[o3], y = xyz[o3+1], z = xyz[o3+2];
-        if (active_flags[a]) {
+        if (active_flags[a] != 0) {
             float vdw  = sample_grid(g_avdw, x, y, z);
             float bvdw = sample_grid(g_bvdw, x, y, z);
             float es   = sample_grid(g_es,   x, y, z);
@@ -253,8 +257,11 @@ static VkDevice          g_dev        = VK_NULL_HANDLE;
 static VkQueue           g_queue      = VK_NULL_HANDLE;
 static uint32_t         g_queue_idx  = 0;
 static VkCommandPool     g_cmdpool    = VK_NULL_HANDLE;
-static VkCommandBuffer   g_cmd        = VK_NULL_HANDLE;
+#define DISPATCH_RING 2
+static VkCommandBuffer   g_cmd[DISPATCH_RING] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
 static VkDescriptorPool  g_descpool   = VK_NULL_HANDLE;
+static VkDescriptorSet   g_desc_ring[DISPATCH_RING] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+static unsigned          g_ring_idx   = 0;
 
 static VkShaderModule    g_mod_grid   = VK_NULL_HANDLE;
 static VkShaderModule    g_mod_ie     = VK_NULL_HANDLE;
@@ -281,6 +288,16 @@ static VkDeviceMemory  g_mem_img_avdw = VK_NULL_HANDLE, g_mem_img_bvdw = VK_NULL
 static VkImageView     g_iv_avdw = VK_NULL_HANDLE, g_iv_bvdw = VK_NULL_HANDLE, g_iv_es = VK_NULL_HANDLE;
 static VkSampler       g_sampler = VK_NULL_HANDLE;
 
+/* Cached buffer pointers (mapped once at init, used by all writes/reads) */
+static void *g_map_vdwA = NULL, *g_map_vdwB = NULL, *g_map_charges = NULL;
+static void *g_map_ie_vdwA = NULL, *g_map_nb_int = NULL;
+static void *g_map_pair_starts = NULL, *g_map_pair_indices = NULL;
+static void *g_map_xyz = NULL, *g_map_scores = NULL;
+static void *g_map_active_flags = NULL, *g_map_pose_counter = NULL;
+
+/* Pipeline cache for faster reinitialization */
+static VkPipelineCache g_pcache = VK_NULL_HANDLE;
+
 static DockGridParams g_params;
 static int  g_initialized = 0;
 static int  g_active      = 0;
@@ -294,8 +311,8 @@ static int  g_compute_units = 0;
 static VkQueryPool g_tq_pool = VK_NULL_HANDLE;
 static float g_timestamp_period_ns = 1.0f; /* ns per timestamp tick */
 
-/* Fence for async dispatch (replaces vkQueueWaitIdle) */
-static VkFence g_fence = VK_NULL_HANDLE;
+/* Fences for double-buffered dispatch */
+static VkFence g_fence[DISPATCH_RING] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
 
 /* Profiling counters (mirrors Metal backend) */
 static uint64_t prof_dispatch_count    = 0;
@@ -305,6 +322,22 @@ static double   prof_last_dispatch_ms  = 0.0;
 #define PROF_ROLLING_SIZE 64
 static double   prof_wait_buf[PROF_ROLLING_SIZE];
 static int      prof_wait_idx = 0;
+
+static void fill_push_constants(PushConstants *pc, int num_atoms, int num_poses,
+                                float ie_soft_delta, float ie_cutoff_sq, int num_nb_pairs) {
+    pc->origin_x    = g_params.origin_x;
+    pc->origin_y    = g_params.origin_y;
+    pc->origin_z    = g_params.origin_z;
+    pc->span_x      = g_params.span_x;
+    pc->span_y      = g_params.span_y;
+    pc->span_z      = g_params.span_z;
+    pc->spacing     = g_params.spacing;
+    pc->num_atoms   = num_atoms;
+    pc->ie_soft_delta = ie_soft_delta;
+    pc->ie_cutoff_sq  = ie_cutoff_sq;
+    pc->num_nb_pairs  = num_nb_pairs;
+    pc->num_poses     = num_poses;
+}
 
 /* ================================================================== */
 /*  Vulkan helpers                                                     */
@@ -325,7 +358,8 @@ static uint32_t find_memory_type(uint32_t type_bits, VkMemoryPropertyFlags requi
             (g_mprops.memoryTypes[i].propertyFlags & required) == required)
             return i;
     }
-    return 0;
+    fprintf(stderr, "GPU-VK: no suitable memory type found\n");
+    return UINT32_MAX;
 }
 
 static VkDeviceMemory alloc_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
@@ -401,13 +435,15 @@ static void upload_3d_image(const float *data, int sx, int sy, int sz, VkImage i
     VkBuffer staging_buf;
     VkDeviceMemory staging_mem;
     alloc_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging_buf, &staging_mem);
-    memcpy(buf_map(staging_mem), data, (size_t)bytes);
+    void *mapped = buf_map(staging_mem);
+    memcpy(mapped, data, (size_t)bytes);
+    vkUnmapMemory(g_dev, staging_mem);
 
-    vkResetCommandBuffer(g_cmd, 0);
+    vkResetCommandBuffer(g_cmd[0], 0);
     VkCommandBufferBeginInfo cbbi = {};
     cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(g_cmd, &cbbi);
+    vkBeginCommandBuffer(g_cmd[0], &cbbi);
 
     VkImageMemoryBarrier barrier = {};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -419,7 +455,7 @@ static void upload_3d_image(const float *data, int sx, int sy, int sz, VkImage i
     barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     barrier.subresourceRange.levelCount = 1;
     barrier.subresourceRange.layerCount = 1;
-    vkCmdPipelineBarrier(g_cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+    vkCmdPipelineBarrier(g_cmd[0], VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                          VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
                          0, NULL, 0, NULL, 1, &barrier);
 
@@ -427,25 +463,31 @@ static void upload_3d_image(const float *data, int sx, int sy, int sz, VkImage i
     region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     region.imageSubresource.layerCount = 1;
     region.imageExtent = {(uint32_t)sx, (uint32_t)sy, (uint32_t)sz};
-    vkCmdCopyBufferToImage(g_cmd, staging_buf, img,
+    vkCmdCopyBufferToImage(g_cmd[0], staging_buf, img,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
     barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    vkCmdPipelineBarrier(g_cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+    vkCmdPipelineBarrier(g_cmd[0], VK_PIPELINE_STAGE_TRANSFER_BIT,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
                          0, NULL, 0, NULL, 1, &barrier);
 
-    vkEndCommandBuffer(g_cmd);
+    vkEndCommandBuffer(g_cmd[0]);
+
+    VkFenceCreateInfo ufci = {};
+    ufci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    VkFence upload_fence;
+    vkCreateFence(g_dev, &ufci, NULL, &upload_fence);
 
     VkSubmitInfo si = {};
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
-    si.pCommandBuffers = &g_cmd;
-    vkQueueSubmit(g_queue, 1, &si, VK_NULL_HANDLE);
-    vkQueueWaitIdle(g_queue);
+    si.pCommandBuffers = &g_cmd[0];
+    vkQueueSubmit(g_queue, 1, &si, upload_fence);
+    vkWaitForFences(g_dev, 1, &upload_fence, VK_TRUE, UINT64_MAX);
+    vkDestroyFence(g_dev, upload_fence, NULL);
 
     vkDestroyBuffer(g_dev, staging_buf, NULL);
     vkFreeMemory(g_dev, staging_mem, NULL);
@@ -484,6 +526,47 @@ static VkShaderModule compile_module(const char *src, const char *label) {
     shaderc_compile_options_release(opts);
     shaderc_compiler_release(compiler);
     return mod;
+}
+
+static const char *g_pipeline_cache_path = "/tmp/dock6_vulkan_pipeline_cache.bin";
+
+static void load_pipeline_cache(void) {
+    FILE *f = fopen(g_pipeline_cache_path, "rb");
+    if (!f) return;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    if (sz <= 0) { fclose(f); return; }
+    fseek(f, 0, SEEK_SET);
+    void *data = malloc((size_t)sz);
+    if (!data) { fclose(f); return; }
+    size_t rd = fread(data, 1, (size_t)sz, f);
+    fclose(f);
+    if ((long)rd != sz) { free(data); return; }
+
+    VkPipelineCacheCreateInfo pcci = {};
+    pcci.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+    pcci.initialDataSize = (size_t)sz;
+    pcci.pInitialData = data;
+    vkCreatePipelineCache(g_dev, &pcci, NULL, &g_pcache);
+    free(data);
+    fprintf(stderr, "GPU-VK: loaded pipeline cache (%ld bytes)\n", sz);
+}
+
+static void save_pipeline_cache(void) {
+    if (!g_pcache) return;
+    size_t sz = 0;
+    vkGetPipelineCacheData(g_dev, g_pcache, &sz, NULL);
+    if (sz == 0) return;
+    void *data = malloc(sz);
+    if (!data) return;
+    vkGetPipelineCacheData(g_dev, g_pcache, &sz, data);
+    FILE *f = fopen(g_pipeline_cache_path, "wb");
+    if (f) {
+        fwrite(data, 1, sz, f);
+        fclose(f);
+        fprintf(stderr, "GPU-VK: saved pipeline cache (%zu bytes)\n", sz);
+    }
+    free(data);
 }
 
 /* ================================================================== */
@@ -526,6 +609,7 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(g_phys, &props);
     fprintf(stderr, "GPU-VK: device: %s\n", props.deviceName);
+    fflush(stderr);
 
     /* compute units heuristic from subgroup/max-invocation limits */
     g_compute_units = (int)(props.limits.maxComputeWorkGroupInvocations / 32);
@@ -573,14 +657,15 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     cbai.commandPool = g_cmdpool;
     cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cbai.commandBufferCount = 1;
-    vkAllocateCommandBuffers(g_dev, &cbai, &g_cmd);
+    cbai.commandBufferCount = DISPATCH_RING;
+    vkAllocateCommandBuffers(g_dev, &cbai, g_cmd);
 
-    /* Fence for async dispatch — created SIGNALED so first wait passes */
+    /* Fences for double-buffered dispatch — created SIGNALED so first wait passes */
     VkFenceCreateInfo fci = {};
     fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-    vkCreateFence(g_dev, &fci, NULL, &g_fence);
+    for (int i = 0; i < DISPATCH_RING; i++)
+        vkCreateFence(g_dev, &fci, NULL, &g_fence[i]);
 
     /* Shaders */
     g_mod_grid = compile_module(shader_src_grid, "grid_batch_score");
@@ -613,7 +698,6 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     plci.setLayoutCount = 1;
     plci.pSetLayouts = &g_dslayout;
-    plci.pushConstantRangeCount = 0;  /* push constants declared; range added below */
     VkPushConstantRange pcr = {};
     pcr.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     pcr.offset = 0;
@@ -622,6 +706,9 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     plci.pPushConstantRanges = &pcr;
     vkCreatePipelineLayout(g_dev, &plci, NULL, &g_playout);
 
+    /* Load pipeline cache from disk (if available) */
+    load_pipeline_cache();
+
     VkComputePipelineCreateInfo cp1 = {};
     cp1.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     cp1.layout = g_playout;
@@ -629,11 +716,14 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     cp1.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     cp1.stage.module = g_mod_grid;
     cp1.stage.pName = "main";
-    vkCreateComputePipelines(g_dev, VK_NULL_HANDLE, 1, &cp1, NULL, &g_pl_grid);
+    vkCreateComputePipelines(g_dev, g_pcache, 1, &cp1, NULL, &g_pl_grid);
 
     VkComputePipelineCreateInfo cp2 = cp1;
     cp2.stage.module = g_mod_ie;
-    vkCreateComputePipelines(g_dev, VK_NULL_HANDLE, 1, &cp2, NULL, &g_pl_ie);
+    vkCreateComputePipelines(g_dev, g_pcache, 1, &cp2, NULL, &g_pl_ie);
+
+    /* Save pipeline cache to disk for faster reinit */
+    save_pipeline_cache();
 
     /* Timestamp query pool (2 queries per dispatch: before + after) */
     VkQueryPoolCreateInfo qpci = {};
@@ -678,32 +768,98 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     sci.maxLod = 0.0f;
     vkCreateSampler(g_dev, &sci, NULL, &g_sampler);
 
-    /* Per-ligand / per-batch buffers */
-    alloc_buffer(sizeof(float)*GPU_MAX_ATOMS, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_vdwA, &g_mem_vdwA);
-    alloc_buffer(sizeof(float)*GPU_MAX_ATOMS, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_vdwB, &g_mem_vdwB);
-    alloc_buffer(sizeof(float)*GPU_MAX_ATOMS, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_charges, &g_mem_charges);
-    alloc_buffer(sizeof(float)*GPU_MAX_ATOMS, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_ie_vdwA, &g_mem_ie_vdwA);
-    alloc_buffer(sizeof(int)*GPU_MAX_NB_PAIRS*2, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_nb_int, &g_mem_nb_int);
-    alloc_buffer(sizeof(int)*(GPU_MAX_ATOMS+1), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_pair_starts, &g_mem_pair_starts);
-    alloc_buffer(sizeof(int)*GPU_MAX_NB_PAIRS, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_pair_indices, &g_mem_pair_indices);
-    alloc_buffer(sizeof(float)*3*GPU_MAX_ATOMS*GPU_MAX_POSES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_xyz, &g_mem_xyz);
-    alloc_buffer(sizeof(float)*GPU_MAX_POSES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_scores, &g_mem_scores);
-    alloc_buffer(sizeof(int)*GPU_MAX_ATOMS, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_active_flags, &g_mem_active_flags);
-    alloc_buffer(sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, &g_buf_pose_counter, &g_mem_pose_counter);
+    /* Per-ligand / per-batch buffers — cache mapped pointers at init */
+    #define ALLOC_BUF(sz, usage, buf, mem) \
+        do { if (!alloc_buffer(sz, usage, buf, mem)) { \
+            fprintf(stderr, "GPU-VK: buffer alloc failed\n"); dock_gpu_cleanup(); return 0; \
+        } } while(0)
+    ALLOC_BUF(sizeof(float)*GPU_MAX_ATOMS,             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_vdwA,          &g_mem_vdwA);
+    ALLOC_BUF(sizeof(float)*GPU_MAX_ATOMS,             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_vdwB,          &g_mem_vdwB);
+    ALLOC_BUF(sizeof(float)*GPU_MAX_ATOMS,             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_charges,       &g_mem_charges);
+    ALLOC_BUF(sizeof(float)*GPU_MAX_ATOMS,             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_ie_vdwA,       &g_mem_ie_vdwA);
+    ALLOC_BUF(sizeof(int)*GPU_MAX_NB_PAIRS*2,          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_nb_int,        &g_mem_nb_int);
+    ALLOC_BUF(sizeof(int)*(GPU_MAX_ATOMS+1),           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_pair_starts,   &g_mem_pair_starts);
+    ALLOC_BUF(sizeof(int)*GPU_MAX_NB_PAIRS,            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_pair_indices,  &g_mem_pair_indices);
+    ALLOC_BUF(sizeof(float)*3*GPU_MAX_ATOMS*GPU_MAX_POSES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_xyz,      &g_mem_xyz);
+    ALLOC_BUF(sizeof(float)*GPU_MAX_POSES,             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_scores,        &g_mem_scores);
+    ALLOC_BUF(sizeof(int)*GPU_MAX_ATOMS,               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_active_flags,  &g_mem_active_flags);
+    ALLOC_BUF(sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, &g_buf_pose_counter, &g_mem_pose_counter);
+    #undef ALLOC_BUF
 
-    /* Create descriptor pool once (reused across dispatches via free+realloc) */
+    g_map_vdwA          = buf_map(g_mem_vdwA);
+    g_map_vdwB          = buf_map(g_mem_vdwB);
+    g_map_charges       = buf_map(g_mem_charges);
+    g_map_ie_vdwA       = buf_map(g_mem_ie_vdwA);
+    g_map_nb_int        = buf_map(g_mem_nb_int);
+    g_map_pair_starts   = buf_map(g_mem_pair_starts);
+    g_map_pair_indices  = buf_map(g_mem_pair_indices);
+    g_map_xyz           = buf_map(g_mem_xyz);
+    g_map_scores        = buf_map(g_mem_scores);
+    g_map_active_flags  = buf_map(g_mem_active_flags);
+    g_map_pose_counter  = buf_map(g_mem_pose_counter);
+
+    /* Create descriptor pool once — pre-allocate DISPATCH_RING sets (never freed/recycled) */
     {
         VkDescriptorPoolSize dps[2] = {
-            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 },
-            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 }
+            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 * DISPATCH_RING },
+            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 * DISPATCH_RING }
         };
         VkDescriptorPoolCreateInfo dpci = {};
         dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         dpci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-        dpci.maxSets = 1;
+        dpci.maxSets = DISPATCH_RING;
         dpci.poolSizeCount = 2;
         dpci.pPoolSizes = dps;
         vkCreateDescriptorPool(g_dev, &dpci, NULL, &g_descpool);
+    }
+
+    /* Pre-allocate and write DISPATCH_RING descriptor sets (bindings are static) */
+    {
+        VkDescriptorSetLayout dsl_all[DISPATCH_RING];
+        for (int i = 0; i < DISPATCH_RING; i++) dsl_all[i] = g_dslayout;
+        VkDescriptorSetAllocateInfo dsai = {};
+        dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        dsai.descriptorPool = g_descpool;
+        dsai.descriptorSetCount = DISPATCH_RING;
+        dsai.pSetLayouts = dsl_all;
+        vkAllocateDescriptorSets(g_dev, &dsai, g_desc_ring);
+
+        /* Write each set once — they never change */
+        for (int ri = 0; ri < DISPATCH_RING; ri++) {
+            VkDescriptorBufferInfo bi[10];
+            VkDescriptorImageInfo  ii[3];
+            bi[0]  = {g_buf_xyz,          0, VK_WHOLE_SIZE};
+            bi[1]  = {g_buf_vdwA,         0, VK_WHOLE_SIZE};
+            bi[2]  = {g_buf_vdwB,         0, VK_WHOLE_SIZE};
+            bi[3]  = {g_buf_charges,      0, VK_WHOLE_SIZE};
+            bi[4]  = {g_buf_scores,       0, VK_WHOLE_SIZE};
+            bi[5]  = {g_buf_active_flags, 0, VK_WHOLE_SIZE};
+            bi[6]  = {g_buf_ie_vdwA,      0, VK_WHOLE_SIZE};
+            bi[7]  = {g_buf_pair_starts,  0, VK_WHOLE_SIZE};
+            bi[8]  = {g_buf_pair_indices, 0, VK_WHOLE_SIZE};
+            bi[9]  = {g_buf_pose_counter, 0, VK_WHOLE_SIZE};
+            ii[0] = {g_sampler, g_iv_avdw, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+            ii[1] = {g_sampler, g_iv_bvdw, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+            ii[2] = {g_sampler, g_iv_es,   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+
+            VkWriteDescriptorSet wds[13] = {};
+            int buf_idx = 0;
+            for (int i = 0; i < 13; i++) {
+                wds[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                wds[i].dstSet = g_desc_ring[ri];
+                wds[i].dstBinding = (uint32_t)i;
+                wds[i].dstArrayElement = 0;
+                wds[i].descriptorCount = 1;
+                if (i >= 4 && i <= 6) {
+                    wds[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                    wds[i].pImageInfo = &ii[i - 4];
+                } else {
+                    wds[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                    wds[i].pBufferInfo = &bi[buf_idx++];
+                }
+            }
+            vkUpdateDescriptorSets(g_dev, 13, wds, 0, NULL);
+        }
     }
 
     g_initialized = 1;
@@ -723,9 +879,9 @@ int dock_gpu_set_ligand(const float *vdwA, const float *vdwB,
         return 0;
     }
     size_t bytes = sizeof(float) * (size_t)num_atoms;
-    memcpy(buf_map(g_mem_vdwA), vdwA, bytes);
-    memcpy(buf_map(g_mem_vdwB), vdwB, bytes);
-    memcpy(buf_map(g_mem_charges), charges, bytes);
+    memcpy(g_map_vdwA, vdwA, bytes);
+    memcpy(g_map_vdwB, vdwB, bytes);
+    memcpy(g_map_charges, charges, bytes);
     g_num_atoms = num_atoms;
     g_active = 1;
     return 1;
@@ -742,15 +898,15 @@ int dock_gpu_set_ligand_ie(const float *ie_vdwA, const float *ie_vdwB,
         return 0;
     }
     size_t ie_bytes = sizeof(float) * (size_t)g_num_atoms;
-    memcpy(buf_map(g_mem_ie_vdwA), ie_vdwA, ie_bytes);
+    memcpy(g_map_ie_vdwA, ie_vdwA, ie_bytes);
 
     size_t nb_bytes = sizeof(int) * (size_t)num_nb_pairs * 2;
-    memcpy(buf_map(g_mem_nb_int), nb_int_pairs, nb_bytes);
+    memcpy(g_map_nb_int, nb_int_pairs, nb_bytes);
 
     /* Build per-atom pair lists (same as Metal backend) */
     int na = g_num_atoms;
     int *counts = (int *)calloc(na, sizeof(int));
-    int *starts = (int *)buf_map(g_mem_pair_starts);
+    int *starts = (int *)g_map_pair_starts;
     int *offsets = (int *)malloc(na * sizeof(int));
     int total = 0;
     for (int p = 0; p < num_nb_pairs; p++) {
@@ -765,7 +921,7 @@ int dock_gpu_set_ligand_ie(const float *ie_vdwA, const float *ie_vdwB,
     starts[na] = total;
     free(counts);
 
-    int *pair_indices = (int *)buf_map(g_mem_pair_indices);
+    int *pair_indices = (int *)g_map_pair_indices;
     for (int p = 0; p < num_nb_pairs; p++) {
         int a1 = nb_int_pairs[p*2];
         int a2 = nb_int_pairs[p*2+1];
@@ -779,109 +935,51 @@ int dock_gpu_set_ligand_ie(const float *ie_vdwA, const float *ie_vdwB,
     return 1;
 }
 
-/* Build a descriptor set binding all 13 storage buffers. */
-static VkDescriptorSet make_desc_set(void)
-{
-    VkDescriptorSet set = VK_NULL_HANDLE;
-    VkDescriptorSetAllocateInfo dsai = {};
-    dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    dsai.descriptorPool = g_descpool;
-    dsai.descriptorSetCount = 1;
-    dsai.pSetLayouts = &g_dslayout;
-    if (vkAllocateDescriptorSets(g_dev, &dsai, &set) != VK_SUCCESS) return VK_NULL_HANDLE;
-
-    VkDescriptorBufferInfo bi[10];
-    VkDescriptorImageInfo  ii[3];
-    VkWriteDescriptorSet   wds[13];
-
-    /* Buffer bindings: 0-3, 7-12 */
-    VkBuffer buf_list[10] = {
-        g_buf_xyz, g_buf_vdwA, g_buf_vdwB, g_buf_charges,
-        g_buf_scores, g_buf_active_flags, g_buf_ie_vdwA, g_buf_pair_starts,
-        g_buf_pair_indices, g_buf_pose_counter
-    };
-    int buf_idx = 0;
-    for (int i = 0; i < 13; i++) {
-        wds[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        wds[i].dstSet = set;
-        wds[i].dstBinding = (uint32_t)i;
-        wds[i].dstArrayElement = 0;
-        wds[i].descriptorCount = 1;
-        if (i >= 4 && i <= 6) {
-            /* Image bindings for 3D texture samplers */
-            VkImageView views[3] = { g_iv_avdw, g_iv_bvdw, g_iv_es };
-            ii[i - 4].sampler = g_sampler;
-            ii[i - 4].imageView = views[i - 4];
-            ii[i - 4].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            wds[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            wds[i].pImageInfo = &ii[i - 4];
-        } else {
-            /* Buffer bindings */
-            bi[buf_idx].buffer = buf_list[buf_idx];
-            bi[buf_idx].offset = 0;
-            bi[buf_idx].range = VK_WHOLE_SIZE;
-            wds[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            wds[i].pBufferInfo = &bi[buf_idx];
-            buf_idx++;
-        }
-    }
-    vkUpdateDescriptorSets(g_dev, 13, wds, 0, NULL);
-    return set;
-}
-
 int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
                          float *out_scores)
 {
     if (!g_initialized) return 0;
     if (num_poses > GPU_MAX_POSES || num_atoms > GPU_MAX_ATOMS) return 0;
 
+    unsigned ri = g_ring_idx;
+    g_ring_idx = (g_ring_idx + 1) % DISPATCH_RING;
+
     size_t xyz_bytes = sizeof(float) * (size_t)num_poses * (size_t)num_atoms * 3;
-    memcpy(buf_map(g_mem_xyz), xyz, xyz_bytes);
+    memcpy(g_map_xyz, xyz, xyz_bytes);
 
     PushConstants pc = {};
-    pc.origin_x = g_params.origin_x;
-    pc.origin_y = g_params.origin_y;
-    pc.origin_z = g_params.origin_z;
-    pc.span_x   = g_params.span_x;
-    pc.span_y   = g_params.span_y;
-    pc.span_z   = g_params.span_z;
-    pc.spacing  = g_params.spacing;
+    fill_push_constants(&pc, num_atoms, num_poses, 0.0f, 1e10f, 0);
 
-    pc.num_atoms    = num_atoms;
-    pc.ie_soft_delta = 0.0f;
-    pc.ie_cutoff_sq  = 1e10f;
-    pc.num_nb_pairs  = 0;
-    pc.num_poses     = num_poses;
+    /* Non-blocking check: if prev fence already signaled, skip kernel wait */
+    VkResult fr = vkGetFenceStatus(g_dev, g_fence[ri]);
+    if (fr == VK_NOT_READY)
+        vkWaitForFences(g_dev, 1, &g_fence[ri], VK_TRUE, UINT64_MAX);
+    vkResetFences(g_dev, 1, &g_fence[ri]);
 
-    VkDescriptorSet set = make_desc_set();
-
-    /* Wait for previous dispatch to finish before reusing command buffer */
-    vkWaitForFences(g_dev, 1, &g_fence, VK_TRUE, UINT64_MAX);
-    vkResetFences(g_dev, 1, &g_fence);
-
-    vkResetCommandBuffer(g_cmd, 0);
+    VkCommandBuffer cmd = g_cmd[ri];
+    vkResetCommandBuffer(cmd, 0);
     VkCommandBufferBeginInfo cbbi = {};
     cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    vkBeginCommandBuffer(g_cmd, &cbbi);
-    vkCmdBindPipeline(g_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_pl_grid);
-    vkCmdBindDescriptorSets(g_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_playout, 0, 1, &set, 0, NULL);
-    vkCmdPushConstants(g_cmd, g_playout, VK_SHADER_STAGE_COMPUTE_BIT,
+    vkBeginCommandBuffer(cmd, &cbbi);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_pl_grid);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_playout, 0, 1, &g_desc_ring[ri], 0, NULL);
+    vkCmdPushConstants(cmd, g_playout, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(PushConstants), &pc);
 
     /* grid-only kernel: 1 thread/pose, local_size_x=64 → ceil(num_poses/64) workgroups */
     uint32_t num_wg = ((uint32_t)num_poses + 63u) / 64u;
-    vkCmdResetQueryPool(g_cmd, g_tq_pool, 0, 2);
-    vkCmdWriteTimestamp(g_cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g_tq_pool, 0);
-    vkCmdDispatch(g_cmd, num_wg, 1, 1);
-    vkCmdWriteTimestamp(g_cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g_tq_pool, 1);
-    vkEndCommandBuffer(g_cmd);
+    vkCmdResetQueryPool(cmd, g_tq_pool, 0, 2);
+    vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g_tq_pool, 0);
+    vkCmdDispatch(cmd, num_wg, 1, 1);
+    vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g_tq_pool, 1);
+    vkEndCommandBuffer(cmd);
 
     VkSubmitInfo si = {};
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
-    si.pCommandBuffers = &g_cmd;
-    vkQueueSubmit(g_queue, 1, &si, g_fence);
-    vkWaitForFences(g_dev, 1, &g_fence, VK_TRUE, UINT64_MAX);
+    si.pCommandBuffers = &cmd;
+    vkQueueSubmit(g_queue, 1, &si, g_fence[ri]);
+    vkWaitForFences(g_dev, 1, &g_fence[ri], VK_TRUE, UINT64_MAX);
 
     /* Read timestamps */
     uint64_t ts[2] = {0, 0};
@@ -889,9 +987,7 @@ int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
                           VK_QUERY_RESULT_64_BIT);
     double dispatch_ms = (double)(ts[1] - ts[0]) * g_timestamp_period_ns * 1e-6;
 
-    memcpy(out_scores, buf_map(g_mem_scores), sizeof(float) * (size_t)num_poses);
-
-    vkFreeDescriptorSets(g_dev, g_descpool, 1, &set);
+    memcpy(out_scores, g_map_scores, sizeof(float) * (size_t)num_poses);
 
     prof_dispatch_count++;
     prof_total_conformers += num_poses;
@@ -916,57 +1012,54 @@ int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses, int
     if (!g_initialized || g_num_nb_pairs == 0) return 0;
     if (num_poses > GPU_MAX_POSES || num_atoms > GPU_MAX_ATOMS) return 0;
 
+    unsigned ri = g_ring_idx;
+    g_ring_idx = (g_ring_idx + 1) % DISPATCH_RING;
+
     size_t xyz_bytes = sizeof(float) * (size_t)num_poses * (size_t)num_atoms * 3;
-    memcpy(buf_map(g_mem_xyz), xyz, xyz_bytes);
-    if (active_flags)
-        memcpy(buf_map(g_mem_active_flags), active_flags, sizeof(int) * (size_t)num_atoms);
+    memcpy(g_map_xyz, xyz, xyz_bytes);
+    if (active_flags) {
+        memcpy(g_map_active_flags, active_flags, sizeof(int) * (size_t)num_atoms);
+    } else {
+        int *af = (int *)g_map_active_flags;
+        for (int i = 0; i < num_atoms; i++) af[i] = 1;
+    }
 
     /* reset atomic work-counter to 0 */
     uint32_t zero = 0;
-    memcpy(buf_map(g_mem_pose_counter), &zero, sizeof(zero));
+    memcpy(g_map_pose_counter, &zero, sizeof(zero));
 
-    VkDescriptorSet set = make_desc_set();
-
-    /* Wait for previous dispatch to finish before reusing command buffer */
-    vkWaitForFences(g_dev, 1, &g_fence, VK_TRUE, UINT64_MAX);
-    vkResetFences(g_dev, 1, &g_fence);
+    /* Non-blocking check: if prev fence already signaled, skip kernel wait */
+    VkResult fr = vkGetFenceStatus(g_dev, g_fence[ri]);
+    if (fr == VK_NOT_READY)
+        vkWaitForFences(g_dev, 1, &g_fence[ri], VK_TRUE, UINT64_MAX);
+    vkResetFences(g_dev, 1, &g_fence[ri]);
 
     PushConstants pc = {};
-    pc.origin_x = g_params.origin_x;
-    pc.origin_y = g_params.origin_y;
-    pc.origin_z = g_params.origin_z;
-    pc.span_x   = g_params.span_x;
-    pc.span_y   = g_params.span_y;
-    pc.span_z   = g_params.span_z;
-    pc.spacing  = g_params.spacing;
-    pc.num_atoms     = num_atoms;
-    pc.ie_soft_delta = g_ie_soft_delta;
-    pc.ie_cutoff_sq  = g_ie_cutoff_sq;
-    pc.num_nb_pairs  = g_num_nb_pairs;
-    pc.num_poses     = num_poses;
+    fill_push_constants(&pc, num_atoms, num_poses, g_ie_soft_delta, g_ie_cutoff_sq, g_num_nb_pairs);
 
-    vkResetCommandBuffer(g_cmd, 0);
+    VkCommandBuffer cmd = g_cmd[ri];
+    vkResetCommandBuffer(cmd, 0);
     VkCommandBufferBeginInfo cbbi = {};
     cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    vkBeginCommandBuffer(g_cmd, &cbbi);
-    vkCmdBindPipeline(g_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_pl_ie);
-    vkCmdBindDescriptorSets(g_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_playout, 0, 1, &set, 0, NULL);
-    vkCmdPushConstants(g_cmd, g_playout, VK_SHADER_STAGE_COMPUTE_BIT,
+    vkBeginCommandBuffer(cmd, &cbbi);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_pl_ie);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_playout, 0, 1, &g_desc_ring[ri], 0, NULL);
+    vkCmdPushConstants(cmd, g_playout, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(PushConstants), &pc);
 
     unsigned int num_tg = (unsigned int)dock_gpu_recommended_batch_size();
-    vkCmdResetQueryPool(g_cmd, g_tq_pool, 0, 2);
-    vkCmdWriteTimestamp(g_cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g_tq_pool, 0);
-    vkCmdDispatch(g_cmd, num_tg, 1, 1);
-    vkCmdWriteTimestamp(g_cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g_tq_pool, 1);
-    vkEndCommandBuffer(g_cmd);
+    vkCmdResetQueryPool(cmd, g_tq_pool, 0, 2);
+    vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g_tq_pool, 0);
+    vkCmdDispatch(cmd, num_tg, 1, 1);
+    vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g_tq_pool, 1);
+    vkEndCommandBuffer(cmd);
 
     VkSubmitInfo si = {};
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
-    si.pCommandBuffers = &g_cmd;
-    vkQueueSubmit(g_queue, 1, &si, g_fence);
-    vkWaitForFences(g_dev, 1, &g_fence, VK_TRUE, UINT64_MAX);
+    si.pCommandBuffers = &cmd;
+    vkQueueSubmit(g_queue, 1, &si, g_fence[ri]);
+    vkWaitForFences(g_dev, 1, &g_fence[ri], VK_TRUE, UINT64_MAX);
 
     /* Read timestamps */
     uint64_t ts[2] = {0, 0};
@@ -974,9 +1067,7 @@ int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses, int
                           VK_QUERY_RESULT_64_BIT);
     double dispatch_ms = (double)(ts[1] - ts[0]) * g_timestamp_period_ns * 1e-6;
 
-    memcpy(out_scores, buf_map(g_mem_scores), sizeof(float) * (size_t)num_poses);
-
-    vkFreeDescriptorSets(g_dev, g_descpool, 1, &set);
+    memcpy(out_scores, g_map_scores, sizeof(float) * (size_t)num_poses);
 
     prof_dispatch_count++;
     prof_total_conformers += num_poses;
@@ -1005,6 +1096,7 @@ void dock_gpu_cleanup(void)
         if (g_sampler)   vkDestroySampler(g_dev, g_sampler, NULL);
         if (g_descpool)  vkDestroyDescriptorPool(g_dev, g_descpool, NULL);
         /* Host-visible buffers */
+        if (g_buf_vdwA)     { vkDestroyBuffer(g_dev, g_buf_vdwA, NULL);     vkFreeMemory(g_dev, g_mem_vdwA, NULL); }
         if (g_buf_vdwB)     { vkDestroyBuffer(g_dev, g_buf_vdwB, NULL);     vkFreeMemory(g_dev, g_mem_vdwB, NULL); }
         if (g_buf_charges)  { vkDestroyBuffer(g_dev, g_buf_charges, NULL);  vkFreeMemory(g_dev, g_mem_charges, NULL); }
         if (g_buf_ie_vdwA)  { vkDestroyBuffer(g_dev, g_buf_ie_vdwA, NULL);  vkFreeMemory(g_dev, g_mem_ie_vdwA, NULL); }
@@ -1016,7 +1108,8 @@ void dock_gpu_cleanup(void)
         if (g_buf_active_flags){ vkDestroyBuffer(g_dev, g_buf_active_flags, NULL); vkFreeMemory(g_dev, g_mem_active_flags, NULL); }
         if (g_buf_pose_counter){ vkDestroyBuffer(g_dev, g_buf_pose_counter, NULL); vkFreeMemory(g_dev, g_mem_pose_counter, NULL); }
         if (g_tq_pool)  vkDestroyQueryPool(g_dev, g_tq_pool, NULL);
-        if (g_fence)    vkDestroyFence(g_dev, g_fence, NULL);
+        for (int i = 0; i < DISPATCH_RING; i++)
+            if (g_fence[i]) vkDestroyFence(g_dev, g_fence[i], NULL);
         if (g_pl_grid)  vkDestroyPipeline(g_dev, g_pl_grid, NULL);
         if (g_pl_ie)    vkDestroyPipeline(g_dev, g_pl_ie, NULL);
         if (g_playout)  vkDestroyPipelineLayout(g_dev, g_playout, NULL);
@@ -1024,14 +1117,26 @@ void dock_gpu_cleanup(void)
         if (g_mod_grid) vkDestroyShaderModule(g_dev, g_mod_grid, NULL);
         if (g_mod_ie)   vkDestroyShaderModule(g_dev, g_mod_ie, NULL);
         if (g_cmdpool)  vkDestroyCommandPool(g_dev, g_cmdpool, NULL);
+        if (g_pcache)   vkDestroyPipelineCache(g_dev, g_pcache, NULL);
         vkDestroyDevice(g_dev, NULL);
     }
     if (g_inst) vkDestroyInstance(g_inst, NULL);
     g_inst = VK_NULL_HANDLE; g_phys = VK_NULL_HANDLE; g_dev = VK_NULL_HANDLE;
-    g_queue = VK_NULL_HANDLE; g_cmdpool = VK_NULL_HANDLE; g_cmd = VK_NULL_HANDLE;
+    g_queue = VK_NULL_HANDLE; g_cmdpool = VK_NULL_HANDLE;
+    for (int i = 0; i < DISPATCH_RING; i++) { g_cmd[i] = VK_NULL_HANDLE; g_fence[i] = VK_NULL_HANDLE; g_desc_ring[i] = VK_NULL_HANDLE; }
     g_mod_grid = g_mod_ie = VK_NULL_HANDLE;
     g_pl_grid = g_pl_ie = VK_NULL_HANDLE; g_playout = VK_NULL_HANDLE; g_dslayout = VK_NULL_HANDLE;
-    g_tq_pool = VK_NULL_HANDLE;
+    g_tq_pool = VK_NULL_HANDLE; g_pcache = VK_NULL_HANDLE;
+    g_descpool = VK_NULL_HANDLE; g_sampler = VK_NULL_HANDLE;
+    g_buf_vdwA = g_buf_vdwB = g_buf_charges = g_buf_ie_vdwA = g_buf_nb_int = VK_NULL_HANDLE;
+    g_buf_pair_starts = g_buf_pair_indices = g_buf_xyz = g_buf_scores = VK_NULL_HANDLE;
+    g_buf_active_flags = g_buf_pose_counter = VK_NULL_HANDLE;
+    g_img_avdw = g_img_bvdw = g_img_es = VK_NULL_HANDLE;
+    g_mem_img_avdw = g_mem_img_bvdw = g_mem_img_es = VK_NULL_HANDLE;
+    g_iv_avdw = g_iv_bvdw = g_iv_es = VK_NULL_HANDLE;
+    g_map_vdwA = g_map_vdwB = g_map_charges = g_map_ie_vdwA = g_map_nb_int = NULL;
+    g_map_pair_starts = g_map_pair_indices = g_map_xyz = g_map_scores = NULL;
+    g_map_active_flags = g_map_pose_counter = NULL;
     memset(&g_params, 0, sizeof(g_params));
     g_initialized = 0; g_active = 0; g_num_atoms = 0; g_num_nb_pairs = 0;
     g_ie_soft_delta = 0.0f; g_ie_cutoff_sq = 1e10f;
