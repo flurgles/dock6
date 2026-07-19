@@ -30,6 +30,19 @@ ifeq ($(GPU_BACKEND),metal)
   GPU_STUB =
 endif
 
+ifeq ($(GPU_BACKEND),vulkan)
+  GPU_OBJS += score_grid_gpu_vulkan.o
+  GPU_LIBS += -lvulkan -lshaderc
+  DOCKBUILDFLAGS += -DUSE_VULKAN
+  GPU_STUB =
+endif
+
+# cuda: CUDA backend (future).  Falls back to CPU stub until the
+# score_grid_gpu_cuda.cu backend is implemented.
+ifeq ($(GPU_BACKEND),cuda)
+  DOCKBUILDFLAGS += -DUSE_CUDA
+endif
+
 BIN = ../../bin
 PROGS =	grid
 

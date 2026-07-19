@@ -7,8 +7,9 @@ include ../../install/config.h
 # GPU backend detection (follows src/grid/Makefile pattern)
 # ----------------------------------------------------------------
 UNAME_S := $(shell uname -s)
+# GPU_BACKEND can be forced by the config file (e.g. gnu.vulkan sets
+# GPU_BACKEND = vulkan).  Falls back to platform auto-detect otherwise.
 GPU_BACKEND ?= auto
-
 ifeq ($(GPU_BACKEND),auto)
   ifeq ($(UNAME_S),Darwin)
     GPU_BACKEND = metal
@@ -26,6 +27,19 @@ ifeq ($(GPU_BACKEND),metal)
   GPU_LIBS += -framework Metal -framework Foundation -framework IOKit -lc++
   DOCKBUILDFLAGS += -DUSE_METAL
   GPU_STUB =
+endif
+
+ifeq ($(GPU_BACKEND),vulkan)
+  GPU_OBJS += score_dock_gpu_vulkan.o
+  GPU_LIBS += -lvulkan -lshaderc_shared
+  DOCKBUILDFLAGS += -DUSE_VULKAN
+  GPU_STUB =
+endif
+
+# cuda: CUDA backend (future).  Until score_dock_gpu_cuda.cu lands,
+# this intentionally falls back to the CPU stub (GPU_OBJS empty).
+ifeq ($(GPU_BACKEND),cuda)
+  DOCKBUILDFLAGS += -DUSE_CUDA
 endif
 
 BIN= ../../bin

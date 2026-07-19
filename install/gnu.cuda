@@ -1,0 +1,47 @@
+# DOCK configuration file for GNU compilers.
+# This configuration file can be used on many platforms:
+#  Linux, Macintosh OS X, Windows with Cygwin, etc.
+# If gfortran is not preferred then change FC below to g95 or g77.
+
+# CC is the C compiler
+# CFLAGS is the flags for the C compiler
+# CXX is the C++ compiler
+# CXXFLAGS is the flags for the C++ compiler
+# DOCK_SUFFIX is the suffix for the dock executable
+# FC is the Fortran compiler
+# FFLAGS is the flags for the Fortran compiler
+# LIBS is the flags for the linker
+# LINK_WITHOUT_FORTRAN_MAIN is the flag for linking without Fortran's main
+# LOAD is the command to invoke the linker
+
+CC=          gcc
+CFLAGS=      -O2 -std=gnu17
+CXX=         g++
+CXXFLAGS=    -O2 -std=c++11
+DOCK_SUFFIX= .gnu.cuda
+FC=          gfortran
+FFLAGS=      -O2 -fno-automatic -fno-second-underscore -std=legacy
+LIBS=        -lm -lpthread
+LINK_WITHOUT_FORTRAN_MAIN=
+LOAD=        g++
+
+# GPU backend selection: gnu.cuda -> CUDA (NVIDIA, future work).
+# Reserved for the CUDA backend (score_dock_gpu_cuda.cu / score_grid_gpu_cuda.cu).
+# When that backend lands, the Makefiles will gain a `cuda` branch
+# (nvcc, -DUSE_CUDA, -lcuda -lcudart) mirroring the `vulkan` one.
+GPU_BACKEND= cuda
+
+# Macro definitions for NAB
+# AR is the library archiver
+# LEX is the lexical analyzer generator; the darwin and xopen defines are
+# workarounds for some macOS 12 header file issues; e.g.:
+# sff.c:1615:19: error: implicitly declaring library function 'strdup' with type 'char *(const char *)
+# see also https://github.com/gphoto/libgphoto2/issues/552
+# OCFLAGS is the flags for the C compilers with high optimization
+# RANLIB is the library index generator
+AR=          ar rv
+LEX=         flex -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600
+OCFLAGS=     -O3 -std=gnu17 -D_ANSI_SOURCE
+RANLIB=      ranlib
+DOCKHOME=/home/deck/dock6/dock6
+# Created at Sat Jul 18 10:38:45 PM PDT 2026 via ./configure gnu
