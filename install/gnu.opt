@@ -1,0 +1,19 @@
+# DOCK configuration: GNU compilers with aggressive optimizations.
+# Build with: ./configure opt    (creates config.h from this file)
+# Then: make clean && make -j4
+
+CC=          gcc
+CFLAGS=      -O3 -ffast-math -fno-signed-zeros -fno-trapping-math -march=native -mtune=native -funroll-loops -fomit-frame-pointer -flto -std=gnu17
+CXX=         g++
+CXXFLAGS=    -O3 -ffast-math -fno-signed-zeros -fno-trapping-math -march=native -mtune=native -funroll-loops -fomit-frame-pointer -flto -std=c++11
+DOCK_SUFFIX= .opt
+FC=          gfortran
+FFLAGS=      -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native
+LIBS=        -lm -lpthread
+LINK_WITHOUT_FORTRAN_MAIN=
+LOAD=        g++ -flto
+
+AR=          ar rv
+LEX=         flex -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600
+OCFLAGS=     -O3 -D_ANSI_SOURCE
+RANLIB=      ranlib

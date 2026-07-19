@@ -10,16 +10,16 @@
   Steam Deck (AMD RDNA2 / RADV).
 
   Design notes / differences from the Metal backend:
-    * No 3D hardware texture filtering in Vulkan core.  Trilinear
-      interpolation is done manually in the shader (see trilinear()), so
-      GPU scores match the CPU path bit-for-bit.  inside_grid() uses
+    * Grid data is stored as 3D textures (VkImage TYPE_3D, R32_SFLOAT)
+      with hardware trilinear filtering via sampler3D, matching the
+      Metal backend's texture3d<float> approach.  inside_grid() uses
       > 0.0 (not > 1.0 like Metal) to avoid the 1-voxel safety margin
       divergence noted in the Metal backend.
-    * Grid data is stored in flat storage buffers, indexed row-major
-      (x + y*span_x + z*span_x*span_y), NOT as 3D textures.
     * Buffers use HOST_VISIBLE | HOST_COHERENT storage.  The Deck is a
       unified-memory APU, so this gives the same perf model as Metal's
-      Shared storage with no staging copies.
+      Shared storage with no staging copies.  Grid 3D images use
+      DEVICE_LOCAL with staging-buffer upload (optimal tiling required
+      for hardware texture filtering).
     * Shaders are authored in GLSL and compiled to SPIR-V at runtime via
       shaderc (mirrors Metal compiling a *.metal string at runtime, and
       keeps the build free of a shader-compile step).
@@ -65,9 +65,10 @@ layout(std430, binding = 0) buffer BXYZ   { float xyz[]; };
 layout(std430, binding = 1) buffer BVDWA  { float vdwA[]; };
 layout(std430, binding = 2) buffer BVDWB  { float vdwB[]; };
 layout(std430, binding = 3) buffer BCHG   { float charges[]; };
-layout(std430, binding = 4) buffer BAVDW  { float g_avdw[]; };
-layout(std430, binding = 5) buffer BBVDW  { float g_bvdw[]; };
-layout(std430, binding = 6) buffer BES    { float g_es[]; };
+// bindings 4-6: 3D texture samplers (hardware trilinear)
+layout(binding = 4) uniform sampler3D g_avdw;
+layout(binding = 5) uniform sampler3D g_bvdw;
+layout(binding = 6) uniform sampler3D g_es;
 layout(std430, binding = 7) buffer BOUT   { float out_scores[]; };
 layout(std430, binding = 8) buffer BACT   { int   active_flags[]; };
 layout(std430, binding = 9) buffer BIEA   { float ie_vdwA[]; };
@@ -88,18 +89,10 @@ layout(push_constant) uniform Params {
     int   num_poses;
 } p;
 
-const float FLOAT_MIN = -3.40282347e+38;
-
-bool inside_grid(float x, float y, float z) {
-    float gx = (x - p.origin_x) / p.spacing;
-    float gy = (y - p.origin_y) / p.spacing;
-    float gz = (z - p.origin_z) / p.spacing;
-    return (gx > 0.0 && gx < float(p.span_x - 1) &&
-            gy > 0.0 && gy < float(p.span_y - 1) &&
-            gz > 0.0 && gz < float(p.span_z - 1));
-}
-
-float trilinear(const float grid[], float x, float y, float z) {
+// Hardware-accelerated trilinear via 3D texture sampler.
+// Bounds check uses > 0.0 (not > 1.0 like Metal) to avoid the
+// 1-voxel safety margin divergence noted in the Metal backend.
+float sample_grid(sampler3D grid, float x, float y, float z) {
     float gx = (x - p.origin_x) / p.spacing;
     float gy = (y - p.origin_y) / p.spacing;
     float gz = (z - p.origin_z) / p.spacing;
@@ -108,43 +101,11 @@ float trilinear(const float grid[], float x, float y, float z) {
         gy >= float(p.span_y - 1) ||
         gz >= float(p.span_z - 1))
         return 0.0;
-    int ix = int(gx), iy = int(gy), iz = int(gz);
-    float fx = gx - float(ix), fy = gy - float(iy), fz = gz - float(iz);
-    int sx = p.span_x, sy = p.span_y;
-    int b000 = (ix)   + sx*(iy)   + sx*sy*(iz);
-    int b100 = (ix+1) + sx*(iy)   + sx*sy*(iz);
-    int b010 = (ix)   + sx*(iy+1) + sx*sy*(iz);
-    int b110 = (ix+1) + sx*(iy+1) + sx*sy*(iz);
-    int b001 = (ix)   + sx*(iy)   + sx*sy*(iz+1);
-    int b101 = (ix+1) + sx*(iy)   + sx*sy*(iz+1);
-    int b011 = (ix)   + sx*(iy+1) + sx*sy*(iz+1);
-    int b111 = (ix+1) + sx*(iy+1) + sx*sy*(iz+1);
-    float c00 = grid[b000]*(1.0-fx) + grid[b100]*fx;
-    float c10 = grid[b010]*(1.0-fx) + grid[b110]*fx;
-    float c01 = grid[b001]*(1.0-fx) + grid[b101]*fx;
-    float c11 = grid[b011]*(1.0-fx) + grid[b111]*fx;
-    float c0 = c00*(1.0-fy) + c10*fy;
-    float c1 = c01*(1.0-fy) + c11*fy;
-    return c0*(1.0-fz) + c1*fz;
-}
-
-// ============ Grid-only batch kernel (1 thread / pose) ============
-void kernel_batch_score() {
-    uint tid = gl_GlobalInvocationID.x;
-    if (tid >= uint(p.num_poses)) return;
-    int stride = int(tid) * p.num_atoms * 3;
-    float score = 0.0;
-    for (int a = 0; a < p.num_atoms; a++) {
-        int o3 = stride + a*3;
-        float x = xyz[o3], y = xyz[o3+1], z = xyz[o3+2];
-        if (active_flags[a]) {
-            float vdw  = trilinear(g_avdw, x, y, z);
-            float bvdw = trilinear(g_bvdw, x, y, z);
-            float es   = trilinear(g_es,   x, y, z);
-            score += vdwA[a]*vdw - vdwB[a]*bvdw + charges[a]*es;
-        }
-    }
-    out_scores[tid] = score;
+    // Vulkan normalized coords: texel i center at (i+0.5)/extent
+    vec3 coord = vec3((gx + 0.5) / float(p.span_x),
+                      (gy + 0.5) / float(p.span_y),
+                      (gz + 0.5) / float(p.span_z));
+    return texture(grid, coord).r;
 }
 
 // ============ Atom-parallel persistent IE kernel ============
@@ -154,10 +115,8 @@ shared uint tg_candidate;
 void kernel_persistent() {
     uint tid = gl_LocalInvocationID.x;
     uint tg_size = gl_WorkGroupSize.x;
-    uint simd_idx = tid / 32;
-    uint num_simd = (tg_size + 31u) / 32u;
+    uint simd_idx = tid / 32u;
 
-    // Thread 0 claims the first pose for the whole workgroup
     if (tid == 0u) {
         tg_candidate = atomicAdd(pose_counter[0], 1u);
     }
@@ -167,18 +126,15 @@ void kernel_persistent() {
         int stride = int(tg_candidate) * p.num_atoms * 3;
         float total = 0.0;
 
-        // Atom-parallel: all 64 threads cooperate on the same pose
         for (uint a = tid; a < uint(p.num_atoms); a += tg_size) {
             if (active_flags[a] == 0) continue;
             float x = xyz[stride + int(a)*3];
             float y = xyz[stride + int(a)*3 + 1];
             float z = xyz[stride + int(a)*3 + 2];
-            if (inside_grid(x, y, z)) {
-                float vdw  = trilinear(g_avdw, x, y, z);
-                float bvdw = trilinear(g_bvdw, x, y, z);
-                float es   = trilinear(g_es,   x, y, z);
-                total += vdwA[a]*vdw - vdwB[a]*bvdw + charges[a]*es;
-            }
+            float vdw  = sample_grid(g_avdw, x, y, z);
+            float bvdw = sample_grid(g_bvdw, x, y, z);
+            float es   = sample_grid(g_es,   x, y, z);
+            total += vdwA[a]*vdw - vdwB[a]*bvdw + charges[a]*es;
             int start = pair_starts[a];
             int end   = pair_starts[a + 1];
             for (int i = start; i < end; i++) {
@@ -195,19 +151,14 @@ void kernel_persistent() {
             }
         }
 
-        // Cross-subgroup reduction: each subgroup sums, writes partial to shared
         float s = subgroupAdd(total);
         if (gl_SubgroupInvocationID == 0u) {
             tg_partial[simd_idx] = s;
         }
         barrier();
 
-        // Thread 0 serial-sums subgroup partials, writes score, claims next
         if (tid == 0u) {
-            float final_score = 0.0;
-            for (uint i = 0u; i < num_simd; i++) {
-                final_score += tg_partial[i];
-            }
+            float final_score = tg_partial[0] + tg_partial[1];
             out_scores[tg_candidate] = final_score;
             tg_candidate = atomicAdd(pose_counter[0], 1u);
         }
@@ -216,9 +167,6 @@ void kernel_persistent() {
 }
 
 void main() {
-    // Dispatch selects the entry by a uniform-free convention: the host
-    // builds a separate pipeline per entry, so main() just routes.
-    // We use two compiled modules; this file is the IE/persistent one.
     kernel_persistent();
 }
 )glsl";
@@ -233,9 +181,9 @@ layout(std430, binding = 0) buffer BXYZ   { float xyz[]; };
 layout(std430, binding = 1) buffer BVDWA  { float vdwA[]; };
 layout(std430, binding = 2) buffer BVDWB  { float vdwB[]; };
 layout(std430, binding = 3) buffer BCHG   { float charges[]; };
-layout(std430, binding = 4) buffer BAVDW  { float g_avdw[]; };
-layout(std430, binding = 5) buffer BBVDW  { float g_bvdw[]; };
-layout(std430, binding = 6) buffer BES    { float g_es[]; };
+layout(binding = 4) uniform sampler3D g_avdw;
+layout(binding = 5) uniform sampler3D g_bvdw;
+layout(binding = 6) uniform sampler3D g_es;
 layout(std430, binding = 7) buffer BOUT   { float out_scores[]; };
 layout(std430, binding = 8) buffer BACT   { int   active_flags[]; };
 
@@ -251,16 +199,7 @@ layout(push_constant) uniform Params {
     int   num_poses;
 } p;
 
-bool inside_grid(float x, float y, float z) {
-    float gx = (x - p.origin_x) / p.spacing;
-    float gy = (y - p.origin_y) / p.spacing;
-    float gz = (z - p.origin_z) / p.spacing;
-    return (gx > 0.0 && gx < float(p.span_x - 1) &&
-            gy > 0.0 && gy < float(p.span_y - 1) &&
-            gz > 0.0 && gz < float(p.span_z - 1));
-}
-
-float trilinear(const float grid[], float x, float y, float z) {
+float sample_grid(sampler3D grid, float x, float y, float z) {
     float gx = (x - p.origin_x) / p.spacing;
     float gy = (y - p.origin_y) / p.spacing;
     float gz = (z - p.origin_z) / p.spacing;
@@ -269,24 +208,10 @@ float trilinear(const float grid[], float x, float y, float z) {
         gy >= float(p.span_y - 1) ||
         gz >= float(p.span_z - 1))
         return 0.0;
-    int ix = int(gx), iy = int(gy), iz = int(gz);
-    float fx = gx - float(ix), fy = gy - float(iy), fz = gz - float(iz);
-    int sx = p.span_x, sy = p.span_y;
-    int b000 = (ix)   + sx*(iy)   + sx*sy*(iz);
-    int b100 = (ix+1) + sx*(iy)   + sx*sy*(iz);
-    int b010 = (ix)   + sx*(iy+1) + sx*sy*(iz);
-    int b110 = (ix+1) + sx*(iy+1) + sx*sy*(iz);
-    int b001 = (ix)   + sx*(iy)   + sx*sy*(iz+1);
-    int b101 = (ix+1) + sx*(iy)   + sx*sy*(iz+1);
-    int b011 = (ix)   + sx*(iy+1) + sx*sy*(iz+1);
-    int b111 = (ix+1) + sx*(iy+1) + sx*sy*(iz+1);
-    float c00 = grid[b000]*(1.0-fx) + grid[b100]*fx;
-    float c10 = grid[b010]*(1.0-fx) + grid[b110]*fx;
-    float c01 = grid[b001]*(1.0-fx) + grid[b101]*fx;
-    float c11 = grid[b011]*(1.0-fx) + grid[b111]*fx;
-    float c0 = c00*(1.0-fy) + c10*fy;
-    float c1 = c01*(1.0-fy) + c11*fy;
-    return c0*(1.0-fz) + c1*fz;
+    vec3 coord = vec3((gx + 0.5) / float(p.span_x),
+                      (gy + 0.5) / float(p.span_y),
+                      (gz + 0.5) / float(p.span_z));
+    return texture(grid, coord).r;
 }
 
 void main() {
@@ -298,9 +223,9 @@ void main() {
         int o3 = stride + a*3;
         float x = xyz[o3], y = xyz[o3+1], z = xyz[o3+2];
         if (active_flags[a]) {
-            float vdw  = trilinear(g_avdw, x, y, z);
-            float bvdw = trilinear(g_bvdw, x, y, z);
-            float es   = trilinear(g_es,   x, y, z);
+            float vdw  = sample_grid(g_avdw, x, y, z);
+            float bvdw = sample_grid(g_bvdw, x, y, z);
+            float es   = sample_grid(g_es,   x, y, z);
             score += vdwA[a]*vdw - vdwB[a]*bvdw + charges[a]*es;
         }
     }
@@ -342,8 +267,6 @@ static VkPipeline        g_pl_ie      = VK_NULL_HANDLE;  /* persistent IE kernel
 static VkDescriptorSetLayout g_dslayout = VK_NULL_HANDLE;
 
 /* Buffers (host-visible, coherent) */
-static VkBuffer g_buf_grid_avdw = VK_NULL_HANDLE, g_buf_grid_bvdw = VK_NULL_HANDLE, g_buf_grid_es = VK_NULL_HANDLE;
-static VkDeviceMemory g_mem_grid_avdw = VK_NULL_HANDLE, g_mem_grid_bvdw = VK_NULL_HANDLE, g_mem_grid_es = VK_NULL_HANDLE;
 static VkBuffer g_buf_vdwA = VK_NULL_HANDLE, g_buf_vdwB = VK_NULL_HANDLE, g_buf_charges = VK_NULL_HANDLE;
 static VkBuffer g_buf_ie_vdwA = VK_NULL_HANDLE, g_buf_nb_int = VK_NULL_HANDLE;
 static VkBuffer g_buf_pair_starts = VK_NULL_HANDLE, g_buf_pair_indices = VK_NULL_HANDLE;
@@ -354,6 +277,12 @@ static VkDeviceMemory g_mem_ie_vdwA = VK_NULL_HANDLE, g_mem_nb_int = VK_NULL_HAN
 static VkDeviceMemory g_mem_pair_starts = VK_NULL_HANDLE, g_mem_pair_indices = VK_NULL_HANDLE;
 static VkDeviceMemory g_mem_xyz = VK_NULL_HANDLE, g_mem_scores = VK_NULL_HANDLE;
 static VkDeviceMemory g_mem_active_flags = VK_NULL_HANDLE, g_mem_pose_counter = VK_NULL_HANDLE;
+
+/* 3D textures for hardware trilinear filtering (replaces grid SSBOs) */
+static VkImage         g_img_avdw = VK_NULL_HANDLE, g_img_bvdw = VK_NULL_HANDLE, g_img_es = VK_NULL_HANDLE;
+static VkDeviceMemory  g_mem_img_avdw = VK_NULL_HANDLE, g_mem_img_bvdw = VK_NULL_HANDLE, g_mem_img_es = VK_NULL_HANDLE;
+static VkImageView     g_iv_avdw = VK_NULL_HANDLE, g_iv_bvdw = VK_NULL_HANDLE, g_iv_es = VK_NULL_HANDLE;
+static VkSampler       g_sampler = VK_NULL_HANDLE;
 
 static DockGridParams g_params;
 static int  g_initialized = 0;
@@ -368,6 +297,9 @@ static int  g_compute_units = 0;
 static VkQueryPool g_tq_pool = VK_NULL_HANDLE;
 static float g_timestamp_period_ns = 1.0f; /* ns per timestamp tick */
 
+/* Fence for async dispatch (replaces vkQueueWaitIdle) */
+static VkFence g_fence = VK_NULL_HANDLE;
+
 /* Profiling counters (mirrors Metal backend) */
 static uint64_t prof_dispatch_count    = 0;
 static uint64_t prof_total_conformers  = 0;
@@ -381,10 +313,22 @@ static int      prof_wait_idx = 0;
 /*  Vulkan helpers                                                     */
 /* ================================================================== */
 
+/* Cached memory properties (set once at init, used by all alloc calls) */
+static VkPhysicalDeviceMemoryProperties g_mprops;
+
 static void vk_check(VkResult r, const char *where) {
     if (r != VK_SUCCESS) {
         fprintf(stderr, "GPU-VK: %s failed (%d)\n", where, (int)r);
     }
+}
+
+static uint32_t find_memory_type(uint32_t type_bits, VkMemoryPropertyFlags required) {
+    for (uint32_t i = 0; i < g_mprops.memoryTypeCount; i++) {
+        if ((type_bits & (1u << i)) &&
+            (g_mprops.memoryTypes[i].propertyFlags & required) == required)
+            return i;
+    }
+    return 0;
 }
 
 static VkDeviceMemory alloc_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
@@ -402,23 +346,8 @@ static VkDeviceMemory alloc_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
     VkMemoryAllocateInfo mai = {};
     mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     mai.allocationSize = mr.size;
-    mai.memoryTypeIndex = 0;
-
-    /* Find a host-visible + coherent memory type */
-    uint32_t mt_count = 0;
-    vkGetPhysicalDeviceMemoryProperties(g_phys, NULL);
-    VkPhysicalDeviceMemoryProperties mprops;
-    vkGetPhysicalDeviceMemoryProperties(g_phys, &mprops);
-    mt_count = mprops.memoryTypeCount;
-    for (uint32_t i = 0; i < mt_count; i++) {
-        if ((mr.memoryTypeBits & (1u << i)) &&
-            (mprops.memoryTypes[i].propertyFlags &
-             (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
-            (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-            mai.memoryTypeIndex = i;
-            break;
-        }
-    }
+    mai.memoryTypeIndex = find_memory_type(mr.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (vkAllocateMemory(g_dev, &mai, NULL, mem) != VK_SUCCESS) return VK_NULL_HANDLE;
     vkBindBufferMemory(g_dev, *buf, *mem, 0);
     return *mem;
@@ -430,6 +359,101 @@ static void *buf_map(VkDeviceMemory mem) {
     return ptr;
 }
 
+/* Create a 3D texture image (device-local, optimal tiling) */
+static void create_3d_image(int sx, int sy, int sz,
+                            VkImage *img, VkDeviceMemory *mem, VkImageView *view) {
+    VkImageCreateInfo ici = {};
+    ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ici.imageType = VK_IMAGE_TYPE_3D;
+    ici.format = VK_FORMAT_R32_SFLOAT;
+    ici.extent = {(uint32_t)sx, (uint32_t)sy, (uint32_t)sz};
+    ici.mipLevels = 1;
+    ici.arrayLayers = 1;
+    ici.samples = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    vkCreateImage(g_dev, &ici, NULL, img);
+
+    VkMemoryRequirements mr;
+    vkGetImageMemoryRequirements(g_dev, *img, &mr);
+
+    VkMemoryAllocateInfo mai = {};
+    mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    mai.allocationSize = mr.size;
+    mai.memoryTypeIndex = find_memory_type(mr.memoryTypeBits,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    vkAllocateMemory(g_dev, &mai, NULL, mem);
+    vkBindImageMemory(g_dev, *img, *mem, 0);
+
+    VkImageViewCreateInfo ivci = {};
+    ivci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    ivci.viewType = VK_IMAGE_VIEW_TYPE_3D;
+    ivci.format = VK_FORMAT_R32_SFLOAT;
+    ivci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    ivci.subresourceRange.levelCount = 1;
+    ivci.subresourceRange.layerCount = 1;
+    ivci.image = *img;
+    vkCreateImageView(g_dev, &ivci, NULL, view);
+}
+
+/* Upload float data to a 3D image via staging buffer + command buffer */
+static void upload_3d_image(const float *data, int sx, int sy, int sz, VkImage img) {
+    VkDeviceSize bytes = sizeof(float) * (VkDeviceSize)sx * sy * sz;
+
+    VkBuffer staging_buf;
+    VkDeviceMemory staging_mem;
+    alloc_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging_buf, &staging_mem);
+    memcpy(buf_map(staging_mem), data, (size_t)bytes);
+
+    vkResetCommandBuffer(g_cmd, 0);
+    VkCommandBufferBeginInfo cbbi = {};
+    cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(g_cmd, &cbbi);
+
+    VkImageMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = img;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(g_cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                         0, NULL, 0, NULL, 1, &barrier);
+
+    VkBufferImageCopy region = {};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = {(uint32_t)sx, (uint32_t)sy, (uint32_t)sz};
+    vkCmdCopyBufferToImage(g_cmd, staging_buf, img,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(g_cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                         0, NULL, 0, NULL, 1, &barrier);
+
+    vkEndCommandBuffer(g_cmd);
+
+    VkSubmitInfo si = {};
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &g_cmd;
+    vkQueueSubmit(g_queue, 1, &si, VK_NULL_HANDLE);
+    vkQueueWaitIdle(g_queue);
+
+    vkDestroyBuffer(g_dev, staging_buf, NULL);
+    vkFreeMemory(g_dev, staging_mem, NULL);
+}
+
 /* Compile GLSL -> SPIR-V via shaderc, return a VkShaderModule. */
 static VkShaderModule compile_module(const char *src, const char *label) {
     shaderc_compiler_t compiler = shaderc_compiler_initialize();
@@ -437,6 +461,7 @@ static VkShaderModule compile_module(const char *src, const char *label) {
     shaderc_compile_options_t opts = shaderc_compile_options_initialize();
     shaderc_compile_options_set_target_env(opts, shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_1);
     shaderc_compile_options_set_source_language(opts, shaderc_source_language_glsl);
+    shaderc_compile_options_set_optimization_level(opts, shaderc_optimization_level_performance);
 
     result = shaderc_compile_into_spv(compiler, src, strlen(src),
                                        shaderc_compute_shader, label, "main", opts);
@@ -498,6 +523,9 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     vkEnumeratePhysicalDevices(g_inst, &ndev, devs.data());
     g_phys = devs[0];
 
+    /* Cache memory properties once for all alloc calls */
+    vkGetPhysicalDeviceMemoryProperties(g_phys, &g_mprops);
+
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(g_phys, &props);
     fprintf(stderr, "GPU-VK: device: %s\n", props.deviceName);
@@ -551,6 +579,12 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     cbai.commandBufferCount = 1;
     vkAllocateCommandBuffers(g_dev, &cbai, &g_cmd);
 
+    /* Fence for async dispatch — created SIGNALED so first wait passes */
+    VkFenceCreateInfo fci = {};
+    fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+    vkCreateFence(g_dev, &fci, NULL, &g_fence);
+
     /* Shaders */
     g_mod_grid = compile_module(shader_src_grid, "grid_batch_score");
     g_mod_ie    = compile_module(shader_src,        "persistent_ie");
@@ -560,11 +594,14 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
         return 0;
     }
 
-    /* Descriptor set layout (13 storage buffers) */
+    /* Descriptor set layout: bindings 0-3,7-12 = storage buffers,
+     * bindings 4-6 = combined image samplers (3D textures for grids) */
     VkDescriptorSetLayoutBinding binds[13];
     for (int i = 0; i < 13; i++) {
         binds[i].binding = (uint32_t)i;
-        binds[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        binds[i].descriptorType = (i >= 4 && i <= 6)
+            ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+            : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         binds[i].descriptorCount = 1;
         binds[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         binds[i].pImmutableSamplers = NULL;
@@ -618,22 +655,31 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     g_params.spacing = spacing;
     g_params.grid_size = span_x * span_y * span_z;
 
-    /* Upload grid data to flat storage buffers */
-    VkDeviceSize grid_bytes = sizeof(float) * (VkDeviceSize)g_params.grid_size;
-    alloc_buffer(grid_bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                 &g_buf_grid_avdw, &g_mem_grid_avdw);
-    alloc_buffer(grid_bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                 &g_buf_grid_bvdw, &g_mem_grid_bvdw);
-    alloc_buffer(grid_bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                 &g_buf_grid_es,   &g_mem_grid_es);
-    if (!g_mem_grid_avdw || !g_mem_grid_bvdw || !g_mem_grid_es) {
-        fprintf(stderr, "GPU-VK: grid buffer alloc failed\n");
+    /* Create 3D textures for hardware trilinear filtering */
+    create_3d_image(span_x, span_y, span_z, &g_img_avdw, &g_mem_img_avdw, &g_iv_avdw);
+    create_3d_image(span_x, span_y, span_z, &g_img_bvdw, &g_mem_img_bvdw, &g_iv_bvdw);
+    create_3d_image(span_x, span_y, span_z, &g_img_es,   &g_mem_img_es,   &g_iv_es);
+    if (!g_mem_img_avdw || !g_mem_img_bvdw || !g_mem_img_es) {
+        fprintf(stderr, "GPU-VK: 3D texture alloc failed\n");
         dock_gpu_cleanup();
         return 0;
     }
-    memcpy(buf_map(g_mem_grid_avdw), avdw, (size_t)grid_bytes);
-    memcpy(buf_map(g_mem_grid_bvdw), bvdw, (size_t)grid_bytes);
-    memcpy(buf_map(g_mem_grid_es),   es,   (size_t)grid_bytes);
+    upload_3d_image(avdw, span_x, span_y, span_z, g_img_avdw);
+    upload_3d_image(bvdw, span_x, span_y, span_z, g_img_bvdw);
+    upload_3d_image(es,   span_x, span_y, span_z, g_img_es);
+
+    /* Sampler: linear filtering, clamp-to-border (returns 0.0 for OOB) */
+    VkSamplerCreateInfo sci = {};
+    sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sci.magFilter = VK_FILTER_LINEAR;
+    sci.minFilter = VK_FILTER_LINEAR;
+    sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    sci.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+    sci.maxAnisotropy = 1.0f;
+    sci.maxLod = 0.0f;
+    vkCreateSampler(g_dev, &sci, NULL, &g_sampler);
 
     /* Per-ligand / per-batch buffers */
     alloc_buffer(sizeof(float)*GPU_MAX_ATOMS, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_buf_vdwA, &g_mem_vdwA);
@@ -732,25 +778,40 @@ static VkDescriptorSet make_desc_set(void)
     dsai.pSetLayouts = &g_dslayout;
     if (vkAllocateDescriptorSets(g_dev, &dsai, &set) != VK_SUCCESS) return VK_NULL_HANDLE;
 
-    VkDescriptorBufferInfo bi[13];
+    VkDescriptorBufferInfo bi[10];
+    VkDescriptorImageInfo  ii[3];
     VkWriteDescriptorSet   wds[13];
-    VkBuffer bufs[13] = {
+
+    /* Buffer bindings: 0-3, 7-12 */
+    VkBuffer buf_list[10] = {
         g_buf_xyz, g_buf_vdwA, g_buf_vdwB, g_buf_charges,
-        g_buf_grid_avdw, g_buf_grid_bvdw, g_buf_grid_es, g_buf_scores,
-        g_buf_active_flags, g_buf_ie_vdwA, g_buf_pair_starts,
+        g_buf_scores, g_buf_active_flags, g_buf_ie_vdwA, g_buf_pair_starts,
         g_buf_pair_indices, g_buf_pose_counter
     };
+    int buf_idx = 0;
     for (int i = 0; i < 13; i++) {
-        bi[i].buffer = bufs[i];
-        bi[i].offset = 0;
-        bi[i].range = VK_WHOLE_SIZE;
         wds[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         wds[i].dstSet = set;
         wds[i].dstBinding = (uint32_t)i;
         wds[i].dstArrayElement = 0;
         wds[i].descriptorCount = 1;
-        wds[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        wds[i].pBufferInfo = &bi[i];
+        if (i >= 4 && i <= 6) {
+            /* Image bindings for 3D texture samplers */
+            VkImageView views[3] = { g_iv_avdw, g_iv_bvdw, g_iv_es };
+            ii[i - 4].sampler = g_sampler;
+            ii[i - 4].imageView = views[i - 4];
+            ii[i - 4].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            wds[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            wds[i].pImageInfo = &ii[i - 4];
+        } else {
+            /* Buffer bindings */
+            bi[buf_idx].buffer = buf_list[buf_idx];
+            bi[buf_idx].offset = 0;
+            bi[buf_idx].range = VK_WHOLE_SIZE;
+            wds[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            wds[i].pBufferInfo = &bi[buf_idx];
+            buf_idx++;
+        }
     }
     vkUpdateDescriptorSets(g_dev, 13, wds, 0, NULL);
     return set;
@@ -780,15 +841,22 @@ int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
     pc.num_nb_pairs  = 0;
     pc.num_poses     = num_poses;
 
-    VkDescriptorPoolSize dps = { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 13 };
+    VkDescriptorPoolSize dps[2] = {
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 },
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 }
+    };
     VkDescriptorPoolCreateInfo dpci = {};
     dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     dpci.maxSets = 1;
-    dpci.poolSizeCount = 1;
-    dpci.pPoolSizes = &dps;
+    dpci.poolSizeCount = 2;
+    dpci.pPoolSizes = dps;
     vkCreateDescriptorPool(g_dev, &dpci, NULL, &g_descpool);
 
     VkDescriptorSet set = make_desc_set();
+
+    /* Wait for previous dispatch to finish before reusing command buffer */
+    vkWaitForFences(g_dev, 1, &g_fence, VK_TRUE, UINT64_MAX);
+    vkResetFences(g_dev, 1, &g_fence);
 
     vkResetCommandBuffer(g_cmd, 0);
     VkCommandBufferBeginInfo cbbi = {};
@@ -811,8 +879,8 @@ int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &g_cmd;
-    vkQueueSubmit(g_queue, 1, &si, VK_NULL_HANDLE);
-    vkQueueWaitIdle(g_queue);
+    vkQueueSubmit(g_queue, 1, &si, g_fence);
+    vkWaitForFences(g_dev, 1, &g_fence, VK_TRUE, UINT64_MAX);
 
     /* Read timestamps */
     uint64_t ts[2] = {0, 0};
@@ -857,15 +925,22 @@ int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses, int
     uint32_t zero = 0;
     memcpy(buf_map(g_mem_pose_counter), &zero, sizeof(zero));
 
-    VkDescriptorPoolSize dps = { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 13 };
+    VkDescriptorPoolSize dps2[2] = {
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 },
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 }
+    };
     VkDescriptorPoolCreateInfo dpci = {};
     dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     dpci.maxSets = 1;
-    dpci.poolSizeCount = 1;
-    dpci.pPoolSizes = &dps;
+    dpci.poolSizeCount = 2;
+    dpci.pPoolSizes = dps2;
     vkCreateDescriptorPool(g_dev, &dpci, NULL, &g_descpool);
 
     VkDescriptorSet set = make_desc_set();
+
+    /* Wait for previous dispatch to finish before reusing command buffer */
+    vkWaitForFences(g_dev, 1, &g_fence, VK_TRUE, UINT64_MAX);
+    vkResetFences(g_dev, 1, &g_fence);
 
     PushConstants pc = {};
     pc.origin_x = g_params.origin_x;
@@ -902,8 +977,8 @@ int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses, int
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &g_cmd;
-    vkQueueSubmit(g_queue, 1, &si, VK_NULL_HANDLE);
-    vkQueueWaitIdle(g_queue);
+    vkQueueSubmit(g_queue, 1, &si, g_fence);
+    vkWaitForFences(g_dev, 1, &g_fence, VK_TRUE, UINT64_MAX);
 
     /* Read timestamps */
     uint64_t ts[2] = {0, 0};
@@ -930,10 +1005,18 @@ void dock_gpu_cleanup(void)
 {
     if (g_dev) {
         vkDeviceWaitIdle(g_dev);
-        if (g_buf_grid_avdw) { vkDestroyBuffer(g_dev, g_buf_grid_avdw, NULL); vkFreeMemory(g_dev, g_mem_grid_avdw, NULL); }
-        if (g_buf_grid_bvdw) { vkDestroyBuffer(g_dev, g_buf_grid_bvdw, NULL); vkFreeMemory(g_dev, g_mem_grid_bvdw, NULL); }
-        if (g_buf_grid_es)   { vkDestroyBuffer(g_dev, g_buf_grid_es, NULL);   vkFreeMemory(g_dev, g_mem_grid_es, NULL); }
-        if (g_buf_vdwA)     { vkDestroyBuffer(g_dev, g_buf_vdwA, NULL);     vkFreeMemory(g_dev, g_mem_vdwA, NULL); }
+        /* 3D textures (images + views + device-local memory) */
+        if (g_iv_avdw)   vkDestroyImageView(g_dev, g_iv_avdw, NULL);
+        if (g_iv_bvdw)   vkDestroyImageView(g_dev, g_iv_bvdw, NULL);
+        if (g_iv_es)     vkDestroyImageView(g_dev, g_iv_es, NULL);
+        if (g_img_avdw)  vkDestroyImage(g_dev, g_img_avdw, NULL);
+        if (g_img_bvdw)  vkDestroyImage(g_dev, g_img_bvdw, NULL);
+        if (g_img_es)    vkDestroyImage(g_dev, g_img_es, NULL);
+        if (g_mem_img_avdw) vkFreeMemory(g_dev, g_mem_img_avdw, NULL);
+        if (g_mem_img_bvdw) vkFreeMemory(g_dev, g_mem_img_bvdw, NULL);
+        if (g_mem_img_es)   vkFreeMemory(g_dev, g_mem_img_es, NULL);
+        if (g_sampler)   vkDestroySampler(g_dev, g_sampler, NULL);
+        /* Host-visible buffers */
         if (g_buf_vdwB)     { vkDestroyBuffer(g_dev, g_buf_vdwB, NULL);     vkFreeMemory(g_dev, g_mem_vdwB, NULL); }
         if (g_buf_charges)  { vkDestroyBuffer(g_dev, g_buf_charges, NULL);  vkFreeMemory(g_dev, g_mem_charges, NULL); }
         if (g_buf_ie_vdwA)  { vkDestroyBuffer(g_dev, g_buf_ie_vdwA, NULL);  vkFreeMemory(g_dev, g_mem_ie_vdwA, NULL); }
@@ -945,6 +1028,7 @@ void dock_gpu_cleanup(void)
         if (g_buf_active_flags){ vkDestroyBuffer(g_dev, g_buf_active_flags, NULL); vkFreeMemory(g_dev, g_mem_active_flags, NULL); }
         if (g_buf_pose_counter){ vkDestroyBuffer(g_dev, g_buf_pose_counter, NULL); vkFreeMemory(g_dev, g_mem_pose_counter, NULL); }
         if (g_tq_pool)  vkDestroyQueryPool(g_dev, g_tq_pool, NULL);
+        if (g_fence)    vkDestroyFence(g_dev, g_fence, NULL);
         if (g_pl_grid)  vkDestroyPipeline(g_dev, g_pl_grid, NULL);
         if (g_pl_ie)    vkDestroyPipeline(g_dev, g_pl_ie, NULL);
         if (g_playout)  vkDestroyPipelineLayout(g_dev, g_playout, NULL);
