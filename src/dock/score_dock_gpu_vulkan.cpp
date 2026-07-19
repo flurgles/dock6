@@ -12,9 +12,7 @@
   Design notes / differences from the Metal backend:
     * Grid data is stored as 3D textures (VkImage TYPE_3D, R32_SFLOAT)
       with hardware trilinear filtering via sampler3D, matching the
-      Metal backend's texture3d<float> approach.  Bounds checking uses
-      > 0.0 (not > 1.0 like Metal) to avoid the 1-voxel safety margin
-      divergence noted in the Metal backend.
+      Metal backend's texture3d<float> approach.
     * Buffers use HOST_VISIBLE | HOST_COHERENT storage.  The Deck is a
       unified-memory APU, so this gives the same perf model as Metal's
       Shared storage with no staging copies.  Grid 3D images use
@@ -22,10 +20,11 @@
       for hardware texture filtering).
     * Shaders are authored in GLSL and compiled to SPIR-V at runtime via
       shaderc (mirrors Metal compiling a *.metal string at runtime, and
-      keeps the build free of a shader-compile step).
+      keeps the build free of a shader-compile step).  SPIR-V is cached
+      to disk to avoid recompilation on subsequent runs.
     * The persistent-threadgroup + atomic work-counter kernel maps
-      directly: a storage buffer of uint32_t + atomicAdd (GLSL
-      atomicCounter / atomicAdd) over a fixed number of workgroups.
+      directly: a storage buffer of uint32_t + atomicAdd over a fixed
+      number of workgroups.
     * SIMD-group reduction becomes subgroup reduction via
       subgroupAdd() (VK 1.1 shaderSubgroupArithmetic, available on
       RADV).  A shared-memory fallback is used if subgroups are absent.
@@ -34,6 +33,7 @@
     * Descriptors use VK_KHR_push_descriptor to eliminate descriptor
       pool/set allocation; writes are pushed into the command buffer
       at dispatch time.
+    * Single command buffer + single fence (synchronous dispatch).
  */
 
 #include "score_dock_gpu.h"
@@ -57,18 +57,15 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
+#include <sys/stat.h>
 #include <vector>
 #include <iostream>
 
-/* Max poses per batch */
 #define GPU_MAX_POSES       4096
 #define GPU_MAX_ATOMS       512
-#define GPU_MAX_NB_PAIRS    32768  /* Max non-bonded pairs per ligand */
-#define GPU_MAX_TORSIONS    50
-#define GPU_DOF_MAX         56
-#define BATCH_MAX           32
+#define GPU_MAX_NB_PAIRS    32768
 
-/* GLSL source for every compute kernel, compiled to SPIR-V at runtime. */
+/* GLSL source for the persistent IE compute kernel. */
 static const char* shader_src = R"glsl(
 #version 450
 #extension GL_KHR_shader_subgroup_basic : enable
@@ -76,12 +73,10 @@ static const char* shader_src = R"glsl(
 
 layout(local_size_x = 64) in;
 
-// ---- storage buffers (binding indices chosen by host) ----
 layout(std430, binding = 0) buffer BXYZ   { float xyz[]; };
 layout(std430, binding = 1) buffer BVDWA  { float vdwA[]; };
 layout(std430, binding = 2) buffer BVDWB  { float vdwB[]; };
 layout(std430, binding = 3) buffer BCHG   { float charges[]; };
-// bindings 4-6: 3D texture samplers (hardware trilinear)
 layout(binding = 4) uniform sampler3D g_avdw;
 layout(binding = 5) uniform sampler3D g_bvdw;
 layout(binding = 6) uniform sampler3D g_es;
@@ -92,7 +87,6 @@ layout(std430, binding = 10) buffer BSTART { int   pair_starts[]; };
 layout(std430, binding = 11) buffer BIDX   { int   pair_indices[]; };
 layout(std430, binding = 12) buffer BCNT   { uint  pose_counter[]; };
 
-// ---- push constants (GridParams + extras) ----
 layout(push_constant) uniform Params {
     float origin_x, origin_y, origin_z;
     int   span_x, span_y, span_z;
@@ -104,9 +98,6 @@ layout(push_constant) uniform Params {
     int   num_poses;
 } p;
 
-// Hardware-accelerated trilinear via 3D texture sampler.
-// Bounds check uses > 0.0 (not > 1.0 like Metal) to avoid the
-// 1-voxel safety margin divergence noted in the Metal backend.
 float sample_grid(sampler3D grid, float x, float y, float z) {
     float gx = (x - p.origin_x) / p.spacing;
     float gy = (y - p.origin_y) / p.spacing;
@@ -116,14 +107,12 @@ float sample_grid(sampler3D grid, float x, float y, float z) {
         gy >= float(p.span_y - 1) ||
         gz >= float(p.span_z - 1))
         return 0.0;
-    // Vulkan normalized coords: texel i center at (i+0.5)/extent
     vec3 coord = vec3((gx + 0.5) / float(p.span_x),
                       (gy + 0.5) / float(p.span_y),
                       (gz + 0.5) / float(p.span_z));
     return texture(grid, coord).r;
 }
 
-// ============ Atom-parallel persistent IE kernel ============
 shared float tg_partial[8];
 shared uint tg_candidate;
 
@@ -273,16 +262,14 @@ static VkDevice          g_dev        = VK_NULL_HANDLE;
 static VkQueue           g_queue      = VK_NULL_HANDLE;
 static uint32_t         g_queue_idx  = 0;
 static VkCommandPool     g_cmdpool    = VK_NULL_HANDLE;
-#define DISPATCH_RING 2
-static VkCommandBuffer   g_cmd[DISPATCH_RING] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+static VkCommandBuffer   g_cmd        = VK_NULL_HANDLE;
 
 static VkShaderModule    g_mod_grid   = VK_NULL_HANDLE;
 static VkShaderModule    g_mod_ie     = VK_NULL_HANDLE;
 static VkPipelineLayout  g_playout    = VK_NULL_HANDLE;
-static VkPipeline        g_pl_grid    = VK_NULL_HANDLE;  /* grid-only kernel */
-static VkPipeline        g_pl_ie      = VK_NULL_HANDLE;  /* persistent IE kernel */
+static VkPipeline        g_pl_grid    = VK_NULL_HANDLE;
+static VkPipeline        g_pl_ie      = VK_NULL_HANDLE;
 static VkDescriptorSetLayout g_dslayout = VK_NULL_HANDLE;
-static unsigned          g_ring_idx   = 0;
 
 /* VMA allocator */
 static VmaAllocator g_vma = VK_NULL_HANDLE;
@@ -295,7 +282,7 @@ struct GpuBuf {
 };
 
 static GpuBuf g_xyz, g_vdwA, g_vdwB, g_charges, g_scores;
-static GpuBuf g_active_flags, g_ie_vdwA, g_nb_int;
+static GpuBuf g_active_flags, g_ie_vdwA;
 static GpuBuf g_pair_starts, g_pair_indices, g_pose_counter;
 
 /* 3D textures for hardware trilinear filtering */
@@ -310,9 +297,7 @@ static VkPipelineCache g_pcache = VK_NULL_HANDLE;
 /* Push descriptor function pointer (VK_KHR_push_descriptor) */
 static PFN_vkCmdPushDescriptorSetKHR fp_vkCmdPushDescriptorSetKHR = NULL;
 
-/* Pre-built push descriptor write array (built once at init, used every dispatch).
- * The underlying VkDescriptorBufferInfo / VkDescriptorImageInfo references
- * are static and never change, so the entire write array is reusable. */
+/* Pre-built push descriptor write array (built once at init, used every dispatch). */
 #define NUM_BINDINGS 13
 #define NUM_BUF_INFOS 10
 #define NUM_IMG_INFOS 3
@@ -331,12 +316,12 @@ static int  g_compute_units = 0;
 
 /* Timestamp queries */
 static VkQueryPool g_tq_pool = VK_NULL_HANDLE;
-static float g_timestamp_period_ns = 1.0f; /* ns per timestamp tick */
+static float g_timestamp_period_ns = 1.0f;
 
-/* Fences for double-buffered dispatch */
-static VkFence g_fence[DISPATCH_RING] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+/* Single fence for synchronous dispatch */
+static VkFence g_fence = VK_NULL_HANDLE;
 
-/* Profiling counters (mirrors Metal backend) */
+/* Profiling counters */
 static uint64_t prof_dispatch_count    = 0;
 static uint64_t prof_total_conformers  = 0;
 static double   prof_total_dispatch_ms = 0.0;
@@ -364,12 +349,6 @@ static void fill_push_constants(PushConstants *pc, int num_atoms, int num_poses,
 /* ================================================================== */
 /*  Vulkan / VMA helpers                                               */
 /* ================================================================== */
-
-static void vk_check(VkResult r, const char *where) {
-    if (r != VK_SUCCESS) {
-        fprintf(stderr, "GPU-VK: %s failed (%d)\n", where, (int)r);
-    }
-}
 
 /* Allocate a host-visible, coherent buffer via VMA. */
 static bool alloc_buf(VkDeviceSize size, VkBufferUsageFlags usage, GpuBuf *b) {
@@ -401,7 +380,7 @@ static void destroy_buf(GpuBuf *b) {
 }
 
 /* Create a 3D texture image (device-local, optimal tiling) via VMA */
-static void create_3d_image(int sx, int sy, int sz,
+static bool create_3d_image(int sx, int sy, int sz,
                             VkImage *img, VmaAllocation *alloc, VkImageView *view) {
     VkImageCreateInfo ici = {};
     ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -418,7 +397,11 @@ static void create_3d_image(int sx, int sy, int sz,
     VmaAllocationCreateInfo vci = {};
     vci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
 
-    vmaCreateImage(g_vma, &ici, &vci, img, alloc, NULL);
+    VkResult r = vmaCreateImage(g_vma, &ici, &vci, img, alloc, NULL);
+    if (r != VK_SUCCESS) {
+        fprintf(stderr, "GPU-VK: vmaCreateImage failed (%d)\n", (int)r);
+        return false;
+    }
 
     VkImageViewCreateInfo ivci = {};
     ivci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -428,18 +411,28 @@ static void create_3d_image(int sx, int sy, int sz,
     ivci.subresourceRange.levelCount = 1;
     ivci.subresourceRange.layerCount = 1;
     ivci.image = *img;
-    vkCreateImageView(g_dev, &ivci, NULL, view);
+    if (vkCreateImageView(g_dev, &ivci, NULL, view) != VK_SUCCESS) {
+        fprintf(stderr, "GPU-VK: vkCreateImageView failed\n");
+        vmaDestroyImage(g_vma, *img, *alloc);
+        *img = VK_NULL_HANDLE;
+        *alloc = VK_NULL_HANDLE;
+        *view = VK_NULL_HANDLE;
+        return false;
+    }
+    return true;
 }
 
-/* Upload float data to a 3D image via VMA staging buffer + command buffer */
-static void upload_3d_image(const float *data, int sx, int sy, int sz, VkImage img) {
-    VkDeviceSize bytes = sizeof(float) * (VkDeviceSize)sx * sy * sz;
+/* Upload all 3 grid 3D images in a single command buffer submission. */
+static bool upload_all_3d_images(const float *data[3], int sx, int sy, int sz,
+                                 VkImage imgs[3]) {
+    VkDeviceSize per_image = sizeof(float) * (VkDeviceSize)sx * sy * sz;
+    VkDeviceSize total = per_image * 3;
 
-    VkBuffer staging_buf;
-    VmaAllocation staging_alloc;
+    VkBuffer staging_buf = VK_NULL_HANDLE;
+    VmaAllocation staging_alloc = VK_NULL_HANDLE;
     VkBufferCreateInfo bci = {};
     bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bci.size = bytes;
+    bci.size = total;
     bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
@@ -447,63 +440,69 @@ static void upload_3d_image(const float *data, int sx, int sy, int sz, VkImage i
     vci.usage = VMA_MEMORY_USAGE_AUTO;
     vci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
 
-    vmaCreateBuffer(g_vma, &bci, &vci, &staging_buf, &staging_alloc, NULL);
+    VkResult r = vmaCreateBuffer(g_vma, &bci, &vci, &staging_buf, &staging_alloc, NULL);
+    if (r != VK_SUCCESS) {
+        fprintf(stderr, "GPU-VK: staging buffer alloc failed (%d)\n", (int)r);
+        return false;
+    }
+
     void *mapped = NULL;
     vmaMapMemory(g_vma, staging_alloc, &mapped);
-    memcpy(mapped, data, (size_t)bytes);
+    for (int i = 0; i < 3; i++)
+        memcpy((char*)mapped + per_image * i, data[i], (size_t)per_image);
     vmaUnmapMemory(g_vma, staging_alloc);
 
-    vkResetCommandBuffer(g_cmd[0], 0);
+    vkResetCommandBuffer(g_cmd, 0);
     VkCommandBufferBeginInfo cbbi = {};
     cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(g_cmd[0], &cbbi);
-
-    VkImageMemoryBarrier barrier = {};
-    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = img;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.layerCount = 1;
-    vkCmdPipelineBarrier(g_cmd[0], VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-                         0, NULL, 0, NULL, 1, &barrier);
+    vkBeginCommandBuffer(g_cmd, &cbbi);
 
     VkBufferImageCopy region = {};
     region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     region.imageSubresource.layerCount = 1;
     region.imageExtent = {(uint32_t)sx, (uint32_t)sy, (uint32_t)sz};
-    vkCmdCopyBufferToImage(g_cmd[0], staging_buf, img,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    vkCmdPipelineBarrier(g_cmd[0], VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
-                         0, NULL, 0, NULL, 1, &barrier);
+    for (int i = 0; i < 3; i++) {
+        VkImageMemoryBarrier barrier = {};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = imgs[i];
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.layerCount = 1;
+        vkCmdPipelineBarrier(g_cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                             0, NULL, 0, NULL, 1, &barrier);
 
-    vkEndCommandBuffer(g_cmd[0]);
+        region.bufferOffset = per_image * i;
+        vkCmdCopyBufferToImage(g_cmd, staging_buf, imgs[i],
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-    VkFenceCreateInfo ufci = {};
-    ufci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    VkFence upload_fence;
-    vkCreateFence(g_dev, &ufci, NULL, &upload_fence);
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(g_cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                             0, NULL, 0, NULL, 1, &barrier);
+    }
 
+    vkEndCommandBuffer(g_cmd);
+
+    vkResetFences(g_dev, 1, &g_fence);
     VkSubmitInfo si = {};
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
-    si.pCommandBuffers = &g_cmd[0];
-    vkQueueSubmit(g_queue, 1, &si, upload_fence);
-    vkWaitForFences(g_dev, 1, &upload_fence, VK_TRUE, UINT64_MAX);
-    vkDestroyFence(g_dev, upload_fence, NULL);
+    si.pCommandBuffers = &g_cmd;
+    vkQueueSubmit(g_queue, 1, &si, g_fence);
+    vkWaitForFences(g_dev, 1, &g_fence, VK_TRUE, UINT64_MAX);
 
     vmaDestroyBuffer(g_vma, staging_buf, staging_alloc);
+    return true;
 }
 
 /* Build the static push descriptor write array.
@@ -527,7 +526,7 @@ static void prepare_push_descriptors(void) {
     for (int i = 0; i < NUM_BINDINGS; i++) {
         g_pd_w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         g_pd_w[i].pNext = NULL;
-        g_pd_w[i].dstSet = VK_NULL_HANDLE;  /* ignored for push descriptors */
+        g_pd_w[i].dstSet = VK_NULL_HANDLE;
         g_pd_w[i].dstBinding = (uint32_t)i;
         g_pd_w[i].dstArrayElement = 0;
         g_pd_w[i].descriptorCount = 1;
@@ -541,8 +540,59 @@ static void prepare_push_descriptors(void) {
     }
 }
 
-/* Compile GLSL -> SPIR-V via shaderc, return a VkShaderModule. */
+/* ================================================================== */
+/*  SPIR-V disk cache + shader compilation                             */
+/* ================================================================== */
+
+static size_t djb2_hash(const char *src) {
+    size_t h = 5381;
+    for (const unsigned char *p = (const unsigned char *)src; *p; p++)
+        h = ((h << 5) + h) + *p;
+    return h;
+}
+
+static const char *g_spirv_cache_dir = "/tmp/dock6_spirv_cache";
+
+/* Compile GLSL -> SPIR-V via shaderc, return a VkShaderModule.
+ * Caches compiled SPIR-V to disk to avoid recompilation. */
 static VkShaderModule compile_module(const char *src, const char *label) {
+    /* Ensure cache directory exists */
+    mkdir(g_spirv_cache_dir, 0755);
+
+    size_t h = djb2_hash(src);
+    char cache_path[256];
+    snprintf(cache_path, sizeof(cache_path), "%s/%s_%zu.spv",
+             g_spirv_cache_dir, label, h);
+
+    /* Try loading cached SPIR-V */
+    FILE *f = fopen(cache_path, "rb");
+    if (f) {
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        if (sz > 0) {
+            void *data = malloc((size_t)sz);
+            if (data && (long)fread(data, 1, (size_t)sz, f) == sz) {
+                fclose(f);
+                VkShaderModuleCreateInfo smci = {};
+                smci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+                smci.codeSize = (size_t)sz;
+                smci.pCode = (const uint32_t *)data;
+                VkShaderModule mod = VK_NULL_HANDLE;
+                vkCreateShaderModule(g_dev, &smci, NULL, &mod);
+                free(data);
+                if (mod) {
+                    fprintf(stderr, "GPU-VK: loaded cached SPIR-V '%s' (%ld bytes)\n", label, sz);
+                    return mod;
+                }
+            } else {
+                free(data);
+            }
+        }
+        fclose(f);
+    }
+
+    /* Compile fresh */
     shaderc_compiler_t compiler = shaderc_compiler_initialize();
     shaderc_compilation_result_t result;
     shaderc_compile_options_t opts = shaderc_compile_options_initialize();
@@ -562,6 +612,14 @@ static VkShaderModule compile_module(const char *src, const char *label) {
     }
     const uint32_t *spv = (const uint32_t *)shaderc_result_get_bytes(result);
     size_t spv_size = shaderc_result_get_length(result);
+
+    /* Cache SPIR-V to disk */
+    f = fopen(cache_path, "wb");
+    if (f) {
+        fwrite(spv, 1, spv_size, f);
+        fclose(f);
+        fprintf(stderr, "GPU-VK: compiled + cached SPIR-V '%s' (%zu bytes)\n", label, spv_size);
+    }
 
     VkShaderModuleCreateInfo smci = {};
     smci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -618,6 +676,54 @@ static void save_pipeline_cache(void) {
 }
 
 /* ================================================================== */
+/*  Common dispatch + profiling helper                                 */
+/* ================================================================== */
+
+static void dispatch_compute(VkPipeline pipeline, uint32_t num_wg,
+                             const PushConstants *pc,
+                             float *out_scores, int num_poses) {
+    vkWaitForFences(g_dev, 1, &g_fence, VK_TRUE, UINT64_MAX);
+    vkResetFences(g_dev, 1, &g_fence);
+
+    vkResetCommandBuffer(g_cmd, 0);
+    VkCommandBufferBeginInfo cbbi = {};
+    cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    vkBeginCommandBuffer(g_cmd, &cbbi);
+    vkCmdBindPipeline(g_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    fp_vkCmdPushDescriptorSetKHR(g_cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                 g_playout, 0, NUM_BINDINGS, g_pd_w);
+    vkCmdPushConstants(g_cmd, g_playout, VK_SHADER_STAGE_COMPUTE_BIT,
+                       0, sizeof(PushConstants), pc);
+
+    vkCmdResetQueryPool(g_cmd, g_tq_pool, 0, 2);
+    vkCmdWriteTimestamp(g_cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g_tq_pool, 0);
+    vkCmdDispatch(g_cmd, num_wg, 1, 1);
+    vkCmdWriteTimestamp(g_cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g_tq_pool, 1);
+    vkEndCommandBuffer(g_cmd);
+
+    VkSubmitInfo si = {};
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &g_cmd;
+    vkQueueSubmit(g_queue, 1, &si, g_fence);
+    vkWaitForFences(g_dev, 1, &g_fence, VK_TRUE, UINT64_MAX);
+
+    uint64_t ts[2] = {0, 0};
+    vkGetQueryPoolResults(g_dev, g_tq_pool, 0, 2, sizeof(ts), ts, sizeof(uint64_t),
+                          VK_QUERY_RESULT_64_BIT);
+    double dispatch_ms = (double)(ts[1] - ts[0]) * g_timestamp_period_ns * 1e-6;
+
+    memcpy(out_scores, g_scores.map, sizeof(float) * (size_t)num_poses);
+
+    prof_dispatch_count++;
+    prof_total_conformers += num_poses;
+    prof_total_dispatch_ms += dispatch_ms;
+    prof_last_dispatch_ms = dispatch_ms;
+    prof_wait_buf[prof_wait_idx] = dispatch_ms;
+    prof_wait_idx = (prof_wait_idx + 1) % PROF_ROLLING_SIZE;
+}
+
+/* ================================================================== */
 /*  GPU abstraction API                                                 */
 /* ================================================================== */
 
@@ -656,15 +762,12 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     fprintf(stderr, "GPU-VK: device: %s\n", props.deviceName);
     fflush(stderr);
 
-    /* compute units heuristic from subgroup/max-invocation limits */
     g_compute_units = (int)(props.limits.maxComputeWorkGroupInvocations / 32);
     if (g_compute_units <= 0) g_compute_units = 8;
 
-    /* Cache timestamp period for profiling */
     g_timestamp_period_ns = props.limits.timestampPeriod;
     if (g_timestamp_period_ns <= 0.0f) g_timestamp_period_ns = 1.0f;
 
-    /* Find a compute-capable queue */
     uint32_t qf_count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(g_phys, &qf_count, NULL);
     std::vector<VkQueueFamilyProperties> qf(qf_count);
@@ -674,7 +777,6 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
         if (qf[i].queueFlags & VK_QUEUE_COMPUTE_BIT) { g_queue_idx = i; break; }
     }
 
-    /* Enable VK_KHR_push_descriptor extension */
     const char *dev_exts[] = { VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME };
 
     float qprio = 1.0f;
@@ -696,7 +798,6 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     }
     vkGetDeviceQueue(g_dev, g_queue_idx, 0, &g_queue);
 
-    /* Load push descriptor function pointer */
     fp_vkCmdPushDescriptorSetKHR = (PFN_vkCmdPushDescriptorSetKHR)
         vkGetDeviceProcAddr(g_dev, "vkCmdPushDescriptorSetKHR");
     if (!fp_vkCmdPushDescriptorSetKHR) {
@@ -705,7 +806,6 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
         return 0;
     }
 
-    /* Create VMA allocator */
     VmaAllocatorCreateInfo vaci = {};
     vaci.flags = 0;
     vaci.vulkanApiVersion = VK_API_VERSION_1_1;
@@ -722,7 +822,7 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
         return 0;
     }
 
-    /* Command pool + double-buffered command buffers */
+    /* Command pool + single command buffer */
     VkCommandPoolCreateInfo cpci = {};
     cpci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     cpci.queueFamilyIndex = g_queue_idx;
@@ -733,17 +833,16 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     cbai.commandPool = g_cmdpool;
     cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cbai.commandBufferCount = DISPATCH_RING;
-    vkAllocateCommandBuffers(g_dev, &cbai, g_cmd);
+    cbai.commandBufferCount = 1;
+    vkAllocateCommandBuffers(g_dev, &cbai, &g_cmd);
 
-    /* Fences for double-buffered dispatch — created SIGNALED so first wait passes */
+    /* Single fence — created SIGNALED so first wait passes */
     VkFenceCreateInfo fci = {};
     fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-    for (int i = 0; i < DISPATCH_RING; i++)
-        vkCreateFence(g_dev, &fci, NULL, &g_fence[i]);
+    vkCreateFence(g_dev, &fci, NULL, &g_fence);
 
-    /* Shaders */
+    /* Shaders (SPIR-V cached to disk) */
     g_mod_grid = compile_module(shader_src_grid, "grid_batch_score");
     g_mod_ie    = compile_module(shader_src,        "persistent_ie");
     if (!g_mod_grid || !g_mod_ie) {
@@ -753,8 +852,8 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     }
 
     /* Descriptor set layout: bindings 0-3,7-12 = storage buffers,
-     * bindings 4-6 = combined image samplers (3D textures for grids).
-     * Created with PUSH_DESCRIPTOR_BIT_KHR — no descriptor sets allocated. */
+     * bindings 4-6 = combined image samplers.
+     * Created with PUSH_DESCRIPTOR_BIT_KHR. */
     VkDescriptorSetLayoutBinding binds[NUM_BINDINGS];
     for (int i = 0; i < NUM_BINDINGS; i++) {
         binds[i].binding = (uint32_t)i;
@@ -779,12 +878,11 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     VkPushConstantRange pcr = {};
     pcr.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     pcr.offset = 0;
-    pcr.size = sizeof(PushConstants);  /* 48 bytes matching GLSL Params block */
+    pcr.size = sizeof(PushConstants);
     plci.pushConstantRangeCount = 1;
     plci.pPushConstantRanges = &pcr;
     vkCreatePipelineLayout(g_dev, &plci, NULL, &g_playout);
 
-    /* Load pipeline cache from disk (if available) */
     load_pipeline_cache();
 
     VkComputePipelineCreateInfo cp1 = {};
@@ -800,17 +898,14 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     cp2.stage.module = g_mod_ie;
     vkCreateComputePipelines(g_dev, g_pcache, 1, &cp2, NULL, &g_pl_ie);
 
-    /* Save pipeline cache to disk for faster reinit */
     save_pipeline_cache();
 
-    /* Timestamp query pool (2 queries per dispatch: before + after) */
     VkQueryPoolCreateInfo qpci = {};
     qpci.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
     qpci.queryType = VK_QUERY_TYPE_TIMESTAMP;
     qpci.queryCount = 2;
     vkCreateQueryPool(g_dev, &qpci, NULL, &g_tq_pool);
 
-    /* Cache grid params */
     g_params.origin_x = origin_x;
     g_params.origin_y = origin_y;
     g_params.origin_z = origin_z;
@@ -821,17 +916,20 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     g_params.grid_size = span_x * span_y * span_z;
 
     /* Create 3D textures for hardware trilinear filtering */
-    create_3d_image(span_x, span_y, span_z, &g_img_avdw, &g_img_alloc_avdw, &g_iv_avdw);
-    create_3d_image(span_x, span_y, span_z, &g_img_bvdw, &g_img_alloc_bvdw, &g_iv_bvdw);
-    create_3d_image(span_x, span_y, span_z, &g_img_es,   &g_img_alloc_es,   &g_iv_es);
-    if (!g_img_alloc_avdw || !g_img_alloc_bvdw || !g_img_alloc_es) {
-        fprintf(stderr, "GPU-VK: 3D texture alloc failed\n");
+    if (!create_3d_image(span_x, span_y, span_z, &g_img_avdw, &g_img_alloc_avdw, &g_iv_avdw) ||
+        !create_3d_image(span_x, span_y, span_z, &g_img_bvdw, &g_img_alloc_bvdw, &g_iv_bvdw) ||
+        !create_3d_image(span_x, span_y, span_z, &g_img_es,   &g_img_alloc_es,   &g_iv_es)) {
+        fprintf(stderr, "GPU-VK: 3D texture creation failed\n");
         dock_gpu_cleanup();
         return 0;
     }
-    upload_3d_image(avdw, span_x, span_y, span_z, g_img_avdw);
-    upload_3d_image(bvdw, span_x, span_y, span_z, g_img_bvdw);
-    upload_3d_image(es,   span_x, span_y, span_z, g_img_es);
+    const float *grid_data[3] = {avdw, bvdw, es};
+    VkImage grid_imgs[3] = {g_img_avdw, g_img_bvdw, g_img_es};
+    if (!upload_all_3d_images(grid_data, span_x, span_y, span_z, grid_imgs)) {
+        fprintf(stderr, "GPU-VK: 3D texture upload failed\n");
+        dock_gpu_cleanup();
+        return 0;
+    }
 
     /* Sampler: linear filtering, clamp-to-border (returns 0.0 for OOB) */
     VkSamplerCreateInfo sci = {};
@@ -855,13 +953,12 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     ALLOC_BUF(sizeof(float)*GPU_MAX_ATOMS,             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_vdwB);
     ALLOC_BUF(sizeof(float)*GPU_MAX_ATOMS,             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_charges);
     ALLOC_BUF(sizeof(float)*GPU_MAX_ATOMS,             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_ie_vdwA);
-    ALLOC_BUF(sizeof(int)*GPU_MAX_NB_PAIRS*2,          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_nb_int);
     ALLOC_BUF(sizeof(int)*(GPU_MAX_ATOMS+1),           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_pair_starts);
     ALLOC_BUF(sizeof(int)*GPU_MAX_NB_PAIRS,            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_pair_indices);
     ALLOC_BUF(sizeof(float)*3*GPU_MAX_ATOMS*GPU_MAX_POSES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_xyz);
     ALLOC_BUF(sizeof(float)*GPU_MAX_POSES,             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_scores);
     ALLOC_BUF(sizeof(int)*GPU_MAX_ATOMS,               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_active_flags);
-    ALLOC_BUF(sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, &g_pose_counter);
+    ALLOC_BUF(sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_pose_counter);
     #undef ALLOC_BUF
 
     /* Build push descriptor writes (static — reused every dispatch) */
@@ -887,6 +984,11 @@ int dock_gpu_set_ligand(const float *vdwA, const float *vdwB,
     memcpy(g_vdwA.map, vdwA, bytes);
     memcpy(g_vdwB.map, vdwB, bytes);
     memcpy(g_charges.map, charges, bytes);
+
+    /* Initialize active_flags to all-active (all atoms enabled) */
+    int *af = (int *)g_active_flags.map;
+    for (int i = 0; i < num_atoms; i++) af[i] = 1;
+
     g_num_atoms = num_atoms;
     g_active = 1;
     return 1;
@@ -904,9 +1006,6 @@ int dock_gpu_set_ligand_ie(const float *ie_vdwA, const float *ie_vdwB,
     }
     size_t ie_bytes = sizeof(float) * (size_t)g_num_atoms;
     memcpy(g_ie_vdwA.map, ie_vdwA, ie_bytes);
-
-    size_t nb_bytes = sizeof(int) * (size_t)num_nb_pairs * 2;
-    memcpy(g_nb_int.map, nb_int_pairs, nb_bytes);
 
     /* Build per-atom pair lists (same as Metal backend) */
     int na = g_num_atoms;
@@ -946,69 +1045,20 @@ int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
     if (!g_initialized) return 0;
     if (num_poses > GPU_MAX_POSES || num_atoms > GPU_MAX_ATOMS) return 0;
 
-    unsigned ri = g_ring_idx;
-    g_ring_idx = (g_ring_idx + 1) % DISPATCH_RING;
-
     size_t xyz_bytes = sizeof(float) * (size_t)num_poses * (size_t)num_atoms * 3;
     memcpy(g_xyz.map, xyz, xyz_bytes);
 
     PushConstants pc = {};
     fill_push_constants(&pc, num_atoms, num_poses, 0.0f, 1e10f, 0);
 
-    /* Non-blocking check: if prev fence already signaled, skip kernel wait */
-    VkResult fr = vkGetFenceStatus(g_dev, g_fence[ri]);
-    if (fr == VK_NOT_READY)
-        vkWaitForFences(g_dev, 1, &g_fence[ri], VK_TRUE, UINT64_MAX);
-    vkResetFences(g_dev, 1, &g_fence[ri]);
-
-    VkCommandBuffer cmd = g_cmd[ri];
-    vkResetCommandBuffer(cmd, 0);
-    VkCommandBufferBeginInfo cbbi = {};
-    cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    vkBeginCommandBuffer(cmd, &cbbi);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_pl_grid);
-    fp_vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                 g_playout, 0, NUM_BINDINGS, g_pd_w);
-    vkCmdPushConstants(cmd, g_playout, VK_SHADER_STAGE_COMPUTE_BIT,
-                       0, sizeof(PushConstants), &pc);
-
-    /* grid-only kernel: 1 thread/pose, local_size_x=64 -> ceil(num_poses/64) workgroups */
     uint32_t num_wg = ((uint32_t)num_poses + 63u) / 64u;
-    vkCmdResetQueryPool(cmd, g_tq_pool, 0, 2);
-    vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g_tq_pool, 0);
-    vkCmdDispatch(cmd, num_wg, 1, 1);
-    vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g_tq_pool, 1);
-    vkEndCommandBuffer(cmd);
-
-    VkSubmitInfo si = {};
-    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    si.commandBufferCount = 1;
-    si.pCommandBuffers = &cmd;
-    vkQueueSubmit(g_queue, 1, &si, g_fence[ri]);
-    vkWaitForFences(g_dev, 1, &g_fence[ri], VK_TRUE, UINT64_MAX);
-
-    /* Read timestamps */
-    uint64_t ts[2] = {0, 0};
-    vkGetQueryPoolResults(g_dev, g_tq_pool, 0, 2, sizeof(ts), ts, sizeof(uint64_t),
-                          VK_QUERY_RESULT_64_BIT);
-    double dispatch_ms = (double)(ts[1] - ts[0]) * g_timestamp_period_ns * 1e-6;
-
-    memcpy(out_scores, g_scores.map, sizeof(float) * (size_t)num_poses);
-
-    prof_dispatch_count++;
-    prof_total_conformers += num_poses;
-    prof_total_dispatch_ms += dispatch_ms;
-    prof_last_dispatch_ms = dispatch_ms;
-    prof_wait_buf[prof_wait_idx] = dispatch_ms;
-    prof_wait_idx = (prof_wait_idx + 1) % PROF_ROLLING_SIZE;
-
+    dispatch_compute(g_pl_grid, num_wg, &pc, out_scores, num_poses);
     return 1;
 }
 
 int dock_gpu_batch_score_with_ie(const float *xyz, int num_poses, int num_atoms,
                                  const int *active_flags, float *out_scores)
 {
-    /* Phase 1 routes IE through the persistent path; kept for API parity. */
     return dock_gpu_batch_score_with_ie_persistent(xyz, num_poses, num_atoms, active_flags, out_scores);
 }
 
@@ -1017,9 +1067,6 @@ int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses, int
 {
     if (!g_initialized || g_num_nb_pairs == 0) return 0;
     if (num_poses > GPU_MAX_POSES || num_atoms > GPU_MAX_ATOMS) return 0;
-
-    unsigned ri = g_ring_idx;
-    g_ring_idx = (g_ring_idx + 1) % DISPATCH_RING;
 
     size_t xyz_bytes = sizeof(float) * (size_t)num_poses * (size_t)num_atoms * 3;
     memcpy(g_xyz.map, xyz, xyz_bytes);
@@ -1034,55 +1081,11 @@ int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses, int
     uint32_t zero = 0;
     memcpy(g_pose_counter.map, &zero, sizeof(zero));
 
-    /* Non-blocking check: if prev fence already signaled, skip kernel wait */
-    VkResult fr = vkGetFenceStatus(g_dev, g_fence[ri]);
-    if (fr == VK_NOT_READY)
-        vkWaitForFences(g_dev, 1, &g_fence[ri], VK_TRUE, UINT64_MAX);
-    vkResetFences(g_dev, 1, &g_fence[ri]);
-
     PushConstants pc = {};
     fill_push_constants(&pc, num_atoms, num_poses, g_ie_soft_delta, g_ie_cutoff_sq, g_num_nb_pairs);
 
-    VkCommandBuffer cmd = g_cmd[ri];
-    vkResetCommandBuffer(cmd, 0);
-    VkCommandBufferBeginInfo cbbi = {};
-    cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    vkBeginCommandBuffer(cmd, &cbbi);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_pl_ie);
-    fp_vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                 g_playout, 0, NUM_BINDINGS, g_pd_w);
-    vkCmdPushConstants(cmd, g_playout, VK_SHADER_STAGE_COMPUTE_BIT,
-                       0, sizeof(PushConstants), &pc);
-
     unsigned int num_tg = (unsigned int)dock_gpu_recommended_batch_size();
-    vkCmdResetQueryPool(cmd, g_tq_pool, 0, 2);
-    vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g_tq_pool, 0);
-    vkCmdDispatch(cmd, num_tg, 1, 1);
-    vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g_tq_pool, 1);
-    vkEndCommandBuffer(cmd);
-
-    VkSubmitInfo si = {};
-    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    si.commandBufferCount = 1;
-    si.pCommandBuffers = &cmd;
-    vkQueueSubmit(g_queue, 1, &si, g_fence[ri]);
-    vkWaitForFences(g_dev, 1, &g_fence[ri], VK_TRUE, UINT64_MAX);
-
-    /* Read timestamps */
-    uint64_t ts[2] = {0, 0};
-    vkGetQueryPoolResults(g_dev, g_tq_pool, 0, 2, sizeof(ts), ts, sizeof(uint64_t),
-                          VK_QUERY_RESULT_64_BIT);
-    double dispatch_ms = (double)(ts[1] - ts[0]) * g_timestamp_period_ns * 1e-6;
-
-    memcpy(out_scores, g_scores.map, sizeof(float) * (size_t)num_poses);
-
-    prof_dispatch_count++;
-    prof_total_conformers += num_poses;
-    prof_total_dispatch_ms += dispatch_ms;
-    prof_last_dispatch_ms = dispatch_ms;
-    prof_wait_buf[prof_wait_idx] = dispatch_ms;
-    prof_wait_idx = (prof_wait_idx + 1) % PROF_ROLLING_SIZE;
-
+    dispatch_compute(g_pl_ie, num_tg, &pc, out_scores, num_poses);
     return 1;
 }
 
@@ -1105,7 +1108,6 @@ void dock_gpu_cleanup(void)
         destroy_buf(&g_vdwB);
         destroy_buf(&g_charges);
         destroy_buf(&g_ie_vdwA);
-        destroy_buf(&g_nb_int);
         destroy_buf(&g_pair_starts);
         destroy_buf(&g_pair_indices);
         destroy_buf(&g_xyz);
@@ -1117,8 +1119,7 @@ void dock_gpu_cleanup(void)
         if (g_vma) { vmaDestroyAllocator(g_vma); g_vma = VK_NULL_HANDLE; }
 
         if (g_tq_pool)  vkDestroyQueryPool(g_dev, g_tq_pool, NULL);
-        for (int i = 0; i < DISPATCH_RING; i++)
-            if (g_fence[i]) vkDestroyFence(g_dev, g_fence[i], NULL);
+        if (g_fence)    vkDestroyFence(g_dev, g_fence, NULL);
         if (g_pl_grid)  vkDestroyPipeline(g_dev, g_pl_grid, NULL);
         if (g_pl_ie)    vkDestroyPipeline(g_dev, g_pl_ie, NULL);
         if (g_playout)  vkDestroyPipelineLayout(g_dev, g_playout, NULL);
@@ -1133,10 +1134,8 @@ void dock_gpu_cleanup(void)
 
     /* Reset all handles */
     g_inst = VK_NULL_HANDLE; g_phys = VK_NULL_HANDLE; g_dev = VK_NULL_HANDLE;
-    g_queue = VK_NULL_HANDLE; g_cmdpool = VK_NULL_HANDLE;
-    for (int i = 0; i < DISPATCH_RING; i++) {
-        g_cmd[i] = VK_NULL_HANDLE; g_fence[i] = VK_NULL_HANDLE;
-    }
+    g_queue = VK_NULL_HANDLE; g_cmdpool = VK_NULL_HANDLE; g_cmd = VK_NULL_HANDLE;
+    g_fence = VK_NULL_HANDLE;
     g_mod_grid = g_mod_ie = VK_NULL_HANDLE;
     g_pl_grid = g_pl_ie = VK_NULL_HANDLE; g_playout = VK_NULL_HANDLE; g_dslayout = VK_NULL_HANDLE;
     g_tq_pool = VK_NULL_HANDLE; g_pcache = VK_NULL_HANDLE;
@@ -1163,8 +1162,8 @@ int dock_gpu_is_active(void)
 int dock_gpu_recommended_batch_size(void)
 {
     if (!g_dev) return 32;
-    int size = g_compute_units * 4;
-    int cap = GPU_MAX_POSES / 4;
+    int size = g_compute_units * 8;
+    int cap = GPU_MAX_POSES / 2;
     if (size > cap) size = cap;
     if (size <= 0) size = 32;
     return size;
@@ -1175,7 +1174,6 @@ void dock_gpu_monitor(int layer, int segment, int total_segments)
     (void)layer; (void)segment; (void)total_segments;
     if (!g_initialized) return;
 
-    /* Compute rolling average from circular buffer */
     double rolling_avg = 0.0;
     int count = (prof_dispatch_count < PROF_ROLLING_SIZE)
                 ? (int)prof_dispatch_count : PROF_ROLLING_SIZE;
