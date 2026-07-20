@@ -143,6 +143,7 @@ void kernel_persistent() {
             for (int i = start; i < end; i++) {
                 int a2 = pair_indices[i];
                 if (a2 < 0 || a2 >= p.num_atoms) continue;
+                if (active_flags[a2] == 0) continue;
                 float dx = xyz[stride + int(a)*3]     - xyz[stride + a2*3];
                 float dy = xyz[stride + int(a)*3 + 1] - xyz[stride + a2*3 + 1];
                 float dz = xyz[stride + int(a)*3 + 2] - xyz[stride + a2*3 + 2];

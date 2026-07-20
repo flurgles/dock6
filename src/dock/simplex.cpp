@@ -432,7 +432,12 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                 /* ---- Contraction / Shrink path ---- */
                 replace_flag = false;
 
-                if (ypr < y[ihi]) {
+                /* Save condition BEFORE overwriting p[ihi]/y[ihi].
+                   After the overwrite, `(ypr < y[ihi])` would always be
+                   false (ypr < ypr), incorrectly selecting the cB variant. */
+                bool outer = (ypr < y[ihi]);
+
+                if (outer) {
                     for (i = 0; i < size; i++) p[ihi][i] = pr[i];
                     y[ihi] = ypr;
                     replace_flag = true;
@@ -453,9 +458,9 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                          return failure_exit(ref_mol.current_score + ref_mol.internal_energy + Econstraint);
                     }
                 } else {
-                    /* Pick the right contraction variant based on whether ypr < y[ihi] */
-                    const FLOATVec& contr_vec = (ypr < y[ihi]) ? prr_cA : prr_cB;
-                    yprr_contract = (ypr < y[ihi]) ? batch_scores[2] : batch_scores[3];
+                    /* Pick the right contraction variant based on whether ypr < y[ihi]_original */
+                    const FLOATVec& contr_vec = outer ? prr_cA : prr_cB;
+                    yprr_contract = outer ? batch_scores[2] : batch_scores[3];
                     /* Copy into prr for compatibility with downstream code */
                     for (i = 0; i < size; i++) prr[i] = contr_vec[i];
                 }

@@ -25,6 +25,37 @@ using namespace std;
 /*  Internal helpers                                                  */
 /* ------------------------------------------------------------------ */
 
+/* Compute Nelder-Mead coefficients from simplex_mode and dimension.
+   Exact mirror of simplex.cpp do_minimize() lines 129-149. */
+static void compute_nm_coeffs(int size, int simplex_mode, int simplex_crossover,
+                               float& gamma, float& beta, float& sigma)
+{
+    gamma = 2.0f;
+    beta  = 0.5f;
+    sigma = 0.5f;
+
+    if (simplex_mode == 1) {
+        const float n = (float)size;
+        gamma = 1.0f + 2.0f / n;
+        beta  = 0.75f - 0.5f / n;
+        sigma = 1.0f  - 1.0f  / n;
+    } else if (simplex_mode == 2) {
+        const float n  = (float)size;
+        const float n0 = (float)(simplex_crossover + 6);
+        const float k  = 0.5f;
+        float w = 1.0f - 1.0f / (1.0f + expf(-k * (n - n0)));
+        if (w < 0.0f) w = 0.0f;
+        if (w > 1.0f) w = 1.0f;
+        const float ga = 1.0f + 2.0f / n;
+        const float rb = 0.75f - 0.5f / n;
+        const float sg = 1.0f  - 1.0f  / n;
+        gamma = w * 2.0f + (1.0f - w) * ga;
+        beta  = w * 0.5f + (1.0f - w) * rb;
+        sigma = w * 0.5f + (1.0f - w) * sg;
+    }
+}
+
+
 /* Build the initial N+1 simplex vertices via axis-aligned perturbation.
    Matches the initialization in simplex.cpp do_minimize() iteration 0:
        p[0] = vertex (starting point)
@@ -49,10 +80,13 @@ static void build_initial_simplex(const FLOATVec& vertex, float** p, float* y, i
 /*  Constructor / Destructor                                          */
 /* ------------------------------------------------------------------ */
 
-ConformerPool::ConformerPool(int batch_max, Minimizer* minimizer, bool use_gpu)
+ConformerPool::ConformerPool(int batch_max, Minimizer* minimizer, bool use_gpu,
+                              int simplex_mode, int simplex_crossover)
     : m_batch_max(batch_max)
     , m_minimizer(minimizer)
     , m_use_gpu(use_gpu)
+    , m_simplex_mode(simplex_mode)
+    , m_simplex_crossover(simplex_crossover)
     , m_num_atoms(0)
     , m_xyz_buffer(nullptr)
     , m_score_buffer(nullptr)
@@ -145,6 +179,8 @@ ConformerPool::add(DOCKMol* mol,
     slot.id                 = idx;
     slot.phase              = SlotPhase::INIT;
     slot.size               = size;
+    compute_nm_coeffs(size, m_simplex_mode, m_simplex_crossover,
+                      slot.nm_gamma, slot.nm_beta, slot.nm_sigma);
     slot.iteration          = 0;
     slot.converged          = false;
     slot.ihi                = 0;
@@ -417,11 +453,12 @@ ConformerPool::pack_slot(SimplexSlot& slot, int offset, int capacity)
     case SlotPhase::REFLECT: {
         /* Pack 4 speculative candidates:
              0: reflect_v (pr)
-             1: expand   = (1+alpha)*pr - alpha*pbar
+             1: expand   = gamma*pr + (1-gamma)*pbar
              2: contract_cA = beta*pr + (1-beta)*pbar
              3: contract_cB = beta*p[ihi] + (1-beta)*pbar
-        */
-        const float alpha = 1.0f, beta = 0.5f;
+           Matches simplex.cpp spec_verts layout for GPU batch. */
+        float gamma = slot.nm_gamma;
+        float beta  = slot.nm_beta;
         float* pbar = slot.centroid.data();
         float* pr   = slot.reflect_v.data();
         float** p   = slot.p;
@@ -433,7 +470,7 @@ ConformerPool::pack_slot(SimplexSlot& slot, int offset, int capacity)
         /* Candidates 1-3 computed on the fly */
         FLOATVec expand_v(N), cA_v(N), cB_v(N);
         for (int j = 0; j < N; j++) {
-            expand_v[j] = (1.0f + alpha) * pr[j] - alpha * pbar[j];
+            expand_v[j] = gamma * pr[j] + (1.0f - gamma) * pbar[j];
             cA_v[j]     = beta * pr[j] + (1.0f - beta) * pbar[j];
             cB_v[j]     = beta * p[ihi][j] + (1.0f - beta) * pbar[j];
         }
@@ -548,9 +585,11 @@ ConformerPool::evaluate_slot(SimplexSlot& slot, const float* scores)
 
     /* --- REFLECT: full Nelder-Mead decision tree --- */
     case SlotPhase::REFLECT: {
-        const float alpha = 1.0f, beta = 0.5f;
-        float* pbar      = slot.centroid.data();
-        float* pr        = slot.reflect_v.data();
+        float gamma    = slot.nm_gamma;
+        float beta     = slot.nm_beta;
+        float sigma    = slot.nm_sigma;
+        float* pbar    = slot.centroid.data();
+        float* pr      = slot.reflect_v.data();
 
         float  ypr       = scores[0];   // reflected
         float  yprr_exp  = scores[1];   // expanded
@@ -566,9 +605,9 @@ ConformerPool::evaluate_slot(SimplexSlot& slot, const float* scores)
         /* --- Expansion path --- */
         if (ypr <= y[ilo]) {
             if (yprr_exp < y[ilo]) {
-                /* Accept expansion point */
+                /* Accept expansion point: gamma*pr + (1-gamma)*pbar */
                 for (int j = 0; j < N; j++) {
-                    p[ihi][j] = (1.0f + alpha) * pr[j] - alpha * pbar[j];
+                    p[ihi][j] = gamma * pr[j] + (1.0f - gamma) * pbar[j];
                 }
                 y[ihi] = yprr_exp;
             } else {
@@ -581,18 +620,23 @@ ConformerPool::evaluate_slot(SimplexSlot& slot, const float* scores)
         /* --- Contraction / Shrink path --- */
         } else if (ypr >= y[inhi]) {
 
-            if (ypr < y[ihi]) {
+            /* Save condition BEFORE overwriting p[ihi]/y[ihi].  After the
+               overwrite below, `(ypr < y[ihi])` would always be false
+               (ypr < ypr), incorrectly selecting the cB variant. */
+            bool outer = (ypr < y[ihi]);
+
+            if (outer) {
                 /* Replace worst vertex with reflected point */
                 for (int j = 0; j < N; j++) p[ihi][j] = pr[j];
                 y[ihi] = ypr;
                 replace_flag = true;
             }
 
-            float yprr_contract = (ypr < y[ihi]) ? yprr_cA : yprr_cB;
+            float yprr_contract = outer ? yprr_cA : yprr_cB;
 
             if (yprr_contract < y[ihi]) {
-                /* Accept the contracted point */
-                const float* contr_base = (ypr < y[ihi]) ? pr : p[ihi];
+                /* Accept the contracted point: beta*hi + (1-beta)*pbar */
+                const float* contr_base = outer ? pr : p[ihi];
                 for (int j = 0; j < N; j++) {
                     p[ihi][j] = beta * contr_base[j] + (1.0f - beta) * pbar[j];
                 }
@@ -601,11 +645,11 @@ ConformerPool::evaluate_slot(SimplexSlot& slot, const float* scores)
             }
 
             if (!replace_flag) {
-                /* SHRINK: move all vertices toward ilo */
+                /* SHRINK: move all vertices toward ilo: p[ilo] + sigma*(p- p[ilo]) */
                 for (int vi = 0; vi < N + 1; vi++) {
                     if (vi == ilo) continue;
                     for (int j = 0; j < N; j++) {
-                        p[vi][j] = 0.5f * (p[vi][j] + p[ilo][j]);
+                        p[vi][j] = p[ilo][j] + sigma * (p[vi][j] - p[ilo][j]);
                     }
                 }
                 slot.phase = SlotPhase::SHRINK;

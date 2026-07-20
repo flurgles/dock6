@@ -119,6 +119,13 @@ class Minimizer {
     // GA-specific flag (used by genetic algorithm code externally)
     bool            simplex_ga_flag;
 
+    // Nelder-Mead adaptive parameters (Gao & Han 2012).
+    //   0 = classical fixed coefficients
+    //   1 = full adaptive (scaled by dimension n)
+    //   2 = dim-aware sigmoid blend (crossover + 6 DOF center)
+    int             simplex_mode = 0;
+    int             simplex_crossover = 17;
+
     // ----- Per-torsion internal energy cache (DISABLED) -----
     //
     // BACKGROUND:

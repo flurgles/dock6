@@ -100,6 +100,11 @@ struct SimplexSlot {
     float          best_score;
     FLOATVec       best_vertex;
 
+    // Nelder-Mead coefficients (computed from simplex_mode + DOF count)
+    float          nm_gamma;    // expansion
+    float          nm_beta;     // contraction (rho)
+    float          nm_sigma;    // shrink
+
 
     // Molecule state for dof→xyz
     // m_mol points to the caller's DOCKMol (updated in place on convergence).
@@ -131,7 +136,8 @@ public:
        batch_max: max concurrent slots (from dock_gpu_recommended_batch_size()).
        minimizer: shared Minimizer for vector_to_dockmol / scale_vector / copy_crds.
        use_gpu:   true → pool dispatches GPU work; false → step() is a no-op. */
-    ConformerPool(int batch_max, Minimizer* minimizer, bool use_gpu);
+    ConformerPool(int batch_max, Minimizer* minimizer, bool use_gpu,
+                  int simplex_mode = 0, int simplex_crossover = 17);
 
     ~ConformerPool();
 
@@ -179,6 +185,8 @@ private:
     int                     m_batch_max;
     Minimizer*              m_minimizer;        // shared for dof→xyz
     bool                    m_use_gpu;
+    int                     m_simplex_mode;        // 0=classical, 1=adaptive, 2=dim-aware
+    int                     m_simplex_crossover;   // crossover DOF for dim-aware mode
     int                     m_num_atoms;   // ligand atom count, set on first add()
 
     std::vector<SimplexSlot>  m_slots;

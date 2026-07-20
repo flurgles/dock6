@@ -1465,7 +1465,9 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
 
                 bool use_gpu = dock_gpu_is_active();
                 ConformerPool pool(dock_gpu_recommended_batch_size(),
-                                   &simplex, use_gpu);
+                                   &simplex, use_gpu,
+                                   simplex.simplex_mode,
+                                   simplex.simplex_crossover);
                 bool last_seed_level = (j == seeds.size() - 1);
 
                 for (k = 0; ((k < exp_seeds.size())&&last_seed_level); k++) {
