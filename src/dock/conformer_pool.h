@@ -89,6 +89,17 @@ struct SimplexSlot {
     float          score_converge;
     int            max_iterations;
 
+    // Cycle support (matches Minimizer::minimize() cycle loop)
+    int            current_cycle;
+    int            max_cycles;
+    float          cycle_converge;
+
+    // Best-across-cycles tracking: save best result so final convergence
+    // returns the best cycle's result, not just the last cycle's.
+    bool           has_best;
+    float          best_score;
+    FLOATVec       best_vertex;
+
 
     // Molecule state for dof→xyz
     // m_mol points to the caller's DOCKMol (updated in place on convergence).
@@ -133,6 +144,8 @@ public:
             float trans_step_size, float rot_step_size,
             float tors_step_size, float score_converge,
             int max_iterations,
+            int max_cycles = 1,
+            float cycle_converge = 1.0f,
             bool restrained = false,
             float coefficient_restraint = 0.0f,
             DOCKMol* rmsd_ref = nullptr,

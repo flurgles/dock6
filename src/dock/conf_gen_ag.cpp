@@ -1488,6 +1488,24 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                                 simplex.id_torsions(exp_seeds[k].structure, vertex);
                                 simplex.torsion_scale_factors.resize(simplex.torsions.size(), 1);
 
+                                /* Match the CPU ramp path: score_converge ramps
+                                   from initial_score_converge down to
+                                   flex_min_score_converge across layers. */
+                                float pool_score_converge;
+                                if (simplex.use_min_flex_growth_ramp) {
+                                    float diff_interval =
+                                        simplex.initial_score_converge -
+                                        simplex.flex_min_score_converge;
+                                    float adj_unit =
+                                        diff_interval / (float)(num_layers - 1);
+                                    adj_unit *= (float)i;
+                                    pool_score_converge =
+                                        simplex.initial_score_converge - adj_unit;
+                                } else {
+                                    pool_score_converge =
+                                        simplex.flex_min_cycle_converge;
+                                }
+
                                 /* Backpressure: drain pool before adding if full */
                                 while (pool.active_count() >= pool.capacity()) {
                                     pool.step();
@@ -1499,8 +1517,10 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                                          simplex.flex_min_trans_step_size,
                                          simplex.flex_min_rot_step_size,
                                          simplex.flex_min_tors_step_size,
-                                         simplex.flex_min_cycle_converge,
+                                         pool_score_converge,
                                          simplex.flex_min_max_iterations,
+                                         simplex.flex_min_max_cycles,
+                                         simplex.flex_min_cycle_converge,
                                          simplex.restrained_min,
                                          simplex.coefficient_restraint,
                                          nullptr,

@@ -16,6 +16,7 @@ All GPU calls go through the score_dock_gpu.h C API.
 
 #include "conformer_pool.h"
 #include "dockmol.h"
+#include <cstring>
 
 using namespace std;
 
@@ -91,6 +92,8 @@ ConformerPool::add(DOCKMol* mol,
                    float trans_step_size, float rot_step_size,
                    float tors_step_size, float score_converge,
                    int max_iterations,
+                   int max_cycles,
+                   float cycle_converge,
                    bool restrained, float coefficient_restraint,
                    DOCKMol* rmsd_ref, void* user_data)
 {
@@ -152,6 +155,12 @@ ConformerPool::add(DOCKMol* mol,
     slot.tors_step_size     = tors_step_size;
     slot.score_converge     = score_converge;
     slot.max_iterations     = max_iterations;
+    slot.current_cycle      = 0;
+    slot.max_cycles         = max_cycles;
+    slot.cycle_converge     = cycle_converge;
+    slot.has_best           = false;
+    slot.best_score         = 1e30f;
+    slot.best_vertex.resize(size);
     slot.user_data          = user_data;
     slot.restrained         = restrained;
     slot.coefficient_restraint = coefficient_restraint;
@@ -687,9 +696,62 @@ ConformerPool::check_convergence(SimplexSlot& slot)
 
     float delta = fabs(slot.y[slot.ihi] - slot.y[slot.ilo]);
     bool done = (delta <= slot.score_converge) || (slot.iteration >= slot.max_iterations);
-    if (done) {
-        slot.converged = true;
-        slot.phase     = SlotPhase::CONVERGED;
+    if (!done) return false;
+
+    /* Simplex converged.  Save best result across cycles. */
+    {
+        float score = slot.y[slot.ilo];
+        if (!slot.has_best || score < slot.best_score) {
+            slot.best_score = score;
+            slot.best_vertex.resize(slot.size);
+            for (int j = 0; j < slot.size; j++)
+                slot.best_vertex[j] = slot.p[slot.ilo][j];
+            slot.has_best = true;
+        }
     }
-    return done;
+
+    /* Check if we should restart another cycle. */
+    slot.current_cycle++;
+
+    if (slot.current_cycle < slot.max_cycles) {
+        /* Compute distance moved (matches minimizer.cpp cycle logic) */
+        float distance = 0.0f;
+        int ilo = slot.ilo;
+        for (int j = 0; j < slot.size; j++)
+            distance += slot.p[ilo][j] * slot.p[ilo][j];
+        distance = sqrtf(distance) / (float)slot.current_cycle;
+
+        if (distance > slot.cycle_converge) {
+            /* Update ref_mol to current best pose, then restart */
+            fill_slot_from_mol(slot, slot.id);
+            copy_molecule(*slot.m_refMol, *slot.m_mol);
+
+            /* Reset vertex to zeros (start from current best) */
+            for (int vi = 0; vi < slot.size + 1; vi++)
+                memset(slot.p[vi], 0, slot.size * sizeof(float));
+
+            /* Build new initial simplex from zeros */
+            FLOATVec zero_vertex(slot.size, 0.0f);
+            build_initial_simplex(zero_vertex, slot.p, slot.y, slot.size);
+
+            /* Reset iteration state */
+            slot.iteration = 0;
+            slot.phase = SlotPhase::INIT;
+            slot.ihi = 0;
+            slot.inhi = 0;
+            slot.ilo = 0;
+            return false;  /* not done yet */
+        }
+    }
+
+    /* All cycles done.  Restore best vertex across all cycles. */
+    if (slot.has_best) {
+        for (int j = 0; j < slot.size; j++)
+            slot.p[slot.ilo][j] = slot.best_vertex[j];
+        slot.y[slot.ilo] = slot.best_score;
+    }
+
+    slot.converged = true;
+    slot.phase     = SlotPhase::CONVERGED;
+    return true;
 }
