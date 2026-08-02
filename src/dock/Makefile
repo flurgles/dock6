@@ -36,6 +36,20 @@ ifeq ($(GPU_BACKEND),vulkan)
   GPU_STUB =
 endif
 
+# hip: ROCm HIP backend (AMD + NVIDIA via HIP_PLATFORM=nvcc).
+# score_dock_gpu_hip.cpp is C++ that must be compiled by hipcc; a
+# target-specific rule below forces hipcc just for that object.
+ifeq ($(GPU_BACKEND),hip)
+  GPU_OBJS += score_dock_gpu_hip.o
+  GPU_LIBS += -L/opt/rocm/lib -lamdhip64
+  DOCKBUILDFLAGS += -DUSE_HIP
+  GPU_STUB =
+  HIPCC ?= $(shell command -v hipcc 2>/dev/null || echo /opt/rocm/bin/hipcc)
+  # Auto-detect the installed GPU arch; default to gfx1033 (Van Gogh APU).
+  HIP_ARCH ?= $(shell arch=`/opt/rocm/bin/rocm_agent_enumerator 2>/dev/null | grep '^gfx' | head -1`; \
+              echo $${arch:-gfx1033})
+endif
+
 # cuda: CUDA backend (future).  Until score_dock_gpu_cuda.cu lands,
 # this intentionally falls back to the CPU stub (GPU_OBJS empty).
 ifeq ($(GPU_BACKEND),cuda)
@@ -44,6 +58,13 @@ endif
 
 BIN= ../../bin
 PROGS= dock6$(DOCK_SUFFIX)
+
+# HIP object must be compiled by hipcc (kernel syntax in C++);
+# target-specific rule binds it only to score_dock_gpu_hip.o.
+ifeq ($(GPU_BACKEND),hip)
+score_dock_gpu_hip.o: score_dock_gpu_hip.cpp score_dock_gpu_hip.h score_dock_gpu.h
+	$(HIPCC) -c $(CXXFLAGS) --offload-arch=$(HIP_ARCH) -o $@ $(DOCKBUILDFLAGS) $<
+endif
 
 OBJS= amber_typer.o base_grid.o base_mpi.o base_score.o bobyqa.o minimizer.o \
       minimizer_transform.o minimizer_gpu.o minimizer_helpers.o conformer_pool.o \
