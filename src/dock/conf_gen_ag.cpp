@@ -2194,6 +2194,13 @@ AG_Conformer_Search::segment_clash_check(DOCKMol & conf, int layer_num,
 
     bool            skip_flag = false;
 
+    if (use_clash_penalty && dock_gpu_is_active()) {
+        fprintf(stderr, "DOCK: clash checking (use_clash_overlap yes) is not "
+                        "supported with GPU scoring; run on CPU or disable "
+                        "use_clash_overlap\n");
+        exit(1);
+    }
+
     if (use_clash_penalty) {
 
         // ID current segment

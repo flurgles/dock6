@@ -18,6 +18,7 @@
 #include "fingerprint.h"
 #include "master_score.h"
 #include "simplex.h"
+#include "score_dock_gpu.h"
 #include "trace.h"
 #include "utils.h"
 
@@ -1740,6 +1741,13 @@ CG_Conformer_Search::segment_clash_check(DOCKMol & conf, int layer_num,
                     new_seg;
 
     bool            skip_flag = false;
+
+    if (use_clash_penalty && dock_gpu_is_active()) {
+        fprintf(stderr, "DOCK: clash checking (use_clash_overlap yes) is not "
+                        "supported with GPU scoring; run on CPU or disable "
+                        "use_clash_overlap\n");
+        exit(1);
+    }
 
     if (use_clash_penalty) {
 
