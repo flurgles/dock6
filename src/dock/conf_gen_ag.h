@@ -280,7 +280,8 @@ class           AG_Conformer_Search {
                                                   const std::vector<int> & colors,
                                                   const double * weights);  // layer-weighted WL symmetry-corrected RMSD
     float           calc_active_rmsd(CONFORMER &, CONFORMER &);  // 2008-11-17 trent balius add  
-    void            grow_periphery(Master_Score &, Minimizer &, Bump_Filter &);
+    void            grow_periphery(Master_Score &, Minimizer &, Bump_Filter &,
+                                   bool anchors_preminimized = false);
     void            conf_header(CONFORMER &, std::string, Master_Score &);
     void            segment_torsion_drive(CONFORMER &, int, std::vector < CONFORMER > &, int);
     void            activate_layer_segment(DOCKMol &, int, int);        // 

@@ -1136,7 +1136,8 @@ AG_Conformer_Search::calc_layer_rmsd_weisfeiler(CONFORMER & a,
 // +++++++++++++++++++++++++++++++++++++++++
 void
 AG_Conformer_Search::grow_periphery(Master_Score & score,
-                                    Minimizer & simplex, Bump_Filter & bump)
+                                    Minimizer & simplex, Bump_Filter & bump,
+                                    bool anchors_preminimized)
 { Trace trace("AG_Conformer_Search::grow_periphery()");
     //cout << "AG_Conformer_Search::grow_periphery" << endl;
     int             i,
@@ -1158,6 +1159,14 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
     bool ie_prune = false; // prune conformers using internal_energy_cutoff
     int num_layers = layers.size();
     clock_t start = clock();
+
+    // GPU virtual-screen: per-ligand LUT slot index for the VS kernel
+    // (fixed-cycle over the LUT capacity; -1 = VS path inactive)
+    int gpu_lig_idx = -1;
+    if (dock_gpu_is_active()) {
+        static int gpu_next_lig = 0;
+        gpu_lig_idx = (gpu_next_lig++) % dock_gpu_vs_max_ligands();
+    }
 
     //reserve space in vectors
     anchor_positions_b4min.reserve(anchor_positions.size());
@@ -1185,45 +1194,61 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
            // it does not matter which atoms are labeled active
            score.primary_score->initialize_internal_energy(anchor_positions[0].second);
 
-           /* Upload ligand parameters to GPU for combined grid+IE scoring */
+/* Upload ligand parameters to GPU for combined grid+IE scoring */
            if (dock_gpu_is_active()) {
-               DOCKMol & amol = anchor_positions[0].second;
-               int na = amol.num_atoms;
-               float *vdwA_arr = new float[na];
-               float *vdwB_arr = new float[na];
-               float *chg_arr  = new float[na];
-               for (int ai = 0; ai < na; ai++) {
-                   int type = amol.amber_at_id[ai];
-                   vdwA_arr[ai] = score.primary_score->vdwA[type];
-                   vdwB_arr[ai] = score.primary_score->vdwB[type];
-                   chg_arr[ai]  = amol.charges[ai];
-               }
-               if (!dock_gpu_set_ligand(vdwA_arr, vdwB_arr, chg_arr, na)) {
-                   fprintf(stderr, "GPU-DOCK: set_ligand failed\n");
-               }
-               delete[] vdwA_arr;
-               delete[] vdwB_arr;
-               delete[] chg_arr;
+                DOCKMol & amol = anchor_positions[0].second;
+                int na = amol.num_atoms;
+                float *vdwA_arr = new float[na];
+                float *vdwB_arr = new float[na];
+                float *chg_arr  = new float[na];
+                for (int ai = 0; ai < na; ai++) {
+                    int type = amol.amber_at_id[ai];
+                    vdwA_arr[ai] = score.primary_score->vdwA[type];
+                    vdwB_arr[ai] = score.primary_score->vdwB[type];
+                    chg_arr[ai]  = amol.charges[ai];
+                }
+                if (!dock_gpu_set_ligand(vdwA_arr, vdwB_arr, chg_arr, na)) {
+                    fprintf(stderr, "GPU-DOCK: set_ligand failed\n");
+                }
 
-               /* IE params: nb_int pairs, per-atom ie_vdwA */
-               int np = (int)score.primary_score->nb_int.size();
-               if (np > 0) {
-                   int *nb_flat = new int[np * 2];
-                   for (int pi = 0; pi < np; pi++) {
-                       nb_flat[pi * 2]     = score.primary_score->nb_int[pi].first;
-                       nb_flat[pi * 2 + 1] = score.primary_score->nb_int[pi].second;
-                   }
-                   float *ie_vdwA_arr = new float[na];
-                   for (int ai = 0; ai < na; ai++) {
-                       ie_vdwA_arr[ai] = score.primary_score->ie_vdwA[ai];
-                   }
-                   dock_gpu_set_ligand_ie(ie_vdwA_arr, NULL, nb_flat, np,
-                                           score.primary_score->ie_soft_delta,
-                                           score.primary_score->ie_vdw_cutoff_sq);
-                   delete[] nb_flat;
-                   delete[] ie_vdwA_arr;
-               }
-           }
+                /* IE params: nb_int pairs, per-atom ie_vdwA */
+                int np = (int)score.primary_score->nb_int.size();
+                int *nb_flat = NULL;
+                float *ie_vdwA_arr = NULL;
+                if (np > 0) {
+                    nb_flat = new int[np * 2];
+                    for (int pi = 0; pi < np; pi++) {
+                        nb_flat[pi * 2]     = score.primary_score->nb_int[pi].first;
+                        nb_flat[pi * 2 + 1] = score.primary_score->nb_int[pi].second;
+                    }
+                    ie_vdwA_arr = new float[na];
+                    for (int ai = 0; ai < na; ai++) {
+                        ie_vdwA_arr[ai] = score.primary_score->ie_vdwA[ai];
+                    }
+                    dock_gpu_set_ligand_ie(ie_vdwA_arr, NULL, nb_flat, np,
+                                            score.primary_score->ie_soft_delta,
+                                            score.primary_score->ie_vdw_cutoff_sq);
+                }
+
+                /* Virtual-screen LUT registration: same per-atom params plus
+                   the ligand's active flags, so later VS dispatches can score
+                   candidates of many ligands against the shared grid. */
+                if (gpu_lig_idx >= 0) {
+                    int *af = new int[na];
+                    for (int ai = 0; ai < na; ai++)
+                        af[ai] = amol.atom_active_flags[ai] ? 1 : 0;
+                    dock_gpu_vs_register_ligand(gpu_lig_idx,
+                                                 vdwA_arr, vdwB_arr, chg_arr, af,
+                                                 ie_vdwA_arr, nb_flat, np, na);
+                    delete[] af;
+                }
+
+                delete[] vdwA_arr;
+                delete[] vdwB_arr;
+                delete[] chg_arr;
+                if (nb_flat) delete[] nb_flat;
+                if (ie_vdwA_arr) delete[] ie_vdwA_arr;
+            }
         }
     }// else do nothing to internal energy (because it is not used when scoring function is not
      // used
@@ -1237,7 +1262,9 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
 
     // moved from main dock loop for flexible docking only
     // sudipto & trent Jan-16-08
-    if (dock_gpu_is_active() && simplex.use_min_rigid_anchor
+    if (!anchors_preminimized && dock_gpu_is_active()
+        && simplex.use_min_rigid_anchor
+        && gpu_lig_idx >= 0
         && (int)anchor_positions.size() > dock_gpu_recommended_batch_size()) {
         // GPU anchor-pool: batch the rigid-body simplex minimization of ALL
         // anchor orientations into one ConformerPool.  Every anchor shares
@@ -1277,7 +1304,9 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                             simplex.anchor_min_cycle_converge,
                             simplex.restrained_min,
                             simplex.coefficient_restraint,
-                            nullptr, nullptr);
+                            nullptr, nullptr,
+                            gpu_lig_idx,
+                            anchor_positions[i].second.num_atoms);
         }
 
         // drain pool — all anchor mols updated in place by fill_slot_from_mol
