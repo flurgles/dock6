@@ -127,10 +127,12 @@ ConformerPool::add(DOCKMol* mol,
                    float tors_step_size, float score_converge,
                    int max_iterations,
                    int max_cycles,
-                   float cycle_converge,
-                   bool restrained, float coefficient_restraint,
-                   DOCKMol* rmsd_ref, void* user_data)
+float cycle_converge,
+                    bool restrained, float coefficient_restraint,
+                    DOCKMol* rmsd_ref, void* user_data,
+                    int lig_idx, int lig_num_atoms)
 {
+    if (lig_idx >= 0) m_vs_mode = true;
     /* Find a recyclable (CONVERGED) slot, or append a new one.
        Caller must poll() before add() so m_converged is drained —
        conf_gen_ag does this in its backpressure / drain loops. */
@@ -163,19 +165,47 @@ ConformerPool::add(DOCKMol* mol,
 
     /* Lazy buffer allocation on first add().  All conformers in one
        growth layer share the same DOF and atom count, so the first
-       conformer's dimensions define buffer sizing for the pool. */
+       conformer's dimensions define buffer sizing for the pool.
+       VS mode (lig_idx >= 0): ligands may have different atom counts,
+       so the xyz stride is the LARGEST num_atoms seen so far and
+       buffers grow on demand (poses padded with inactive atoms). */
+    int first_stride = 0;
+    if (m_vs_mode) {
+        if (lig_num_atoms <= 0) lig_num_atoms = mol->num_atoms;
+        first_stride = lig_num_atoms;
+    } else {
+        first_stride = mol->num_atoms;
+    }
+
     if (!m_xyz_buffer) {
-        m_num_atoms = mol->num_atoms;
+m_num_atoms = first_stride;
         int max_cand = m_batch_max * max(4, size + 1);
+        m_xyz_buffer      = new float[max_cand * m_num_atoms * 3];
+        m_score_buffer    = new float[max_cand];
+        m_pose_lig        = new int[max_cand];
+        m_active_flags    = new int[m_num_atoms];
+        for (int a = 0; a < m_num_atoms; a++)
+            m_active_flags[a] = 0;  // VS path: flags come from the LUT per ligand
+        m_dispatch_capacity = max_cand;
+    } else if (m_vs_mode && first_stride > m_num_atoms) {
+        /* A larger ligand arrived — grow the stride (and buffers). */
+        int max_cand = m_batch_max * max(4, size + 1);
+        delete[] m_xyz_buffer;
+        delete[] m_score_buffer;
+        delete[] m_active_flags;
+        m_num_atoms = first_stride;
         m_xyz_buffer      = new float[max_cand * m_num_atoms * 3];
         m_score_buffer    = new float[max_cand];
         m_active_flags    = new int[m_num_atoms];
         for (int a = 0; a < m_num_atoms; a++)
-            m_active_flags[a] = mol->atom_active_flags[a] ? 1 : 0;
+            m_active_flags[a] = 0;  // VS path: flags come from the LUT per ligand
         m_dispatch_capacity = max_cand;
     }
 
     SimplexSlot slot;
+    slot.lig_idx          = lig_idx;
+    slot.lig_num_atoms    = (m_vs_mode) ? first_stride
+                                       : mol->num_atoms;
     slot.id                 = idx;
     slot.phase              = SlotPhase::INIT;
     slot.size               = size;
@@ -306,8 +336,16 @@ ConformerPool::step()
     }
 
     /* Phase 2: Submit GPU dispatch */
-    int ok = dock_gpu_batch_score_with_ie_persistent(
-        m_xyz_buffer, total, na, active_flags, m_score_buffer);
+    int ok;
+    if (m_vs_mode) {
+        /* Multi-ligand VS path: poses tagged with their ligand LUT slot,
+           stride = max atoms across slots, per-pose params from LUT. */
+        ok = dock_gpu_batch_score_vs(m_xyz_buffer, total, m_num_atoms,
+                                     m_pose_lig, m_score_buffer);
+    } else {
+        ok = dock_gpu_batch_score_with_ie_persistent(
+            m_xyz_buffer, total, na, active_flags, m_score_buffer);
+    }
 
     if (!ok) {
         /* GPU scoring failed (e.g. IE data not uploaded).
@@ -394,7 +432,8 @@ void
 ConformerPool::pack_vertex(SimplexSlot& slot, const float* vertex, int idx)
 {
     int na = m_num_atoms;
-    float* buf = m_xyz_buffer + idx * na * 3;
+    if (slot.lig_idx >= 0) na = slot.lig_num_atoms;  // VS: real atoms only
+    float* buf = m_xyz_buffer + idx * m_num_atoms * 3;
 
     /* Restore coordinates from reference molecule */
     copy_crds(*slot.m_tmpMol, *slot.m_refMol);
@@ -440,6 +479,12 @@ ConformerPool::pack_slot(SimplexSlot& slot, int offset, int capacity)
     default: return offset;
     }
     if (offset + need > capacity) return offset;
+
+    /* VS path: tag every packed candidate with its ligand LUT slot */
+    int vs_tag = slot.lig_idx;
+    if (vs_tag >= 0) {
+        for (int ci = 0; ci < need; ci++) m_pose_lig[offset + ci] = vs_tag;
+    }
 
     switch (slot.phase) {
 

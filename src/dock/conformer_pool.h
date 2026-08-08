@@ -123,6 +123,17 @@ struct SimplexSlot {
 
     // Caller data (e.g. index into exp_seeds)
     void*          user_data;
+
+    // Virtual-screen (multi-ligand) support.  When lig_idx >= 0 the slot
+    // belongs to a ligand registered in the GPU LUT and candidates are
+    // scored via dock_gpu_batch_score_vs() (per-pose ligand params).
+    // All slots sharing the pool must agree on lig_idx < 0 (single-ligand
+    // legacy path) or >= 0 (VS path).
+    int            lig_idx;   // GPU LUT ligand slot, -1 = legacy single-ligand
+
+    // Atom count of this slot's molecule (VS path pads all poses to the
+    // pool-wide stride = max num_atoms across slots).
+    int            lig_num_atoms;
 };
 
 
@@ -155,7 +166,9 @@ public:
             bool restrained = false,
             float coefficient_restraint = 0.0f,
             DOCKMol* rmsd_ref = nullptr,
-            void* user_data = nullptr);
+            void* user_data = nullptr,
+            int lig_idx = -1,
+            int lig_num_atoms = 0);
 
     /* Run one pool cycle:
        1. Pack ready candidates from all active slots into m_xyz_buffer.
@@ -199,8 +212,13 @@ private:
     //   scores: max_candidates * sizeof(float)
     float*                  m_xyz_buffer;
     float*                  m_score_buffer;
+    int*                    m_pose_lig;  // VS path: ligand LUT slot per candidate
     int*                    m_active_flags;  // cached ligand active-atom flags
     int                     m_dispatch_capacity;  // max candidates per dispatch
+    bool                    m_vs_mode;  // true once any slot carries a lig_idx >= 0
+
+    // Per-slot ligand info for the VS path (pose_lig array per candidate).
+    int                     m_stride_atoms;  // max num_atoms across slots (padded)
 
     // Internal helpers
     int  pack_slot(SimplexSlot& slot, int offset, int capacity);

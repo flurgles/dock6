@@ -33,6 +33,12 @@
 #define GPU_MAX_NB_PAIRS    32768
 #define HIP_SCORE_THREADS   64
 
+/* Multi-ligand virtual-screen dispatch: one shared grid, per-ligand
+   parameter LUT slots.  A "slot" is one ligand's per-atom data; poses in
+   a dispatch reference their ligand's slot via pose_lig[]. */
+#define GPU_MAX_LUT_LIGANDS 128
+#define GPU_LUT_MAX_PAIRS   16384
+
 #define CHECK_HIP(expr) do {                                               \
     hipError_t ce = (expr);                                                \
     if (ce != hipSuccess) {                                                \
@@ -177,6 +183,84 @@ __global__ void hip_ie_kernel(const float *xyz,
     }
 }
 
+/* Persistent grid + internal-energy kernel with per-ligand parameter LUT
+   (virtual-screen dispatch).  Identical to hip_ie_kernel except that
+   atom parameters, IE pair tables, and active flags are indexed per pose
+   by the pose's ligand slot: lig = pose_lig[pose]. */
+__global__ void hip_ie_vs_kernel(const float *xyz,
+                                 const float *lut_vdwA, const float *lut_vdwB,
+                                 const float *lut_charges,
+                                 hipTextureObject_t avdw, hipTextureObject_t bvdw,
+                                 hipTextureObject_t es,
+                                 const int *lut_active_flags,
+                                 const float *lut_ie_vdwA,
+                                 const int *lut_pair_starts,
+                                 const int *lut_pair_indices,
+                                 const int *pose_lig,
+                                 unsigned int *pose_counter,
+                                 float *out_scores,
+                                 HipKernelParams p)
+{
+    __shared__ float s_partial[HIP_SCORE_THREADS];
+    __shared__ unsigned int s_candidate;
+    const int tid = (int)threadIdx.x;
+    const int tg_size = (int)blockDim.x;
+
+    if (tid == 0) {
+        s_candidate = atomicAdd(pose_counter, 1u);
+    }
+    __syncthreads();
+
+    while ((int)s_candidate < p.num_poses) {
+        const int pose = (int)s_candidate;
+        const int lig  = pose_lig[pose];
+        const int stride = pose * p.num_atoms * 3;
+        const int lstride = lig * GPU_MAX_ATOMS;
+        float total = 0.0f;
+
+        for (int a = tid; a < p.num_atoms; a += tg_size) {
+            if (lut_active_flags[lstride + a] == 0) continue;
+            const float x = xyz[stride + a*3];
+            const float y = xyz[stride + a*3 + 1];
+            const float z = xyz[stride + a*3 + 2];
+            const float vdw  = hip_sample_grid(avdw, x, y, z, p);
+            const float bwdv = hip_sample_grid(bvdw, x, y, z, p);
+            const float esv  = hip_sample_grid(es,   x, y, z, p);
+            total += lut_vdwA[lstride + a]*vdw
+                   - lut_vdwB[lstride + a]*bwdv
+                   + lut_charges[lstride + a]*esv;
+
+            const int start = lut_pair_starts[lstride + a];
+            const int end   = lut_pair_starts[lstride + a + 1];
+            for (int i = start; i < end; i++) {
+                const int a2 = lut_pair_indices[lig * GPU_LUT_MAX_PAIRS + i];
+                if (a2 < 0 || a2 >= p.num_atoms) continue;
+                if (lut_active_flags[lstride + a2] == 0) continue;
+                const float dx = xyz[stride + a*3]     - xyz[stride + a2*3];
+                const float dy = xyz[stride + a*3 + 1] - xyz[stride + a2*3 + 1];
+                const float dz = xyz[stride + a*3 + 2] - xyz[stride + a2*3 + 2];
+                const float r2 = dx*dx + dy*dy + dz*dz;
+                if (r2 < p.ie_cutoff_sq) {
+                    const float r2eff = r2 + p.ie_soft_delta;
+                    const float denom = r2eff*r2eff*r2eff;
+                    total += (lut_ie_vdwA[lstride + a]*lut_ie_vdwA[lstride + a2]) / (denom*denom);
+                }
+            }
+        }
+
+        s_partial[tid] = total;
+        __syncthreads();
+
+        if (tid == 0) {
+            float final_score = 0.0f;
+            for (int i = 0; i < tg_size; i++) final_score += s_partial[i];
+            out_scores[pose] = final_score;
+            s_candidate = atomicAdd(pose_counter, 1u);
+        }
+        __syncthreads();
+    }
+}
+
 /* ================================================================== */
 /*  Static state                                                       */
 /* ================================================================== */
@@ -195,6 +279,13 @@ static int   *d_pair_starts = NULL, *d_pair_indices = NULL;
 static int   *d_active_flags = NULL;
 static float *d_xyz = NULL, *d_scores = NULL;
 static unsigned int *d_pose_counter = NULL;
+
+/* Multi-ligand VS LUT state. */
+static float *d_lut_vdwA = NULL, *d_lut_vdwB = NULL, *d_lut_charges = NULL;
+static float *d_lut_ie_vdwA = NULL;
+static int   *d_lut_active_flags = NULL;
+static int   *d_lut_pair_starts = NULL, *d_lut_pair_indices = NULL;
+static int   *d_pose_lig = NULL;
 
 /* Grid as hardware 3D textures (trilinear filtered), matching the Vulkan
    and Metal backends. */
@@ -325,6 +416,17 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     CHECK_HIP(hipMalloc(&d_xyz,  sizeof(float) * (size_t)GPU_MAX_POSES * GPU_MAX_ATOMS * 3));
     CHECK_HIP(hipMalloc(&d_scores, sizeof(float) * GPU_MAX_POSES));
     CHECK_HIP(hipMalloc(&d_pose_counter, sizeof(unsigned int)));
+
+    /* Multi-ligand VS LUT: per-ligand param tables + per-ligand pair tables */
+    const size_t vs_lig_bytes = sizeof(float) * (size_t)GPU_MAX_LUT_LIGANDS * GPU_MAX_ATOMS;
+    CHECK_HIP(hipMalloc(&d_lut_vdwA,        vs_lig_bytes));
+    CHECK_HIP(hipMalloc(&d_lut_vdwB,        vs_lig_bytes));
+    CHECK_HIP(hipMalloc(&d_lut_charges,     vs_lig_bytes));
+    CHECK_HIP(hipMalloc(&d_lut_ie_vdwA,     vs_lig_bytes));
+    CHECK_HIP(hipMalloc(&d_lut_active_flags, sizeof(int) * (size_t)GPU_MAX_LUT_LIGANDS * GPU_MAX_ATOMS));
+    CHECK_HIP(hipMalloc(&d_lut_pair_starts,  sizeof(int) * (size_t)GPU_MAX_LUT_LIGANDS * (GPU_MAX_ATOMS + 1)));
+    CHECK_HIP(hipMalloc(&d_lut_pair_indices, sizeof(int) * (size_t)GPU_MAX_LUT_LIGANDS * GPU_LUT_MAX_PAIRS));
+    CHECK_HIP(hipMalloc(&d_pose_lig,        sizeof(int) * GPU_MAX_POSES));
 
     g_initialized = 1;
     g_num_atoms = 0;
@@ -479,6 +581,100 @@ int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses, int
     return 1;
 }
 
+int dock_gpu_vs_register_ligand(int lig_idx,
+                                const float *vdwA, const float *vdwB,
+                                const float *charges, const int *active_flags,
+                                const float *ie_vdwA,
+                                const int *nb_int_pairs, int num_nb_pairs,
+                                int num_atoms)
+{
+    if (!g_initialized) return 0;
+    if (lig_idx < 0 || lig_idx >= GPU_MAX_LUT_LIGANDS) return 0;
+    if (num_atoms <= 0 || num_atoms > GPU_MAX_ATOMS) return 0;
+    if (num_nb_pairs > GPU_LUT_MAX_PAIRS) return 0;
+
+    const size_t row_bytes = sizeof(float) * (size_t)num_atoms;
+    const size_t row_off = (size_t)lig_idx * GPU_MAX_ATOMS;
+    const int    lig_off = lig_idx * GPU_MAX_ATOMS;
+    CHECK_HIP(hipMemcpy(d_lut_vdwA + row_off, vdwA, row_bytes, hipMemcpyHostToDevice));
+    CHECK_HIP(hipMemcpy(d_lut_vdwB + row_off, vdwB, row_bytes, hipMemcpyHostToDevice));
+    CHECK_HIP(hipMemcpy(d_lut_charges + row_off, charges, row_bytes, hipMemcpyHostToDevice));
+    CHECK_HIP(hipMemcpy(d_lut_ie_vdwA + row_off, ie_vdwA, row_bytes, hipMemcpyHostToDevice));
+    CHECK_HIP(hipMemcpy(d_lut_active_flags + lig_off, active_flags, sizeof(int) * (size_t)num_atoms, hipMemcpyHostToDevice));
+
+    /* CS-per-atom pair index so the kernel can iterate pairs with
+       pair_starts[lig][a].  Same layout as dock_gpu_set_ligand_ie(). */
+    std::vector<int> counts(num_atoms, 0);
+    for (int p = 0; p < num_nb_pairs; p++) {
+        int a1 = nb_int_pairs[p*2];
+        if (a1 >= 0 && a1 < num_atoms) counts[a1]++;
+    }
+    std::vector<int> starts(num_atoms + 1, 0);
+    std::vector<int> offsets(num_atoms, 0);
+    int total = 0;
+    for (int a = 0; a < num_atoms; a++) {
+        starts[a] = total;
+        offsets[a] = total;
+        total += counts[a];
+    }
+    starts[num_atoms] = total;
+
+    std::vector<int> indices(GPU_LUT_MAX_PAIRS, -1);
+    int cap = total < GPU_LUT_MAX_PAIRS ? total : GPU_LUT_MAX_PAIRS;
+    for (int p = 0; p < num_nb_pairs && cap > 0; p++) {
+        int a1 = nb_int_pairs[p*2];
+        int a2 = nb_int_pairs[p*2+1];
+        if (a1 >= 0 && a1 < num_atoms && offsets[a1] < cap) indices[offsets[a1]++] = a2;
+    }
+
+    CHECK_HIP(hipMemcpy(d_lut_pair_starts + lig_off, starts.data(),
+                        sizeof(int) * (size_t)(num_atoms + 1), hipMemcpyHostToDevice));
+    size_t pair_off = (size_t)lig_idx * GPU_LUT_MAX_PAIRS;
+    CHECK_HIP(hipMemcpy(d_lut_pair_indices + pair_off, indices.data(),
+                        sizeof(int) * (size_t)GPU_LUT_MAX_PAIRS, hipMemcpyHostToDevice));
+    return 1;
+}
+
+int dock_gpu_vs_max_ligands(void)
+{
+    return GPU_MAX_LUT_LIGANDS;
+}
+
+int dock_gpu_batch_score_vs(const float *xyz, int num_poses, int num_atoms,
+                            const int *pose_lig, float *out_scores)
+{
+    if (!g_initialized || g_num_nb_pairs == 0) return 0;
+    if (num_poses > GPU_MAX_POSES || num_atoms > GPU_MAX_ATOMS) return 0;
+
+    const size_t xyz_bytes = sizeof(float) * (size_t)num_poses * (size_t)num_atoms * 3;
+    CHECK_HIP(hipMemcpy(d_xyz, xyz, xyz_bytes, hipMemcpyHostToDevice));
+    CHECK_HIP(hipMemcpy(d_pose_lig, pose_lig, sizeof(int) * (size_t)num_poses, hipMemcpyHostToDevice));
+
+    unsigned int zero = 0;
+    CHECK_HIP(hipMemcpy(d_pose_counter, &zero, sizeof(zero), hipMemcpyHostToDevice));
+
+    HipKernelParams kp = g_params;
+    kp.num_atoms = num_atoms;
+    kp.num_poses = num_poses;
+    kp.ie_soft_delta = g_ie_soft_delta;
+    kp.ie_cutoff_sq = g_ie_cutoff_sq;
+    kp.num_nb_pairs = g_num_nb_pairs;
+
+    int blocks = dock_gpu_recommended_batch_size();
+    if (blocks < 1) blocks = 1;
+
+    hipLaunchKernelGGL(hip_ie_vs_kernel, dim3(blocks), dim3(HIP_SCORE_THREADS), 0, 0,
+                       d_xyz, d_lut_vdwA, d_lut_vdwB, d_lut_charges,
+                       h_avdw, h_bvdw, h_es,
+                       d_lut_active_flags, d_lut_ie_vdwA,
+                       d_lut_pair_starts, d_lut_pair_indices,
+                       d_pose_lig, d_pose_counter, d_scores, kp);
+    CHECK_HIP(hipGetLastError());
+    CHECK_HIP(hipDeviceSynchronize());
+    CHECK_HIP(hipMemcpy(out_scores, d_scores, sizeof(float) * (size_t)num_poses, hipMemcpyDeviceToHost));
+    return 1;
+}
+
 void dock_gpu_cleanup(void)
 {
     if (h_avdw)          { hipDestroyTextureObject(h_avdw); h_avdw = 0; }
@@ -497,6 +693,14 @@ void dock_gpu_cleanup(void)
     if (d_xyz)          { hipFree(d_xyz);          d_xyz = NULL; }
     if (d_scores)       { hipFree(d_scores);       d_scores = NULL; }
     if (d_pose_counter) { hipFree(d_pose_counter); d_pose_counter = NULL; }
+    if (d_lut_vdwA)        { hipFree(d_lut_vdwA);        d_lut_vdwA = NULL; }
+    if (d_lut_vdwB)        { hipFree(d_lut_vdwB);        d_lut_vdwB = NULL; }
+    if (d_lut_charges)     { hipFree(d_lut_charges);     d_lut_charges = NULL; }
+    if (d_lut_ie_vdwA)     { hipFree(d_lut_ie_vdwA);     d_lut_ie_vdwA = NULL; }
+    if (d_lut_active_flags){ hipFree(d_lut_active_flags);d_lut_active_flags = NULL; }
+    if (d_lut_pair_starts) { hipFree(d_lut_pair_starts); d_lut_pair_starts = NULL; }
+    if (d_lut_pair_indices){ hipFree(d_lut_pair_indices);d_lut_pair_indices = NULL; }
+    if (d_pose_lig)        { hipFree(d_pose_lig);        d_pose_lig = NULL; }
 
     g_initialized = 0;
     g_num_atoms = 0;

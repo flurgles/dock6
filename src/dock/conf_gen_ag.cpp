@@ -1237,9 +1237,64 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
 
     // moved from main dock loop for flexible docking only
     // sudipto & trent Jan-16-08
-    for (i = 0; i < anchor_positions.size(); i++){
-       anchor_positions_b4min.push_back(anchor_positions[i]);  // save unmin anchor in anchor_positions_b4min
-       simplex.minimize_rigid_anchor(anchor_positions[i].second, score); //minimize anchor
+    if (dock_gpu_is_active() && simplex.use_min_rigid_anchor
+        && (int)anchor_positions.size() > dock_gpu_recommended_batch_size()) {
+        // GPU anchor-pool: batch the rigid-body simplex minimization of ALL
+        // anchor orientations into one ConformerPool.  Every anchor shares
+        // the same DOF layout (6 rigid DOF, vertex of zeros) and the same
+        // atom count / active flags, so a single pool can pack candidates
+        // from all orientations into each GPU dispatch instead of issuing
+        // one tiny dispatch per orientation.  Only engages when the
+        // orientation count is large enough to amortize the pool machinery;
+        // small anchor counts keep the sequential path (measured: pool
+        // overhead exceeds its win for handfuls of orientations).
+        const int saved_anchor_cycle = simplex.current_cycle;
+        simplex.current_cycle = 0;
+        ConformerPool anchor_pool(dock_gpu_recommended_batch_size(),
+                                   &simplex, true,
+                                   simplex.simplex_mode,
+                                   simplex.simplex_crossover);
+        for (i = 0; i < anchor_positions.size(); i++){
+            anchor_positions_b4min.push_back(anchor_positions[i]);  // save unmin anchor in anchor_positions_b4min
+
+            // backpressure: drain pool before adding if full
+            while (anchor_pool.active_count() >= anchor_pool.capacity()) {
+                anchor_pool.step();
+                anchor_pool.poll();
+            }
+
+            // rigid DOF only — same layout as minimize_rigid_anchor()
+            FLOATVec vertex;
+            for (int iv = 0; iv < 6; iv++) vertex.push_back(0.0f);
+
+            anchor_pool.add(&anchor_positions[i].second, vertex,
+                            simplex.anchor_min_trans_step_size,
+                            simplex.anchor_min_rot_step_size,
+                            simplex.anchor_min_tors_step_size,
+                            simplex.anchor_min_score_converge,
+                            simplex.anchor_min_max_iterations,
+                            simplex.anchor_min_max_cycles,
+                            simplex.anchor_min_cycle_converge,
+                            simplex.restrained_min,
+                            simplex.coefficient_restraint,
+                            nullptr, nullptr);
+        }
+
+        // drain pool — all anchor mols updated in place by fill_slot_from_mol
+        while (!anchor_pool.idle()) {
+            anchor_pool.step();
+            anchor_pool.poll();
+        }
+
+        // restore cycle counter so the growth-phase scaling below matches
+        // the sequential-anchor code path (minimize_rigid_anchor leaves
+        // current_cycle at whatever the last cycle count was)
+        simplex.current_cycle = saved_anchor_cycle;
+    } else {
+        for (i = 0; i < anchor_positions.size(); i++){
+            anchor_positions_b4min.push_back(anchor_positions[i]);  // save unmin anchor in anchor_positions_b4min
+            simplex.minimize_rigid_anchor(anchor_positions[i].second, score); //minimize anchor
+        }
     }
 
     for (i = 0; i < anchor_positions.size(); i++) {

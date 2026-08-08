@@ -116,6 +116,35 @@ void dock_gpu_monitor(int layer, int segment, int total_segments);
 
 
 
+/* ------------------------------------------------------------------ */
+/*  Multi-ligand virtual-screen scoring                                 */
+/* ------------------------------------------------------------------ */
+
+/* Register a ligand's per-atom parameters in the VS ligand table.
+   lig_idx: 0 .. dock_gpu_vs_max_ligands()-1
+   vdwA, vdwB, charges, active_flags, ie_vdwA: length num_atoms
+   nb_int_pairs: flat array of num_nb_pairs*2 ints (a1, a2, ...)
+   Returns 1 on success, 0 on error. */
+int dock_gpu_vs_register_ligand(int lig_idx,
+                                const float *vdwA, const float *vdwB,
+                                const float *charges, const int *active_flags,
+                                const float *ie_vdwA,
+                                const int *nb_int_pairs, int num_nb_pairs,
+                                int num_atoms);
+
+/* Max ligand-table rows the backend accepts. */
+int dock_gpu_vs_max_ligands(void);
+
+/* Score N poses against the shared grid, each pose belonging to one
+   registered ligand.  xyz is flat N * num_atoms * 3 (num_atoms = padded
+   max atom count; inactive atoms must have active_flags[a]==0 in their
+   ligand row).  pose_lig: length num_poses, values < table size.
+   Returns 1 on success, 0 on error. */
+int dock_gpu_batch_score_vs(const float *xyz, int num_poses, int num_atoms,
+                            const int *pose_lig, float *out_scores);
+
+
+
 #ifdef __cplusplus
 }
 #endif
