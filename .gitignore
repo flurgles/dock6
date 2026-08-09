@@ -38,3 +38,4 @@ package-lock.json
 log.md
 project.log
 benchmarks/
+src/dock/dock6.hip
