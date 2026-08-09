@@ -113,6 +113,7 @@ ConformerPool::~ConformerPool()
     delete[] m_xyz_buffer;
     delete[] m_score_buffer;
     delete[] m_active_flags;
+    delete[] m_pose_lig;
 }
 
 
@@ -192,10 +193,12 @@ m_num_atoms = first_stride;
         int max_cand = m_batch_max * max(4, size + 1);
         delete[] m_xyz_buffer;
         delete[] m_score_buffer;
+        delete[] m_pose_lig;
         delete[] m_active_flags;
         m_num_atoms = first_stride;
         m_xyz_buffer      = new float[max_cand * m_num_atoms * 3];
         m_score_buffer    = new float[max_cand];
+        m_pose_lig        = new int[max_cand];
         m_active_flags    = new int[m_num_atoms];
         for (int a = 0; a < m_num_atoms; a++)
             m_active_flags[a] = 0;  // VS path: flags come from the LUT per ligand
@@ -480,10 +483,13 @@ ConformerPool::pack_slot(SimplexSlot& slot, int offset, int capacity)
     }
     if (offset + need > capacity) return offset;
 
-    /* VS path: tag every packed candidate with its ligand LUT slot */
+    /* VS path: tag every packed candidate with its ligand LUT slot.
+       Never leave tags uninitialized — the kernel reads them per pose. */
     int vs_tag = slot.lig_idx;
-    if (vs_tag >= 0) {
-        for (int ci = 0; ci < need; ci++) m_pose_lig[offset + ci] = vs_tag;
+    if (m_vs_mode) {
+        for (int ci = 0; ci < need; ci++) {
+            m_pose_lig[offset + ci] = (vs_tag >= 0) ? vs_tag : 0;
+        }
     }
 
     switch (slot.phase) {

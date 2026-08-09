@@ -268,6 +268,7 @@ __global__ void hip_ie_vs_kernel(const float *xyz,
 static int   g_initialized = 0;
 static int   g_num_atoms    = 0;
 static int   g_num_nb_pairs = 0;
+static int   g_num_lut_ligands = 0;
 static float g_ie_soft_delta = 0.0f;
 static float g_ie_cutoff_sq  = 1e10f;
 static int   g_compute_units = 0;
@@ -599,7 +600,9 @@ int dock_gpu_vs_register_ligand(int lig_idx,
     CHECK_HIP(hipMemcpy(d_lut_vdwA + row_off, vdwA, row_bytes, hipMemcpyHostToDevice));
     CHECK_HIP(hipMemcpy(d_lut_vdwB + row_off, vdwB, row_bytes, hipMemcpyHostToDevice));
     CHECK_HIP(hipMemcpy(d_lut_charges + row_off, charges, row_bytes, hipMemcpyHostToDevice));
-    CHECK_HIP(hipMemcpy(d_lut_ie_vdwA + row_off, ie_vdwA, row_bytes, hipMemcpyHostToDevice));
+    if (ie_vdwA) {
+        CHECK_HIP(hipMemcpy(d_lut_ie_vdwA + row_off, ie_vdwA, row_bytes, hipMemcpyHostToDevice));
+    }
     CHECK_HIP(hipMemcpy(d_lut_active_flags + lig_off, active_flags, sizeof(int) * (size_t)num_atoms, hipMemcpyHostToDevice));
 
     /* CS-per-atom pair index so the kernel can iterate pairs with
@@ -632,6 +635,8 @@ int dock_gpu_vs_register_ligand(int lig_idx,
     size_t pair_off = (size_t)lig_idx * GPU_LUT_MAX_PAIRS;
     CHECK_HIP(hipMemcpy(d_lut_pair_indices + pair_off, indices.data(),
                         sizeof(int) * (size_t)GPU_LUT_MAX_PAIRS, hipMemcpyHostToDevice));
+
+    if (lig_idx + 1 > g_num_lut_ligands) g_num_lut_ligands = lig_idx + 1;
     return 1;
 }
 
@@ -643,7 +648,7 @@ int dock_gpu_vs_max_ligands(void)
 int dock_gpu_batch_score_vs(const float *xyz, int num_poses, int num_atoms,
                             const int *pose_lig, float *out_scores)
 {
-    if (!g_initialized || g_num_nb_pairs == 0) return 0;
+    if (!g_initialized || g_num_lut_ligands == 0) return 0;
     if (num_poses > GPU_MAX_POSES || num_atoms > GPU_MAX_ATOMS) return 0;
 
     const size_t xyz_bytes = sizeof(float) * (size_t)num_poses * (size_t)num_atoms * 3;
@@ -705,6 +710,7 @@ void dock_gpu_cleanup(void)
     g_initialized = 0;
     g_num_atoms = 0;
     g_num_nb_pairs = 0;
+    g_num_lut_ligands = 0;
     g_ie_soft_delta = 0.0f;
     g_ie_cutoff_sq = 1e10f;
     memset(&g_params, 0, sizeof(g_params));

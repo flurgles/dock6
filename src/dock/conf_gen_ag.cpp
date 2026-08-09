@@ -632,31 +632,7 @@ AG_Conformer_Search::next_anchor(DOCKMol & mol)
 
         copy_molecule(tmp_mol, orig);
 
-        // clear bond directionality during minization
-        bond_tors_vectors.clear();
-        bond_tors_vectors.resize(orig.num_bonds, -1);
-        //bond_tors_vectors.resize(mol.num_bonds, -1);
-
-        // reset the assigned atoms list
-        assigned_atoms.clear();
-        assigned_atoms.resize(orig.num_atoms, false);
-        //assigned_atoms.resize(mol.num_atoms, false);
-
-        // clear and resize the layer_segment list to be the same size as the
-        // orig_segments list
-        layer_segments.clear();
-        layer_segments.resize(orig_segments.size());
-
-        layers.clear();
-        extend_layers(anchors[current_anchor].second,
-                      anchors[current_anchor].second, 0);
-
-        // cout << "@@@\t" << orig_segments.size() << "\t" << layers.size() <<
-        // "\t" << layer_segments.size() << endl;
-
-        for (i = 0; i < layers[0].segments.size(); i++) {
-            activate_layer_segment(tmp_mol, 0, i);
-        }
+        setup_growth_anchor(current_anchor);
 
         current_anchor++;
 
@@ -690,6 +666,34 @@ AG_Conformer_Search::next_anchor(DOCKMol & mol)
     return true;
 
 
+}
+
+// +++++++++++++++++++++++++++++++++++++++++
+// Rebuild the layer/layer_segment state for one anchor, exactly like the
+// build step inside next_anchor().  Used by the GPU virtual-screen batch
+// driver to replay growth for a previously collected (and already
+// minimized) anchor without re-running the whole next_anchor pipeline.
+void
+AG_Conformer_Search::setup_growth_anchor(int anchor_idx)
+{
+    // clear bond directionality during minization
+    bond_tors_vectors.clear();
+    bond_tors_vectors.resize(orig.num_bonds, -1);
+
+    // reset the assigned atoms list
+    assigned_atoms.clear();
+    assigned_atoms.resize(orig.num_atoms, false);
+
+    // clear and resize the layer_segment list to be the same size as the
+    // orig_segments list
+    layer_segments.clear();
+    layer_segments.resize(orig_segments.size());
+
+    layers.clear();
+    extend_layers(anchors[anchor_idx].second,
+                  anchors[anchor_idx].second, 0);
+
+    current_anchor = anchor_idx;
 }
 
 
@@ -1315,11 +1319,24 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
             anchor_pool.poll();
         }
 
-        // restore cycle counter so the growth-phase scaling below matches
-        // the sequential-anchor code path (minimize_rigid_anchor leaves
-        // current_cycle at whatever the last cycle count was)
-        simplex.current_cycle = saved_anchor_cycle;
-    } else {
+// restore cycle counter so the growth-phase scaling below matches
+            // the sequential-anchor code path (minimize_rigid_anchor leaves
+            // current_cycle at whatever the last cycle count was)
+            simplex.current_cycle = saved_anchor_cycle;
+        } else if (anchors_preminimized) {
+            // Anchors were already minimized by the VS batch driver — keep
+            // the unminimized copies for b4min_seeds below.
+            // OPTIMIZATION parity: minimize_rigid_anchor() sizes bond_vectors
+            // for the anchor mol before each ligand's growth pool runs; the
+            // growth pool depends on that sizing, so reproduce it here.
+            if (simplex.use_min_rigid_anchor) {
+                simplex.bond_vectors.clear();
+                simplex.bond_vectors.resize(anchor_positions[0].second.num_bonds, -1);
+            }
+            for (i = 0; i < anchor_positions.size(); i++){
+                anchor_positions_b4min.push_back(anchor_positions[i]);
+            }
+        } else {
         for (i = 0; i < anchor_positions.size(); i++){
             anchor_positions_b4min.push_back(anchor_positions[i]);  // save unmin anchor in anchor_positions_b4min
             simplex.minimize_rigid_anchor(anchor_positions[i].second, score); //minimize anchor

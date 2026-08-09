@@ -69,6 +69,8 @@
 #include "conjugate_gradient.h"
 #include "minimizer.h"
 #include "trace.h"
+#include "conformer_pool.h"
+#include "score_dock_gpu.h"
 #include "utils.h"
 #include "version.h"
 #include "filter.h"
@@ -93,6 +95,252 @@ void            dock_new_handler();
 void            print_header( bool USE_MPI, int processes );
 //LEP - Preprocesor directive determines if the compiler is >CPP11 for certain functionality
 double          wall_clock_seconds();
+
+/* ------------------------------------------------------------------ */
+/*  GPU virtual-screen batch driver                                    */
+/*                                                                     */
+/*  Docks up to `window` ligands against the same receptor grid in     */
+/*  one batched pass:  the anchor-minimization phase of every ligand   */
+/*  in the window shares a single ConformerPool dispatch stream, with  */
+/*  each ligand's atom parameters registered at its own LUT slot so    */
+/*  every GPU launch can carry candidates of multiple ligands.         */
+/*                                                                     */
+/*  Collection phase (CPU): per ligand, run anchor/orientation         */
+/*  matching and submit_anchor_orientation as usual, but record the    */
+/*  prepared ligand + anchors instead of growing immediately.          */
+/*  Batch phase: register all windowed ligands in the LUT, run one     */
+/*  anchor pool across every collected anchor+ligand pair.             */
+/*  Growth phase (CPU per ligand): replay next_anchor/prepare and        */
+/*  call grow_peripheral(..., anchors_preminimized=true) so growth     */
+/*  consumes the already-minimized anchors without re-minimizing.      */
+/* ------------------------------------------------------------------ */
+
+struct VSJobAnchor {
+    vector<SCOREMol> anchors;      /* collected anchor orientations */
+    int              lig_idx;      /* LUT slot for this ligand      */
+};
+
+struct VSJobMol {
+    DOCKMol                 mol;
+    vector<VSJobAnchor>     anchor_jobs;
+};
+
+struct VSAnchorSet {
+    vector<SCOREMol>    anchors;    /* collected anchor orientations       */
+    int                 lig_idx;   /* LUT slot; assigned in batch phase   */
+};
+
+static void
+vs_deep_copy_anchors(vector<SCOREMol> & dst, const vector<SCOREMol> & src)
+{
+    dst.clear();
+    dst.reserve(src.size());
+    for (size_t i = 0; i < src.size(); i++) {
+        SCOREMol ns;
+        ns.first = src[i].first;
+        copy_molecule(ns.second, src[i].second);
+        dst.push_back(ns);
+    }
+}
+
+struct VSWindowJob {
+    DOCKMol               mol;      /* prepared ligand (for growth replay) */
+    vector<VSAnchorSet>   sets;     /* one entry per completed anchor      */
+};
+
+static int
+gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_conf,
+                   Orient & c_orient, Bump_Filter & c_bmp_score,
+                   Master_Score & c_master_score, AMBER_TYPER & c_typer,
+                   Filter & c_filter, Minimizer & active_min,
+                   bool USE_MPI)
+{
+    int window = dock_gpu_recommended_batch_size();
+    if (window < 1) window = 1;
+    int maxl = dock_gpu_vs_max_ligands();
+    if (window > maxl) window = maxl;
+
+    /* ---- Phase 1 (collection): fill the window with ligand jobs ---- */
+    DOCKMol mol;
+    vector<VSWindowJob> jobs;
+    while (c_library.get_mol(mol, c_filter.use_database_filter, USE_MPI,
+                             c_master_score.amber, c_typer, c_master_score,
+                             active_min)) {
+        active_min.initialize();              // seed RNG
+        mol.prepare_molecule();
+        mol.flag_write_solvation = c_library.write_solv_mol2;
+        c_typer.prepare_molecule(mol, c_master_score.read_vdw,
+                                 c_orient.use_chemical_matching,
+                                 c_master_score.use_ph4,
+                                 c_master_score.use_volume);
+        c_master_conf.initialize_once = true;
+        c_master_conf.prepare_molecule(mol);
+        if (c_master_conf.c_ag_conf.write_fragment_libraries) continue;
+
+        // Database filter (same shape as original loop)
+        if (c_filter.use_database_filter) {
+            c_filter.calc_descriptors(mol);
+            if (c_filter.fails_filter(mol)) continue;
+        }
+
+        VSWindowJob job;
+
+        while (c_master_conf.next_anchor(mol)) {
+            c_library.num_anchors++;
+            c_orient.match_ligand(mol);
+            while (c_orient.new_next_orientation(mol)) {
+                if (c_bmp_score.check_anchor_bumps(mol, c_orient.more_orientations())) {
+                    if (c_master_conf.method == 1) {
+                        c_master_score.primary_score->nb_int.clear();
+                    }
+                    if (c_library.submit_orientation(mol, c_master_score,
+                                                     c_orient.orient_ligand) ||
+                        !c_orient.more_orientations()) {
+                        if (c_master_conf.submit_anchor_orientation(mol,
+                                                    c_orient.more_orientations())) {
+                            /* anchor complete — snapshot its positions */
+                            VSAnchorSet as;
+                            vs_deep_copy_anchors(as.anchors,
+                                c_master_conf.c_ag_conf.anchor_positions);
+                            as.lig_idx = -1;
+                            job.sets.push_back(as);
+                        }
+                    }
+                }
+            }
+        }
+        if (!job.sets.empty()) {
+            copy_molecule(job.mol, mol);
+            jobs.push_back(job);
+        }
+        if ((int)jobs.size() >= window) break;
+    }
+
+    /* ---- Phase 2 (batch): minimize ALL window anchors in ONE pool ---- */
+    int wt_base = 0;
+    for (size_t i = 0; i < jobs.size(); i++) {
+        for (size_t k = 0; k < jobs[i].sets.size(); k++) {
+            jobs[i].sets[k].lig_idx = (wt_base++) % maxl;
+        }
+    }
+
+    /* Register every windowed ligand in the GPU LUT before batching.
+       Mirrors the registration block in grow_periphery:  per-atom
+       grid vdw/es params from the VDW parm lookup and the atom
+       charges; IE params from the last-scored orientation's nb_int
+       pair list (same pair list the sequential path would have fed
+       to dock_gpu_set_ligand_ie). */
+    for (size_t i = 0; i < jobs.size(); i++) {
+        VSAnchorSet & as = jobs[i].sets[0];
+        if (as.anchors.empty()) continue;
+        DOCKMol & amol = as.anchors[0].second;
+        int na = amol.num_atoms;
+        float *vdwA_arr = new float[na];
+        float *vdwB_arr = new float[na];
+        float *chg_arr  = new float[na];
+        int   *af_arr   = new int[na];
+        for (int ai = 0; ai < na; ai++) {
+            int type = amol.amber_at_id[ai];
+            vdwA_arr[ai] = c_master_score.primary_score->vdwA[type];
+            vdwB_arr[ai] = c_master_score.primary_score->vdwB[type];
+            chg_arr[ai]  = amol.charges[ai];
+            af_arr[ai]   = amol.atom_active_flags[ai] ? 1 : 0;
+        }
+        int np = (int)c_master_score.primary_score->nb_int.size();
+        int *nb_flat = NULL;
+        float *ie_vdwA_arr = NULL;
+        if (np > 0) {
+            nb_flat = new int[np * 2];
+            for (int pi = 0; pi < np; pi++) {
+                nb_flat[pi * 2]     = c_master_score.primary_score->nb_int[pi].first;
+                nb_flat[pi * 2 + 1] = c_master_score.primary_score->nb_int[pi].second;
+            }
+            ie_vdwA_arr = new float[na];
+            for (int ai = 0; ai < na; ai++)
+                ie_vdwA_arr[ai] = c_master_score.primary_score->ie_vdwA[ai];
+        }
+        dock_gpu_vs_register_ligand(as.lig_idx, vdwA_arr, vdwB_arr,
+                                    chg_arr, af_arr, ie_vdwA_arr,
+                                    nb_flat, np, na);
+        delete[] vdwA_arr;
+        delete[] vdwB_arr;
+        delete[] chg_arr;
+        delete[] af_arr;
+        if (nb_flat)       delete[] nb_flat;
+        if (ie_vdwA_arr)   delete[] ie_vdwA_arr;
+    }
+
+    ConformerPool anchor_pool(window, &active_min, true,
+                              active_min.simplex_mode,
+                              active_min.simplex_crossover);
+    for (size_t i = 0; i < jobs.size(); i++) {
+        VSWindowJob & job = jobs[i];
+        for (size_t k = 0; k < job.sets.size(); k++) {
+            VSAnchorSet & as = job.sets[k];
+            for (size_t a = 0; a < as.anchors.size(); a++) {
+                while (anchor_pool.active_count() >= anchor_pool.capacity()) {
+                    anchor_pool.step();
+                    anchor_pool.poll();
+                }
+                FLOATVec vertex;
+                for (int iv = 0; iv < 6; iv++) vertex.push_back(0.0f);
+                anchor_pool.add(&as.anchors[a].second, vertex,
+                                active_min.anchor_min_trans_step_size,
+                                active_min.anchor_min_rot_step_size,
+                                active_min.anchor_min_tors_step_size,
+                                active_min.anchor_min_score_converge,
+                                active_min.anchor_min_max_iterations,
+                                active_min.anchor_min_max_cycles,
+                                active_min.anchor_min_cycle_converge,
+                                active_min.restrained_min,
+                                active_min.coefficient_restraint,
+                                nullptr, nullptr,
+                                as.lig_idx,
+                                as.anchors[a].second.num_atoms);
+            }
+        }
+    }
+    /* drain the pool; each slot's mol (in the job's anchor list) is
+       updated in place with the minimized pose */
+    while (!anchor_pool.idle()) {
+        anchor_pool.step();
+        anchor_pool.poll();
+    }
+
+/* ---- Phase 3 (growth): replay each job with anchors_preminimized ---- */
+    int written = 0;
+    for (size_t i = 0; i < jobs.size(); i++) {
+        VSWindowJob & job = jobs[i];
+        /* Rebuild the AG segment/anchor state for THIS job's ligand —
+           the collection loop left it pointing at the last ligand seen. */
+        copy_molecule(mol, job.mol);
+        c_master_conf.c_ag_conf.prepare_molecule(mol);
+        for (size_t k = 0; k < job.sets.size(); k++) {
+            /* Rebuild layers for anchor k of this ligand, matching what
+               next_anchor() would have built in the sequential path. */
+            c_master_conf.c_ag_conf.setup_growth_anchor(k);
+            /* restore the anchor positions collected for this job */
+            vs_deep_copy_anchors(c_master_conf.c_ag_conf.anchor_positions,
+                                 job.sets[k].anchors);
+            c_master_conf.grow_periphery(c_master_score, active_min,
+                                         c_bmp_score, true);
+            int nconf = 0;
+            while (c_master_conf.next_conformer(mol)) {
+                active_min.minimize_final_pose(mol, c_master_score, c_typer);
+                c_library.submit_scored_pose(mol, c_master_score, active_min);
+                nconf++;
+            }
+        }
+        c_library.submit_conformations(c_master_score);
+        c_library.sort_write(false, USE_MPI, c_master_score, active_min);
+        c_library.ranked_poses.clear();
+    }
+    /* The EOF-triggered ranked write inside get_mol() already fired during
+       batch collection (when ranked_list was still empty) — flush the
+       ranked list now that all windowed jobs have been scored. */
+    c_library.write_ranked_ligands(false, c_master_score);
+    return written;
+}
 #ifdef TIME_PRECISION
 inline double   calculate_simulation_time(timespec t_start, timespec t_end);
 #endif
@@ -812,6 +1060,13 @@ main(int argc, char **argv)
     // Else if you are doing flexible, rigid, or fixed anchor docking, enter here
     } else {
 
+    if (dock_gpu_is_active() && c_master_conf.method == 1) {
+        /* GPU virtual-screen windowed batching */
+        gpu_vs_batch_drive(c_library, c_master_conf, c_orient, c_bmp_score,
+                           c_master_score, c_typer, c_filter, *active_min,
+                           USE_MPI);
+    } else {
+
     while (c_library.get_mol(mol,c_filter.use_database_filter, USE_MPI, c_master_score.amber, c_typer, c_master_score, *active_min)) { 
         // If MPI is used this is done on the compute nodes.
         // filtering must be done here because it needs all prep for docking
@@ -1066,6 +1321,7 @@ main(int argc, char **argv)
             }
 #endif
 
+    }
     }
     }
     //main_dock_loop_anchors.close();

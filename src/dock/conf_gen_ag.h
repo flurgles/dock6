@@ -258,6 +258,7 @@ class           AG_Conformer_Search {
     void            extend_segments(int, int, DOCKMol &);       // 
     void            id_anchor_segments();       // 
     bool            next_anchor(DOCKMol &);     // 
+    void            setup_growth_anchor(int anchor_idx); // VS batch replay: rebuild layers for one anchor
     void            extend_layers(int, int, int);       // 
     bool            submit_anchor_orientation(DOCKMol &, bool); // 
     // RMSD type for pruning clustering: "std" (standard layer-weighted heavy-atom),

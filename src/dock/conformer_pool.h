@@ -212,10 +212,10 @@ private:
     //   scores: max_candidates * sizeof(float)
     float*                  m_xyz_buffer;
     float*                  m_score_buffer;
-    int*                    m_pose_lig;  // VS path: ligand LUT slot per candidate
+    int*            m_pose_lig = nullptr;  // VS path: ligand LUT slot per candidate
     int*                    m_active_flags;  // cached ligand active-atom flags
     int                     m_dispatch_capacity;  // max candidates per dispatch
-    bool                    m_vs_mode;  // true once any slot carries a lig_idx >= 0
+    bool                    m_vs_mode = false;  // true once any slot carries a lig_idx >= 0
 
     // Per-slot ligand info for the VS path (pose_lig array per candidate).
     int                     m_stride_atoms;  // max num_atoms across slots (padded)
