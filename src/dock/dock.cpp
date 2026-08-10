@@ -157,12 +157,22 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
 {
     int window = dock_gpu_recommended_batch_size();
     if (window < 1) window = 1;
+    /* Cap the in-flight window so orientation snapshots stay well under
+       the memory kill threshold of this 11 GiB host (earlyoom fires when
+       free memory drops below ~3.4%): 32 ligands ≈ 2.1-2.5 GB RSS. */
+    /* Host-RAM budget: this Steam Deck has 11 GiB with earlyoom killing
+       below ~3.4% available; the per-ligand RSS footprint during growth
+       (~0.14 GB) caps the collection window well below the LUT limit. */
+    if (window > 16) window = 16;
     int maxl = dock_gpu_vs_max_ligands();
     if (window > maxl) window = maxl;
 
     /* ---- Phase 1 (collection): fill the window with ligand jobs ---- */
     DOCKMol mol;
     vector<VSWindowJob> jobs;
+    int total_written = 0;
+    for (;;) {
+    jobs.clear();
     while (c_library.get_mol(mol, c_filter.use_database_filter, USE_MPI,
                              c_master_score.amber, c_typer, c_master_score,
                              active_min)) {
@@ -215,6 +225,7 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
         }
         if ((int)jobs.size() >= window) break;
     }
+    if (jobs.empty()) break;
 
     /* ---- Phase 2 (batch): minimize ALL window anchors in ONE pool ---- */
     int wt_base = 0;
@@ -335,11 +346,24 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
         c_library.sort_write(false, USE_MPI, c_master_score, active_min);
         c_library.ranked_poses.clear();
     }
-    /* The EOF-triggered ranked write inside get_mol() already fired during
-       batch collection (when ranked_list was still empty) — flush the
-       ranked list now that all windowed jobs have been scored. */
+    /* The EOF-triggered ranked write inside get_mol() fires during the
+       NEXT window's collection, when ranked_list still holds THIS window's
+       contributions is not safe to rely on — flush the ranked list per
+       window and clear it so no window is written twice. */
     c_library.write_ranked_ligands(false, c_master_score);
-    return written;
+    c_library.ranked_list.clear();
+    /* Free this window's anchor snapshots (DOCKMol arrays are not
+       destructor-managed) before collecting the next window. */
+    for (size_t i = 0; i < jobs.size(); i++) {
+        VSWindowJob & job = jobs[i];
+        job.mol.clear_molecule();
+        for (size_t k = 0; k < job.sets.size(); k++)
+            for (size_t a = 0; a < job.sets[k].anchors.size(); a++)
+                job.sets[k].anchors[a].second.clear_molecule();
+    }
+    total_written += written;
+    }
+    return total_written;
 }
 #ifdef TIME_PRECISION
 inline double   calculate_simulation_time(timespec t_start, timespec t_end);
