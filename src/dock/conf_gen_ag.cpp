@@ -13,6 +13,7 @@
 #include "hungarian.h"
 #include "weisfeiler_leman.h"
 #include "master_score.h"
+#include "score_dock_gpu.h"
 #include "simplex.h"
 #include "conformer_pool.h"
 #include "trace.h"
@@ -1565,7 +1566,7 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                 // 0 = clash fail, 1 = bump fail, 2 = both passed
 
                 bool use_gpu = dock_gpu_is_active();
-                ConformerPool pool(dock_gpu_recommended_batch_size(),
+                ConformerPool pool(GPU_POOL_BATCH_MAX,
                                    &simplex, use_gpu,
                                    simplex.simplex_mode,
                                    simplex.simplex_crossover);

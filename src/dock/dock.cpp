@@ -302,9 +302,9 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
        candidates per slot, so 512 slots ≈ 3584 poses — nearly a full
        4096-pose GPU_MAX_POSES dispatch.  Slot scratch is only ~3-5 KB
        each (~2 MB total), vs. a window-sized pool that left >95% of
-       every launch idle. */
-    const int vs_anchor_pool_slots = 512;
-    ConformerPool anchor_pool(vs_anchor_pool_slots, &active_min, true,
+       every launch idle.  Dispatches larger than GPU_MAX_BATCH_POSES
+       are split into chunks by ConformerPool::step(). */
+    ConformerPool anchor_pool(GPU_POOL_BATCH_MAX, &active_min, true,
                               active_min.simplex_mode,
                               active_min.simplex_crossover);
     for (size_t i = 0; i < jobs.size(); i++) {

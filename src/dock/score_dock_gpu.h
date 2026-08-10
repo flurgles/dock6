@@ -28,6 +28,21 @@ Usage in dock scoring code (e.g., conf_gen_ag.cpp):
 #define SCORE_DOCK_GPU_H
 
 /* ------------------------------------------------------------------ */
+/*  GPU pool sizing constants                                          */
+/* ------------------------------------------------------------------ */
+
+/* Safe per-dispatch pose cap.  The device xyz buffer is sized
+   GPU_MAX_POSES (4096) x GPU_MAX_ATOMS (512) x 3 floats; keeping
+   dispatches under this cap guarantees they are never rejected, no
+   matter how large the packed pool batch is. */
+#define GPU_MAX_BATCH_POSES 3968
+
+/* ConformerPool slot budget for the anchor and growth pools.  With 512
+   slots and worst-case 7 (anchor) / ~20 (growth) candidates per slot,
+   one step packs up to ~3-4 chunks of GPU_MAX_BATCH_POSES poses. */
+#define GPU_POOL_BATCH_MAX 512
+
+/* ------------------------------------------------------------------ */
 /*  GPU abstraction API                                               */
 /* ------------------------------------------------------------------ */
 

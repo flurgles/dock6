@@ -338,16 +338,35 @@ ConformerPool::step()
         return newly;
     }
 
-    /* Phase 2: Submit GPU dispatch */
-    int ok;
-    if (m_vs_mode) {
-        /* Multi-ligand VS path: poses tagged with their ligand LUT slot,
-           stride = max atoms across slots, per-pose params from LUT. */
-        ok = dock_gpu_batch_score_vs(m_xyz_buffer, total, m_num_atoms,
-                                     m_pose_lig, m_score_buffer);
-    } else {
-        ok = dock_gpu_batch_score_with_ie_persistent(
-            m_xyz_buffer, total, na, active_flags, m_score_buffer);
+    /* Phase 2: Submit GPU dispatch — the packed candidate list may
+       exceed GPU_MAX_BATCH_POSES (large pools pack several thousand
+       poses per step), so emit it in bounded chunks.  Poses are
+       row-major in m_xyz_buffer and scores/pose tags are contiguous,
+       so each chunk is just a pointer/offset slice of the same
+       buffers; chunk dispatches write their scores back at the
+       matching offsets. */
+    int ok = 1;
+    int dispatched = 0;
+    while (dispatched < total) {
+        int n = total - dispatched;
+        if (n > GPU_MAX_BATCH_POSES) n = GPU_MAX_BATCH_POSES;
+        const float *xyz_pos = m_xyz_buffer +
+                               (size_t)dispatched * m_num_atoms * 3;
+        int chunk_ok;
+        if (m_vs_mode) {
+            /* Multi-ligand VS path: poses tagged with their ligand LUT
+               slot, stride = max atoms across slots, per-pose params
+               from the LUT. */
+            chunk_ok = dock_gpu_batch_score_vs(xyz_pos, n, m_num_atoms,
+                                               m_pose_lig + dispatched,
+                                               m_score_buffer + dispatched);
+        } else {
+            chunk_ok = dock_gpu_batch_score_with_ie_persistent(
+                xyz_pos, n, m_num_atoms, active_flags,
+                m_score_buffer + dispatched);
+        }
+        if (!chunk_ok) { ok = 0; break; }
+        dispatched += n;
     }
 
     if (!ok) {
