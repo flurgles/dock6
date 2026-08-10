@@ -115,31 +115,27 @@ double          wall_clock_seconds();
 /*  consumes the already-minimized anchors without re-minimizing.      */
 /* ------------------------------------------------------------------ */
 
-struct VSJobAnchor {
-    vector<SCOREMol> anchors;      /* collected anchor orientations */
-    int              lig_idx;      /* LUT slot for this ligand      */
-};
-
-struct VSJobMol {
-    DOCKMol                 mol;
-    vector<VSJobAnchor>     anchor_jobs;
-};
-
 struct VSAnchorSet {
     vector<SCOREMol>    anchors;    /* collected anchor orientations       */
     int                 lig_idx;   /* LUT slot; assigned in batch phase   */
+    int                 np;         /* IE pair count (per-anchor capture)  */
+    int                *nb_flat;    /* IE pair list snapshot               */
+    float              *ie_vdwA;    /* per-atom IE vdW A params snapshot   */
 };
 
+/* Deep-copy anchor positions into dst, reusing dst's existing per-mol
+   array storage in place: copy_molecule() retains the destination
+   arrays whenever the atom counts match, so steady-state is allocation-
+   free (mirrors the sequential submit_anchor_orientation reuse pattern).
+   Discarding the old contents via clear() without freeing would orphan
+   the previous sets (DOCKMol arrays are not destructor-managed). */
 static void
 vs_deep_copy_anchors(vector<SCOREMol> & dst, const vector<SCOREMol> & src)
 {
-    dst.clear();
-    dst.reserve(src.size());
+    dst.resize(src.size());
     for (size_t i = 0; i < src.size(); i++) {
-        SCOREMol ns;
-        ns.first = src[i].first;
-        copy_molecule(ns.second, src[i].second);
-        dst.push_back(ns);
+        dst[i].first = src[i].first;
+        copy_molecule(dst[i].second, src[i].second);
     }
 }
 
@@ -157,13 +153,13 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
 {
     int window = dock_gpu_recommended_batch_size();
     if (window < 1) window = 1;
-    /* Cap the in-flight window so orientation snapshots stay well under
-       the memory kill threshold of this 11 GiB host (earlyoom fires when
-       free memory drops below ~3.4%): 32 ligands ≈ 2.1-2.5 GB RSS. */
-    /* Host-RAM budget: this Steam Deck has 11 GiB with earlyoom killing
-       below ~3.4% available; the per-ligand RSS footprint during growth
-       (~0.14 GB) caps the collection window well below the LUT limit. */
-    if (window > 16) window = 16;
+    /* Host-RAM budget: this 11 GiB Steam Deck runs earlyoom (kills when
+       free memory drops below ~3.4%); the collection footprint is roughly
+       0.14 GB per in-flight ligand (~2 K orientation snapshots each), so
+       the window is capped well below the 128-slot LUT limit.  Make it a
+       runtime/compile-time parameter if the host budget differs. */
+    const int vs_window_max = 16;
+    if (window > vs_window_max) window = vs_window_max;
     int maxl = dock_gpu_vs_max_ligands();
     if (window > maxl) window = maxl;
 
@@ -213,7 +209,37 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
                             vs_deep_copy_anchors(as.anchors,
                                 c_master_conf.c_ag_conf.anchor_positions);
                             as.lig_idx = -1;
-                            job.sets.push_back(as);
+                            /* Capture the per-anchor IE pair table NOW:
+                               nb_int is cleared/rebuilt per orientation, so
+                               phase 2 would otherwise read the pair list of
+                               the last-scored orientation of another ligand. */
+                            as.np = 0;
+                            as.nb_flat = NULL;
+                            as.ie_vdwA = NULL;
+                            if (!as.anchors.empty() &&
+                                c_master_conf.method == 1) {
+                                int np = (int)c_master_score.primary_score
+                                             ->nb_int.size();
+                                if (np > 0) {
+                                    as.np = np;
+                                    as.nb_flat = new int[np * 2];
+                                    for (int pi = 0; pi < np; pi++) {
+                                        as.nb_flat[pi * 2] =
+                                            c_master_score.primary_score
+                                                ->nb_int[pi].first;
+                                        as.nb_flat[pi * 2 + 1] =
+                                            c_master_score.primary_score
+                                                ->nb_int[pi].second;
+                                    }
+                                    int na = as.anchors[0].second.num_atoms;
+                                    as.ie_vdwA = new float[na];
+                                    for (int ai = 0; ai < na; ai++)
+                                        as.ie_vdwA[ai] =
+                                            c_master_score.primary_score
+                                                ->ie_vdwA[ai];
+                                }
+                            }
+                            job.sets.push_back(std::move(as));
                         }
                     }
                 }
@@ -221,26 +247,29 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
         }
         if (!job.sets.empty()) {
             copy_molecule(job.mol, mol);
-            jobs.push_back(job);
+            jobs.push_back(std::move(job));
         }
         if ((int)jobs.size() >= window) break;
     }
     if (jobs.empty()) break;
 
     /* ---- Phase 2 (batch): minimize ALL window anchors in ONE pool ---- */
+    /* One LUT row per ligand: the pair table and parameters are shared
+       by all of a ligand's anchors, so keep a single row and spread it
+       to every set (avoids burning 2 rows per ligand on the same data). */
     int wt_base = 0;
     for (size_t i = 0; i < jobs.size(); i++) {
-        for (size_t k = 0; k < jobs[i].sets.size(); k++) {
-            jobs[i].sets[k].lig_idx = (wt_base++) % maxl;
-        }
+        jobs[i].sets[0].lig_idx = (wt_base++) % maxl;
+        for (size_t k = 1; k < jobs[i].sets.size(); k++)
+            jobs[i].sets[k].lig_idx = jobs[i].sets[0].lig_idx;
     }
 
     /* Register every windowed ligand in the GPU LUT before batching.
        Mirrors the registration block in grow_periphery:  per-atom
        grid vdw/es params from the VDW parm lookup and the atom
-       charges; IE params from the last-scored orientation's nb_int
-       pair list (same pair list the sequential path would have fed
-       to dock_gpu_set_ligand_ie). */
+       charges; IE params come from the per-anchor snapshot captured
+       at collection time (same pair list the sequential path would
+       have fed to dock_gpu_set_ligand_ie). */
     for (size_t i = 0; i < jobs.size(); i++) {
         VSAnchorSet & as = jobs[i].sets[0];
         if (as.anchors.empty()) continue;
@@ -257,19 +286,9 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
             chg_arr[ai]  = amol.charges[ai];
             af_arr[ai]   = amol.atom_active_flags[ai] ? 1 : 0;
         }
-        int np = (int)c_master_score.primary_score->nb_int.size();
-        int *nb_flat = NULL;
-        float *ie_vdwA_arr = NULL;
-        if (np > 0) {
-            nb_flat = new int[np * 2];
-            for (int pi = 0; pi < np; pi++) {
-                nb_flat[pi * 2]     = c_master_score.primary_score->nb_int[pi].first;
-                nb_flat[pi * 2 + 1] = c_master_score.primary_score->nb_int[pi].second;
-            }
-            ie_vdwA_arr = new float[na];
-            for (int ai = 0; ai < na; ai++)
-                ie_vdwA_arr[ai] = c_master_score.primary_score->ie_vdwA[ai];
-        }
+        int np = as.np;
+        int *nb_flat = as.nb_flat;
+        float *ie_vdwA_arr = as.ie_vdwA;
         dock_gpu_vs_register_ligand(as.lig_idx, vdwA_arr, vdwB_arr,
                                     chg_arr, af_arr, ie_vdwA_arr,
                                     nb_flat, np, na);
@@ -277,11 +296,15 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
         delete[] vdwB_arr;
         delete[] chg_arr;
         delete[] af_arr;
-        if (nb_flat)       delete[] nb_flat;
-        if (ie_vdwA_arr)   delete[] ie_vdwA_arr;
     }
 
-    ConformerPool anchor_pool(window, &active_min, true,
+    /* Anchor-pool depth: with rigid 6-DOF slots every step packs ~7
+       candidates per slot, so 512 slots ≈ 3584 poses — nearly a full
+       4096-pose GPU_MAX_POSES dispatch.  Slot scratch is only ~3-5 KB
+       each (~2 MB total), vs. a window-sized pool that left >95% of
+       every launch idle. */
+    const int vs_anchor_pool_slots = 512;
+    ConformerPool anchor_pool(vs_anchor_pool_slots, &active_min, true,
                               active_min.simplex_mode,
                               active_min.simplex_crossover);
     for (size_t i = 0; i < jobs.size(); i++) {
@@ -357,9 +380,12 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
     for (size_t i = 0; i < jobs.size(); i++) {
         VSWindowJob & job = jobs[i];
         job.mol.clear_molecule();
-        for (size_t k = 0; k < job.sets.size(); k++)
+        for (size_t k = 0; k < job.sets.size(); k++) {
             for (size_t a = 0; a < job.sets[k].anchors.size(); a++)
                 job.sets[k].anchors[a].second.clear_molecule();
+            if (job.sets[k].nb_flat) delete[] job.sets[k].nb_flat;
+            if (job.sets[k].ie_vdwA) delete[] job.sets[k].ie_vdwA;
+        }
     }
     total_written += written;
     }
