@@ -39,3 +39,4 @@ log.md
 project.log
 benchmarks/
 src/dock/dock6.hip
+src/dock/dock6.cpu

@@ -505,13 +505,24 @@ int dock_gpu_set_ligand_ie(const float *ie_vdwA, const float *ie_vdwB,
 }
 
 int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
-                         float *out_scores)
+                         const int *active_flags, float *out_scores)
 {
     if (!g_initialized) return 0;
     if (num_poses > GPU_MAX_POSES || num_atoms > GPU_MAX_ATOMS) return 0;
 
     const size_t xyz_bytes = sizeof(float) * (size_t)num_poses * (size_t)num_atoms * 3;
     CHECK_HIP(hipMemcpy(d_xyz, xyz, xyz_bytes, hipMemcpyHostToDevice));
+
+    if (active_flags) {
+        CHECK_HIP(hipMemcpy(d_active_flags, active_flags,
+                            sizeof(int) * (size_t)num_atoms,
+                            hipMemcpyHostToDevice));
+    } else {
+        std::vector<int> af(num_atoms, 1);
+        CHECK_HIP(hipMemcpy(d_active_flags, af.data(),
+                            sizeof(int) * (size_t)num_atoms,
+                            hipMemcpyHostToDevice));
+    }
 
     HipKernelParams kp = g_params;
     kp.num_atoms = num_atoms;
@@ -587,7 +598,8 @@ int dock_gpu_vs_register_ligand(int lig_idx,
                                 const float *charges, const int *active_flags,
                                 const float *ie_vdwA,
                                 const int *nb_int_pairs, int num_nb_pairs,
-                                int num_atoms)
+                                int num_atoms,
+                                float ie_soft_delta, float ie_cutoff_sq)
 {
     if (!g_initialized) return 0;
     if (lig_idx < 0 || lig_idx >= GPU_MAX_LUT_LIGANDS) return 0;
@@ -604,6 +616,31 @@ int dock_gpu_vs_register_ligand(int lig_idx,
         CHECK_HIP(hipMemcpy(d_lut_ie_vdwA + row_off, ie_vdwA, row_bytes, hipMemcpyHostToDevice));
     }
     CHECK_HIP(hipMemcpy(d_lut_active_flags + lig_off, active_flags, sizeof(int) * (size_t)num_atoms, hipMemcpyHostToDevice));
+
+    /* IE soft-core delta and cutoff are per-run constants shared by every
+       ligand; store them so dock_gpu_batch_score_vs() applies the same
+       parameters the sequential path passes through set_ligand_ie(). */
+    g_ie_soft_delta = ie_soft_delta;
+    g_ie_cutoff_sq  = ie_cutoff_sq;
+
+    /* Zero the row tail beyond num_atoms.  The VS stride is the maximal
+       atom count across the window, so shorter ligands would otherwise
+       score stale (previous row owner / first-use garbage) flags and
+       per-atom parameters in every pose's unused tail. */
+    const size_t tail_cnt = (size_t)(GPU_MAX_ATOMS - num_atoms);
+    if (tail_cnt > 0) {
+        CHECK_HIP(hipMemset(d_lut_active_flags + lig_off + num_atoms, 0,
+                            sizeof(int) * tail_cnt));
+        const size_t tail_bytes = sizeof(float) * tail_cnt;
+        CHECK_HIP(hipMemset(d_lut_vdwA + row_off + num_atoms, 0, tail_bytes));
+        CHECK_HIP(hipMemset(d_lut_vdwB + row_off + num_atoms, 0, tail_bytes));
+        CHECK_HIP(hipMemset(d_lut_charges + row_off + num_atoms, 0, tail_bytes));
+        if (ie_vdwA) {
+            CHECK_HIP(hipMemset(d_lut_ie_vdwA + row_off + num_atoms, 0, tail_bytes));
+        }
+        CHECK_HIP(hipMemset(d_lut_pair_starts + lig_off + num_atoms + 1, 0,
+                            sizeof(int) * (size_t)(GPU_MAX_ATOMS + 1 - num_atoms)));
+    }
 
     /* CS-per-atom pair index so the kernel can iterate pairs with
        pair_starts[lig][a].  Same layout as dock_gpu_set_ligand_ie(). */
@@ -677,6 +714,22 @@ int dock_gpu_batch_score_vs(const float *xyz, int num_poses, int num_atoms,
     CHECK_HIP(hipGetLastError());
     CHECK_HIP(hipDeviceSynchronize());
     CHECK_HIP(hipMemcpy(out_scores, d_scores, sizeof(float) * (size_t)num_poses, hipMemcpyDeviceToHost));
+    return 1;
+}
+
+int dock_gpu_grid_bounds(float *minx, float *miny, float *minz,
+                         float *maxx, float *maxy, float *maxz)
+{
+    if (!g_initialized) return 0;
+    /* Mirror Base_Grid::is_inside_grid_box(): valid points must be
+       strictly between origin+spacing and origin+(span-2)*spacing so
+       trilinear interpolation never touches the clamped texture edge. */
+    *minx = g_params.origin_x + g_params.spacing;
+    *miny = g_params.origin_y + g_params.spacing;
+    *minz = g_params.origin_z + g_params.spacing;
+    *maxx = g_params.origin_x + (float)(g_params.span_x - 2) * g_params.spacing;
+    *maxy = g_params.origin_y + (float)(g_params.span_y - 2) * g_params.spacing;
+    *maxz = g_params.origin_z + (float)(g_params.span_z - 2) * g_params.spacing;
     return 1;
 }
 

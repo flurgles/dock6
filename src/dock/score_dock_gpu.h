@@ -66,10 +66,13 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
         pose[1].atom[0].x, .y, .z, ...
    num_poses: number of poses to score (≥ 1)
    num_atoms: number of atoms per pose
+   active_flags: per-atom mask (array of num_atoms ints; nonzero = active).
+        Inactive atoms are skipped, matching the CPU grid scoring.
+        May be NULL, in which case all atoms are treated as active.
    out_scores: output array of num_poses floats (caller-allocated)
    Returns 1 on success, 0 on error. */
 int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
-                         float *out_scores);
+                         const int *active_flags, float *out_scores);
 
 /* Upload per-atom internal energy parameters (constant per ligand).
    Called after dock_gpu_set_ligand() and dock_gpu_init().
@@ -139,13 +142,20 @@ void dock_gpu_monitor(int layer, int segment, int total_segments);
    lig_idx: 0 .. dock_gpu_vs_max_ligands()-1
    vdwA, vdwB, charges, active_flags, ie_vdwA: length num_atoms
    nb_int_pairs: flat array of num_nb_pairs*2 ints (a1, a2, ...)
+   ie_soft_delta / ie_cutoff_sq: internal-energy soft-core delta and
+   distance-squared cutoff for THIS ligand's pair scoring (mirrors
+   dock_gpu_set_ligand_ie).  Stored as the current IE parameters used
+   by dock_gpu_batch_score_vs().
+   The row tail beyond num_atoms is zeroed so poses of shorter ligands
+   are never scored against stale parameters left by a previous row owner.
    Returns 1 on success, 0 on error. */
 int dock_gpu_vs_register_ligand(int lig_idx,
                                 const float *vdwA, const float *vdwB,
                                 const float *charges, const int *active_flags,
                                 const float *ie_vdwA,
                                 const int *nb_int_pairs, int num_nb_pairs,
-                                int num_atoms);
+                                int num_atoms,
+                                float ie_soft_delta, float ie_cutoff_sq);
 
 /* Max ligand-table rows the backend accepts. */
 int dock_gpu_vs_max_ligands(void);
@@ -157,6 +167,16 @@ int dock_gpu_vs_max_ligands(void);
    Returns 1 on success, 0 on error. */
 int dock_gpu_batch_score_vs(const float *xyz, int num_poses, int num_atoms,
                             const int *pose_lig, float *out_scores);
+
+/* Report the grid box volume that poses must occupy to be scorable:
+   [minx,maxx]x[miny,maxy]x[minz,maxz] in Angstroms, mirroring
+   Base_Grid::is_inside_grid_box() (points within one voxel of the box
+   edge are excluded, since trilinear interpolation needs the full
+   neighborhood).  Callers use this to mark out-of-bounds poses the
+   kernel cannot reject (clamp-to-edge sampling).  Returns 1 on
+   success, 0 if the backend cannot provide the box. */
+int dock_gpu_grid_bounds(float *minx, float *miny, float *minz,
+                         float *maxx, float *maxy, float *maxz);
 
 
 

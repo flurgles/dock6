@@ -22,9 +22,10 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
 }
 
 int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
-                         float *out_scores)
+                         const int *active_flags, float *out_scores)
 {
-    (void)xyz; (void)num_poses; (void)num_atoms; (void)out_scores;
+    (void)xyz; (void)num_poses; (void)num_atoms;
+    (void)active_flags; (void)out_scores;
     return 0;  /* not implemented on CPU */
 }
 
@@ -86,7 +87,8 @@ int dock_gpu_vs_register_ligand(int lig_idx,
                                 const float *charges, const int *active_flags,
                                 const float *ie_vdwA,
                                 const int *nb_int_pairs, int num_nb_pairs,
-                                int num_atoms)
+                                int num_atoms,
+                                float ie_soft_delta, float ie_cutoff_sq)
 {
     (void)lig_idx; (void)vdwA; (void)vdwB; (void)charges;
     (void)active_flags; (void)ie_vdwA; (void)nb_int_pairs;
@@ -104,5 +106,12 @@ int dock_gpu_batch_score_vs(const float *xyz, int num_poses, int num_atoms,
 {
     (void)xyz; (void)num_poses; (void)num_atoms; (void)pose_lig;
     (void)out_scores;
+    return 0;
+}
+
+int dock_gpu_grid_bounds(float *minx, float *miny, float *minz,
+                         float *maxx, float *maxy, float *maxz)
+{
+    (void)minx; (void)miny; (void)minz; (void)maxx; (void)maxy; (void)maxz;
     return 0;
 }

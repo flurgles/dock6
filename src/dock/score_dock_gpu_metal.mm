@@ -1445,4 +1445,43 @@ void dock_gpu_monitor(int layer, int segment, int total_segments)
 }
 
 
+/* ---- Virtual-screening LUT API: not implemented on this backend. ----
+   Returning 0 makes the VS driver fall back to CPU scoring for the
+   affected ligand, so a Metal build links and stays correct. */
+
+int dock_gpu_vs_register_ligand(int lig_idx,
+                                const float *vdwA, const float *vdwB,
+                                const float *charges, const int *active_flags,
+                                const float *ie_vdwA,
+                                const int *nb_int_pairs, int num_nb_pairs,
+                                int num_atoms,
+                                float ie_soft_delta, float ie_cutoff_sq)
+{
+    (void)lig_idx; (void)vdwA; (void)vdwB; (void)charges;
+    (void)active_flags; (void)ie_vdwA; (void)nb_int_pairs;
+    (void)num_nb_pairs; (void)num_atoms;
+    (void)ie_soft_delta; (void)ie_cutoff_sq;
+    return 0;
+}
+
+int dock_gpu_vs_max_ligands(void)
+{
+    return 0;
+}
+
+int dock_gpu_batch_score_vs(const float *xyz, int num_poses, int num_atoms,
+                            const int *pose_lig, float *out_scores)
+{
+    (void)xyz; (void)num_poses; (void)num_atoms; (void)pose_lig;
+    (void)out_scores;
+    return 0;
+}
+
+int dock_gpu_grid_bounds(float *minx, float *miny, float *minz,
+                         float *maxx, float *maxy, float *maxz)
+{
+    (void)minx; (void)miny; (void)minz; (void)maxx; (void)maxy; (void)maxz;
+    return 0;
+}
+
 } /* extern "C" */

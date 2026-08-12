@@ -59,6 +59,24 @@ enum class SlotPhase {
 
 
 /* ------------------------------------------------------------------ */
+/*  SimplexStage — one minimization stage's parameters                 */
+/* ------------------------------------------------------------------ */
+
+/* Mirrors one Minimizer::minimize() call.  The CPU growth path runs a
+   torsion-only pre-minimization followed by the full minimization
+   (two stages); the pool replicates that with stage A then stage B.
+   Stage B is skipped when max_cycles_B == 0. */
+struct SimplexStage {
+    int    max_iterations;
+    int    max_cycles;
+    float  score_converge;
+    float  trans_step_size;
+    float  rot_step_size;
+    float  tors_step_size;
+};
+
+
+/* ------------------------------------------------------------------ */
 /*  SimplexSlot — per-conformer state                                 */
 /* ------------------------------------------------------------------ */
 
@@ -93,6 +111,21 @@ struct SimplexSlot {
     int            current_cycle;
     int            max_cycles;
     float          cycle_converge;
+
+    // Two-stage support (mirrors minimize_flexible_growth's torsion
+    // pre-min followed by the full minimization).  Skipped when
+    // max_cycles_B == 0.  Stage A = stage 0, stage B = stage 1.
+    int            stage;
+    int            max_iterations_B;
+    int            max_cycles_B;
+    float          score_converge_B;
+    float          trans_step_size_B;
+    float          rot_step_size_B;
+    float          tors_step_size_B;
+
+    // Per-pose deterministic RNG: LCG state continues across cycles and
+    // stages so the initial-simplex draws match the sequential path.
+    unsigned int   rng_state;
 
     // Best-across-cycles tracking: save best result so final convergence
     // returns the best cycle's result, not just the last cycle's.
@@ -155,20 +188,22 @@ public:
     /* Add a new conformer to the pool.
        Returns slot id on success, -1 if pool is full.
        The pool stores a pointer to the caller's DOCKMol (mol) and updates
-       it in-place on convergence.  mol must remain alive until poll(). */
+       it in-place on convergence.  mol must remain alive until poll().
+       stageB is skipped when stageB.max_cycles == 0.
+       rng_seed seeds the pose's deterministic simplex stream (per-pose
+       LCG), matching the sequential path's draws for that pose. */
     int add(DOCKMol* mol,
             const FLOATVec& initial_vertex,
-            float trans_step_size, float rot_step_size,
-            float tors_step_size, float score_converge,
-            int max_iterations,
-            int max_cycles = 1,
+            const SimplexStage& stageA,
+            const SimplexStage& stageB = SimplexStage{0, 0, 0.0f, 0.0f, 0.0f, 0.0f},
             float cycle_converge = 1.0f,
             bool restrained = false,
             float coefficient_restraint = 0.0f,
             DOCKMol* rmsd_ref = nullptr,
             void* user_data = nullptr,
             int lig_idx = -1,
-            int lig_num_atoms = 0);
+            int lig_num_atoms = 0,
+            unsigned int rng_seed = 0);
 
     /* Run one pool cycle:
        1. Pack ready candidates from all active slots into m_xyz_buffer.

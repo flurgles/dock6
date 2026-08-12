@@ -23,6 +23,7 @@ class Master_Score;
 using namespace std;
 
 
+
 // +++++++++++++++++++++++++++++++++++++++++
 AG_Conformer_Search::AG_Conformer_Search()
     :   ie_vdwA( NULL ),
@@ -1244,7 +1245,9 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                         af[ai] = amol.atom_active_flags[ai] ? 1 : 0;
                     dock_gpu_vs_register_ligand(gpu_lig_idx,
                                                  vdwA_arr, vdwB_arr, chg_arr, af,
-                                                 ie_vdwA_arr, nb_flat, np, na);
+                                                 ie_vdwA_arr, nb_flat, np, na,
+                                                 score.primary_score->ie_soft_delta,
+                                                 score.primary_score->ie_vdw_cutoff_sq);
                     delete[] af;
                 }
 
@@ -1299,19 +1302,25 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
             FLOATVec vertex;
             for (int iv = 0; iv < 6; iv++) vertex.push_back(0.0f);
 
+            SimplexStage astage;
+            astage.max_iterations = simplex.anchor_min_max_iterations;
+            astage.max_cycles     = simplex.anchor_min_max_cycles;
+            astage.score_converge = simplex.anchor_min_score_converge;
+            astage.trans_step_size = simplex.anchor_min_trans_step_size;
+            astage.rot_step_size  = simplex.anchor_min_rot_step_size;
+            astage.tors_step_size = simplex.anchor_min_tors_step_size;
+
             anchor_pool.add(&anchor_positions[i].second, vertex,
-                            simplex.anchor_min_trans_step_size,
-                            simplex.anchor_min_rot_step_size,
-                            simplex.anchor_min_tors_step_size,
-                            simplex.anchor_min_score_converge,
-                            simplex.anchor_min_max_iterations,
-                            simplex.anchor_min_max_cycles,
+                            astage, SimplexStage{0, 0, 0.0f, 0.0f, 0.0f, 0.0f},
                             simplex.anchor_min_cycle_converge,
                             simplex.restrained_min,
                             simplex.coefficient_restraint,
                             nullptr, nullptr,
                             gpu_lig_idx,
-                            anchor_positions[i].second.num_atoms);
+                            anchor_positions[i].second.num_atoms,
+                            seed_key((unsigned)dock_mol_serial,
+                                     (unsigned)current_anchor, (unsigned)i,
+                                     0x51u, 0x52u));
         }
 
         // drain pool — all anchor mols updated in place by fill_slot_from_mol
@@ -1340,6 +1349,10 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
         } else {
         for (i = 0; i < anchor_positions.size(); i++){
             anchor_positions_b4min.push_back(anchor_positions[i]);  // save unmin anchor in anchor_positions_b4min
+            simplex.set_local_rng_seed(
+                seed_key((unsigned)dock_mol_serial,
+                         (unsigned)current_anchor, (unsigned)i,
+                         0x51u, 0x52u));
             simplex.minimize_rigid_anchor(anchor_positions[i].second, score); //minimize anchor
         }
     }
@@ -1592,6 +1605,12 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                                 simplex.id_torsions(exp_seeds[k].structure, vertex);
                                 simplex.torsion_scale_factors.resize(simplex.torsions.size(), 1);
 
+                                /* mirror Minimizer::minimize_flexible_growth:
+                                   with minimize_flexible_growth=no the
+                                   growth poses are left unminimized */
+                                if (simplex.use_min_flex_growth)
+                                {
+
                                 /* Match the CPU ramp path: score_converge ramps
                                    from initial_score_converge down to
                                    flex_min_score_converge across layers. */
@@ -1616,21 +1635,57 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                                     pool.poll();
                                 }
 
+                                /* Two stages, mirroring
+                                   minimize_flexible_growth: a torsion
+                                   pre-min (rigid DOF locked) followed by
+                                   the full minimization.  The ramp path
+                                   uses the ramped converge for both. */
+                                float stageA_converge =
+                                    (simplex.use_min_flex_growth_ramp)
+                                        ? pool_score_converge
+                                        : simplex.flex_min_score_converge;
+                                SimplexStage gA;
+                                gA.max_iterations =
+                                    simplex.flex_min_torsion_iterations;
+                                gA.max_cycles     = simplex.flex_min_max_cycles;
+                                gA.score_converge = stageA_converge;
+                                gA.trans_step_size = 0.0f;
+                                gA.rot_step_size  = 0.0f;
+                                gA.tors_step_size =
+                                    simplex.flex_min_tors_step_size;
+                                SimplexStage gB;
+                                gB.max_iterations =
+                                    simplex.flex_min_max_iterations;
+                                gB.max_cycles     = simplex.flex_min_max_cycles;
+                                gB.score_converge = pool_score_converge;
+                                gB.trans_step_size =
+                                    simplex.flex_min_trans_step_size;
+                                gB.rot_step_size =
+                                    simplex.flex_min_rot_step_size;
+                                gB.tors_step_size =
+                                    simplex.flex_min_tors_step_size;
+
                                 pool.add(&exp_seeds[k].structure,
                                          vertex,
-                                         simplex.flex_min_trans_step_size,
-                                         simplex.flex_min_rot_step_size,
-                                         simplex.flex_min_tors_step_size,
-                                         pool_score_converge,
-                                         simplex.flex_min_max_iterations,
-                                         simplex.flex_min_max_cycles,
+                                         gA, gB,
                                          simplex.flex_min_cycle_converge,
                                          simplex.restrained_min,
                                          simplex.coefficient_restraint,
                                          nullptr,
-                                         reinterpret_cast<void*>((intptr_t)k));
+                                         reinterpret_cast<void*>((intptr_t)k),
+                                         -1, 0,
+                                         seed_key((unsigned)dock_mol_serial,
+                                                  (unsigned)current_anchor,
+                                                  (unsigned)i, (unsigned)l,
+                                                  (unsigned)k));
+                                }
                             } else {
                                 /* CPU fallback: per-conformer minimization */
+                                simplex.set_local_rng_seed(
+                                    seed_key((unsigned)dock_mol_serial,
+                                             (unsigned)current_anchor,
+                                             (unsigned)i, (unsigned)l,
+                                             (unsigned)k));
                                 if (!simplex.use_min_flex_growth_ramp) {
                                     simplex.minimize_flexible_growth(
                                         exp_seeds[k].structure, score,
@@ -1657,6 +1712,77 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                 }
 
                 // Second pass: score and prune
+                // GPU-batched path: score every exp_seed of the last seed
+                // level in two dispatches (grid-only + grid+IE) instead of
+                // one CPU compute_primary_score per conformer.
+                bool gpu2 = false;
+                std::vector<float> g2_grid;
+                std::vector<float> g2_comb;
+                std::vector<char>  g2_valid;
+                if (use_gpu && score.use_primary_score &&
+                    j == (int)seeds.size() - 1 && !exp_seeds.empty()) {
+                    const int n2 = (int)exp_seeds.size();
+                    const int na2 = exp_seeds[0].structure.num_atoms;
+                    if (na2 > 0) {
+                        std::vector<float> xyz2((size_t)n2 * na2 * 3);
+                        for (int kk = 0; kk < n2; kk++) {
+                            DOCKMol & s2 = exp_seeds[kk].structure;
+                            for (int a = 0; a < na2; a++) {
+                                xyz2[(size_t)kk * na2 * 3 + a * 3 + 0] = s2.x[a];
+                                xyz2[(size_t)kk * na2 * 3 + a * 3 + 1] = s2.y[a];
+                                xyz2[(size_t)kk * na2 * 3 + a * 3 + 2] = s2.z[a];
+                            }
+                        }
+                        std::vector<int> flags2((size_t)na2);
+                        for (int a = 0; a < na2; a++)
+                            flags2[a] = exp_seeds[0].structure
+                                            .atom_active_flags[a] ? 1 : 0;
+                        g2_grid.resize((size_t)n2);
+                        g2_comb.resize((size_t)n2);
+                        g2_valid.resize((size_t)n2);
+                        bool ok = true;
+                        const char *dbg2 = getenv("DOCK_GPU2_DEBUG");
+                        if (dbg2) fprintf(stderr, "GPU2 gate i=%d l=%d j=%d/%d n2=%d na2=%d use_gpu=%d useprim=%d\n",
+                                          i, l, j, (int)seeds.size()-1, n2, na2, (int)use_gpu, (int)score.use_primary_score);
+                        for (int off = 0; off < n2; off += GPU_MAX_BATCH_POSES) {
+                            int cnt = n2 - off;
+                            if (cnt > GPU_MAX_BATCH_POSES)
+                                cnt = GPU_MAX_BATCH_POSES;
+                            if (!dock_gpu_batch_score(
+                                    &xyz2[(size_t)off * na2 * 3], cnt, na2,
+                                    flags2.data(), &g2_grid[off])) {
+                                if (dbg2) fprintf(stderr, "GPU2 batch_score FAILED off=%d cnt=%d na2=%d\n", off, cnt, na2);
+                                ok = false; break;
+                            }
+                            if (!dock_gpu_batch_score_with_ie_persistent(
+                                    &xyz2[(size_t)off * na2 * 3], cnt, na2,
+                                    flags2.data(), &g2_comb[off])) {
+                                if (dbg2) fprintf(stderr, "GPU2 with_ie FAILED off=%d cnt=%d na2=%d\n", off, cnt, na2);
+                                ok = false; break;
+                            }
+                        }
+                        float gminx, gminy, gminz, gmaxx, gmaxy, gmaxz;
+                        if (ok && dock_gpu_grid_bounds(&gminx, &gminy, &gminz,
+                                                       &gmaxx, &gmaxy, &gmaxz)) {
+                            /* kernel clamps out-of-bounds atoms; replicate
+                               the CPU out-of-grid rejection */
+                            for (int kk = 0; kk < n2; kk++) {
+                                DOCKMol & s2 = exp_seeds[kk].structure;
+                                bool inb = true;
+                                for (int a = 0; a < na2 && inb; a++) {
+                                    if (!s2.atom_active_flags[a]) continue;
+                                    if (!(s2.x[a] > gminx && s2.x[a] < gmaxx &&
+                                          s2.y[a] > gminy && s2.y[a] < gmaxy &&
+                                          s2.z[a] > gminz && s2.z[a] < gmaxz))
+                                        inb = false;
+                                }
+                                g2_valid[kk] = inb ? 1 : 0;
+                            }
+                        } else ok = false;
+                        gpu2 = ok;
+                    }
+                }
+
                 for (k = 0; ((k < exp_seeds.size())&&(j==seeds.size()-1)); k++) {
 
                     if (cb_ok[k] == 2) {
@@ -1664,8 +1790,34 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                             // compute the score for the molecule
                             // now internal energy is computed within compute_primary_score
                             if (score.use_primary_score){
-                                valid_orient = score.compute_primary_score(exp_seeds[k].structure);
-                                valid_orient = score.compute_primary_score(b4min_seeds[k].structure);
+                                if (gpu2) {
+                                    valid_orient = (g2_valid[k] != 0);
+                                    exp_seeds[k].structure.current_score =
+                                        g2_grid[k];
+                                    exp_seeds[k].structure.internal_energy =
+                                        g2_comb[k] - g2_grid[k];
+                                    if (getenv("DOCK_GPU2_DEBUG") && k == 0) {
+                                        DOCKMol ref = exp_seeds[k].structure;
+                                        bool cpu_ok =
+                                            score.compute_primary_score(ref);
+                                        fprintf(stderr,
+                                            "GPU2 i=%d l=%d j=%d na2=%d "
+                                            "gpu_grid=%f gpu_comb=%f "
+                                            "cpu_grid=%f cpu_ie=%f "
+                                            "cpu_ok=%d cutoff=%f\n",
+                                            i, l, j,
+                                            exp_seeds[k].structure.num_atoms,
+                                            g2_grid[k], g2_comb[k],
+                                            ref.current_score,
+                                            ref.internal_energy, cpu_ok,
+                                            growth_score_cutoff_begin /
+                                                pow(growth_score_scaling_factor,
+                                                    i));
+                                    }
+                                } else {
+                                    valid_orient = score.compute_primary_score(exp_seeds[k].structure);
+                                    valid_orient = score.compute_primary_score(b4min_seeds[k].structure);
+                                }
                             } else
                                 valid_orient = true;
 
@@ -1694,17 +1846,17 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
  
                                          growth_score_cutoff = growth_score_cutoff_begin  / ( pow (growth_score_scaling_factor, i) );
 
-                                         if (exp_seeds[k].structure.current_score <= growth_score_cutoff) {
-                                             if (ie_prune) {
-                                                 if (exp_seeds[k].structure.internal_energy > internal_energy_cutoff) {
-                                                     exp_seeds[k].used = true;
-                                                     confs_pruned_bad_score++;
-                                                 }
-                                             }
-                                         } else {
-                                               exp_seeds[k].used = true;
-                                               confs_pruned_bad_score++;
-                                         }
+if (exp_seeds[k].structure.current_score <= growth_score_cutoff) {
+                                              if (ie_prune) {
+                                                  if (exp_seeds[k].structure.internal_energy > internal_energy_cutoff) {
+                                                      exp_seeds[k].used = true;
+                                                      confs_pruned_bad_score++;
+                                                  }
+                                              }
+                                          } else {
+                                                exp_seeds[k].used = true;
+                                                confs_pruned_bad_score++;
+                                          }
 
                             } else {
                                 exp_seeds[k].used = true;  // scoring failed

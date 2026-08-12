@@ -26,6 +26,8 @@ Base_Score::Base_Score()
     ie_vdwA = NULL;
     ie_vdwB = NULL;
     ie_soft_delta = 0.0;
+    ie_att_exp = 6;
+    ie_rep_exp = 12;
     ie_vdw_cutoff_sq = 1e10f;  //default 1e10f for no effective cutoff. set to 25.0 for nb pair calc.
     nb_int.clear();
     rep_radius_scale = 1.0;

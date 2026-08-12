@@ -169,6 +169,10 @@ class Minimizer {
     // at the start of Minimizer::minimize_rigid_anchor() is sufficient.
     bool            skip_internal_energy = false;
 
+    // Per-pose LCG stream state (active when set via set_local_rng_seed).
+    unsigned int    m_lcg_state = 0;
+    bool            m_lcg_active = false;
+
 
     // ----- Virtual algorithm interface -----
 
@@ -196,6 +200,23 @@ class Minimizer {
     void            minimize_pose_final_min(DOCKMol &, Master_Score &);
     void            secondary_minimize_pose(DOCKMol &, Master_Score &);
 
+
+    // ----- Per-pose deterministic RNG (implemented in minimizer.cpp) -----
+    //
+    // The simplex draws (initial-vertex jitter) use the global rand()
+    // stream by default, which makes minimization results depend on the
+    // ORDER poses are processed (sequential CPU growth vs batch GPU pool
+    // consume the stream in different interleavings).  To make the two
+    // paths bit-identical, callers seed a per-pose LCG stream before each
+    // pose's minimization; all draws for that pose (across cycles and
+    // growth stages) continue from that stream, so results are independent
+    // of processing order.  The GPU pool saves/restores the stream state
+    // per slot so interleaved slots each draw their own sequence.
+
+    void            set_local_rng_seed(unsigned int seed);
+    void            set_local_rng_state(unsigned int state);
+    unsigned int    local_rng_state() const;
+    float           next_rand_01();
 
     // ----- Shared utility methods (implemented in minimizer.cpp) -----
 

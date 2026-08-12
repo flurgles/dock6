@@ -24,6 +24,31 @@ class Master_Score;
 class Parameter_Reader;
 class Minimizer;
 
+/* ------------------------------------------------------------------ */
+/*  Per-pose simplex RNG seed keys                                    */
+/* ------------------------------------------------------------------ */
+
+/* Deterministic key mixing the pose's position in the growth tree.
+   The sequential path and the GPU pool both call seed_key() with the
+   same indices, so every pose draws the same simplex random numbers
+   regardless of processing order.  Anchor poses: (serial, anchor, pose).
+   Growth poses: (serial, anchor, layer, segment, pose).  Must stay
+   identical across conf_gen_ag.cpp and dock.cpp. */
+inline unsigned int
+seed_key(unsigned int a, unsigned int b, unsigned int c,
+         unsigned int d, unsigned int e)
+{
+    unsigned int x = a * 0x9E3779B1u ^ b * 0x85EBCA77u ^
+                     c * 0xC2B2AE3Du ^ d * 0x27D4EB2Fu ^
+                     e * 0x165667B1u;
+    x ^= x >> 16;
+    x *= 0x7FEB352Du;
+    x ^= x >> 15;
+    x *= 0x846CA68Bu;
+    x ^= x >> 16;
+    return x;
+}
+
 
 /********************************************************************/
 class           SEGMENT {
@@ -227,9 +252,14 @@ class           AG_Conformer_Search {
     bool            last_conformer;                // 
 
     int             current_anchor;                // current anchor (anchors.size() -> 0)
+
+    // Serial index of the molecule being docked (library order, 0-based).
+    // The sequential main loop and the GPU VS driver both set this so the
+    // per-pose simplex RNG seeds (seed_key) match across the two paths.
+    int             dock_mol_serial = 0;
+
     bool            return_anchor_value;           // used when no flex ligand is
-                                                   // requested
-    bool            return_periph_value;           // used when no flex ligand is
+                                                   // requested    bool            return_periph_value;           // used when no flex ligand is
                                                    // requested
 
     INTVec          atom_seg_ids;                  // id of which segment each atom

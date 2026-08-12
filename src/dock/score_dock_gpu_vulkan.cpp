@@ -1049,13 +1049,19 @@ int dock_gpu_set_ligand_ie(const float *ie_vdwA, const float *ie_vdwB,
 }
 
 int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
-                         float *out_scores)
+                         const int *active_flags, float *out_scores)
 {
     if (!g_initialized) return 0;
     if (num_poses > GPU_MAX_POSES || num_atoms > GPU_MAX_ATOMS) return 0;
 
     size_t xyz_bytes = sizeof(float) * (size_t)num_poses * (size_t)num_atoms * 3;
     memcpy(g_xyz.map, xyz, xyz_bytes);
+    if (active_flags) {
+        memcpy(g_active_flags.map, active_flags, sizeof(int) * (size_t)num_atoms);
+    } else {
+        int *af = (int *)g_active_flags.map;
+        for (int i = 0; i < num_atoms; i++) af[i] = 1;
+    }
 
     PushConstants pc = {};
     fill_push_constants(&pc, num_atoms, num_poses, 0.0f, 1e10f, 0);
@@ -1199,6 +1205,47 @@ void dock_gpu_monitor(int layer, int segment, int total_segments)
             prof_dispatch_count > 0
                 ? (double)prof_total_conformers / (double)prof_dispatch_count : 0.0,
             prof_last_dispatch_ms, rolling_avg);
+}
+
+/* ---- Virtual-screening LUT API: not implemented on this backend. ----
+   Returning 0 makes the VS driver fall back to CPU scoring for the
+   affected ligand (registration failure drops the LUT row, batch calls
+   return failure and the pool marks its slots converged), so a Vulkan
+   build links and stays correct — just unaccelerated for VS batches. */
+
+int dock_gpu_vs_register_ligand(int lig_idx,
+                                const float *vdwA, const float *vdwB,
+                                const float *charges, const int *active_flags,
+                                const float *ie_vdwA,
+                                const int *nb_int_pairs, int num_nb_pairs,
+                                int num_atoms,
+                                float ie_soft_delta, float ie_cutoff_sq)
+{
+    (void)lig_idx; (void)vdwA; (void)vdwB; (void)charges;
+    (void)active_flags; (void)ie_vdwA; (void)nb_int_pairs;
+    (void)num_nb_pairs; (void)num_atoms;
+    (void)ie_soft_delta; (void)ie_cutoff_sq;
+    return 0;
+}
+
+int dock_gpu_vs_max_ligands(void)
+{
+    return 0;
+}
+
+int dock_gpu_batch_score_vs(const float *xyz, int num_poses, int num_atoms,
+                            const int *pose_lig, float *out_scores)
+{
+    (void)xyz; (void)num_poses; (void)num_atoms; (void)pose_lig;
+    (void)out_scores;
+    return 0;
+}
+
+int dock_gpu_grid_bounds(float *minx, float *miny, float *minz,
+                         float *maxx, float *maxy, float *maxz)
+{
+    (void)minx; (void)miny; (void)minz; (void)maxx; (void)maxy; (void)maxz;
+    return 0;
 }
 
 } /* extern "C" */

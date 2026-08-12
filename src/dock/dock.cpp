@@ -142,6 +142,7 @@ vs_deep_copy_anchors(vector<SCOREMol> & dst, const vector<SCOREMol> & src)
 struct VSWindowJob {
     DOCKMol               mol;      /* prepared ligand (for growth replay) */
     vector<VSAnchorSet>   sets;     /* one entry per completed anchor      */
+    int                   serial;   /* library-order index (per-pose RNG)  */
 };
 
 static int
@@ -162,13 +163,20 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
     if (window > vs_window_max) window = vs_window_max;
     int maxl = dock_gpu_vs_max_ligands();
     if (window > maxl) window = maxl;
+    const float ie_soft = c_master_score.primary_score->ie_soft_delta;
+    const float ie_cut  = c_master_score.primary_score->ie_vdw_cutoff_sq;
+    const bool can_batch_orient =
+        c_orient.orient_ligand && c_master_score.use_score &&
+        c_master_score.use_primary_score && !c_library.write_orients;
 
     /* ---- Phase 1 (collection): fill the window with ligand jobs ---- */
     DOCKMol mol;
     vector<VSWindowJob> jobs;
     int total_written = 0;
+    int mol_serial = 0;   /* library-order serial for per-pose RNG keys */
     for (;;) {
     jobs.clear();
+    int row_next = 0;   /* LUT rows reserved per anchor set, this window */
     while (c_library.get_mol(mol, c_filter.use_database_filter, USE_MPI,
                              c_master_score.amber, c_typer, c_master_score,
                              active_min)) {
@@ -190,57 +198,192 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
         }
 
         VSWindowJob job;
+        job.serial = mol_serial++;
 
         while (c_master_conf.next_anchor(mol)) {
             c_library.num_anchors++;
             c_orient.match_ligand(mol);
+
+            /* Pass 1: stream this anchor's orientations WITHOUT scoring.
+               Orientation scoring (a ~1000-score/anchor CPU hot spot) is
+               deferred to one batched LUT dispatch after collection. */
+            std::vector<float> ori_xyz;
+            std::vector<int>   ori_bump;
+            std::vector<int>   ori_more;
             while (c_orient.new_next_orientation(mol)) {
-                if (c_bmp_score.check_anchor_bumps(mol, c_orient.more_orientations())) {
-                    if (c_master_conf.method == 1) {
-                        c_master_score.primary_score->nb_int.clear();
+                ori_bump.push_back(
+                    c_bmp_score.check_anchor_bumps(mol,
+                        c_orient.more_orientations()) ? 1 : 0);
+                ori_more.push_back(c_orient.more_orientations() ? 1 : 0);
+                for (int ai = 0; ai < mol.num_atoms; ai++) {
+                    ori_xyz.push_back(mol.x[ai]);
+                    ori_xyz.push_back(mol.y[ai]);
+                    ori_xyz.push_back(mol.z[ai]);
+                }
+            }
+            const int n_ori = (int)ori_bump.size();
+            const int na_o  = mol.num_atoms;
+            int lig_row = -1;
+            bool batch_ok = false;
+            std::vector<float> ori_score(n_ori > 0 ? (size_t)n_ori : 1, 0.0f);
+            std::vector<char>  ori_valid((size_t)n_ori, 0);
+            if (n_ori > 0 && can_batch_orient && dock_gpu_is_active() &&
+                row_next < maxl) {
+                /* Reserve a LUT row for THIS anchor set and register the
+                   anchor-atom parameters.  np=0: orientation scoring is
+                   grid-only, mirroring the CPU path where nb_int is empty
+                   (cleared per orientation and never rebuilt during
+                   phase-1 collection). */
+                lig_row = row_next++;
+                float *vdwA_arr = new float[na_o];
+                float *vdwB_arr = new float[na_o];
+                float *chg_arr  = new float[na_o];
+                int   *af_arr   = new int[na_o];
+                for (int ai = 0; ai < na_o; ai++) {
+                    int type = mol.amber_at_id[ai];
+                    vdwA_arr[ai] = c_master_score.primary_score->vdwA[type];
+                    vdwB_arr[ai] = c_master_score.primary_score->vdwB[type];
+                    chg_arr[ai]  = mol.charges[ai];
+                    af_arr[ai]   = mol.atom_active_flags[ai] ? 1 : 0;
+                }
+                if (!dock_gpu_vs_register_ligand(lig_row, vdwA_arr, vdwB_arr,
+                                                 chg_arr, af_arr, NULL,
+                                                 NULL, 0, na_o,
+                                                 ie_soft, ie_cut))
+                    lig_row = -1;
+                delete[] vdwA_arr;
+                delete[] vdwB_arr;
+                delete[] chg_arr;
+                delete[] af_arr;
+
+                if (lig_row >= 0) {
+                    std::vector<int> pose_lig((size_t)GPU_MAX_BATCH_POSES,
+                                              lig_row);
+                    batch_ok = true;
+                    for (int off = 0; off < n_ori; off += GPU_MAX_BATCH_POSES) {
+                        int cnt = n_ori - off;
+                        if (cnt > GPU_MAX_BATCH_POSES) cnt = GPU_MAX_BATCH_POSES;
+                        if (!dock_gpu_batch_score_vs(
+                                &ori_xyz[(size_t)off * na_o * 3], cnt, na_o,
+                                pose_lig.data(), &ori_score[off])) {
+                            batch_ok = false;
+                            break;
+                        }
                     }
-                    if (c_library.submit_orientation(mol, c_master_score,
-                                                     c_orient.orient_ligand) ||
-                        !c_orient.more_orientations()) {
-                        if (c_master_conf.submit_anchor_orientation(mol,
-                                                    c_orient.more_orientations())) {
-                            /* anchor complete — snapshot its positions */
-                            VSAnchorSet as;
-                            vs_deep_copy_anchors(as.anchors,
-                                c_master_conf.c_ag_conf.anchor_positions);
-                            as.lig_idx = -1;
-                            /* Capture the per-anchor IE pair table NOW:
-                               nb_int is cleared/rebuilt per orientation, so
-                               phase 2 would otherwise read the pair list of
-                               the last-scored orientation of another ligand. */
-                            as.np = 0;
-                            as.nb_flat = NULL;
-                            as.ie_vdwA = NULL;
-                            if (!as.anchors.empty() &&
-                                c_master_conf.method == 1) {
-                                int np = (int)c_master_score.primary_score
-                                             ->nb_int.size();
-                                if (np > 0) {
-                                    as.np = np;
-                                    as.nb_flat = new int[np * 2];
-                                    for (int pi = 0; pi < np; pi++) {
-                                        as.nb_flat[pi * 2] =
-                                            c_master_score.primary_score
-                                                ->nb_int[pi].first;
-                                        as.nb_flat[pi * 2 + 1] =
-                                            c_master_score.primary_score
-                                                ->nb_int[pi].second;
-                                    }
-                                    int na = as.anchors[0].second.num_atoms;
-                                    as.ie_vdwA = new float[na];
-                                    for (int ai = 0; ai < na; ai++)
-                                        as.ie_vdwA[ai] =
-                                            c_master_score.primary_score
-                                                ->ie_vdwA[ai];
+                    /* Validity: the kernel clamps out-of-bounds atoms, so
+                       replicate the CPU out-of-grid rejection exactly
+                       (Base_Grid::is_inside_grid_box). */
+                    float gminx, gminy, gminz, gmaxx, gmaxy, gmaxz;
+                    if (batch_ok &&
+                        !dock_gpu_grid_bounds(&gminx, &gminy, &gminz,
+                                              &gmaxx, &gmaxy, &gmaxz))
+                        batch_ok = false;
+                    if (batch_ok) {
+                        for (int oi = 0; oi < n_ori; oi++) {
+                            const float *p = &ori_xyz[(size_t)oi * na_o * 3];
+                            bool inb = true;
+                            for (int ai = 0; ai < na_o && inb; ai++) {
+                                if (!mol.atom_active_flags[ai]) continue;
+                                float x = p[ai * 3];
+                                float y = p[ai * 3 + 1];
+                                float z = p[ai * 3 + 2];
+                                if (!(x > gminx && x < gmaxx &&
+                                      y > gminy && y < gmaxy &&
+                                      z > gminz && z < gmaxz))
+                                    inb = false;
+                            }
+                            ori_valid[oi] = inb ? 1 : 0;
+                        }
+                    }
+                }
+            }
+
+            /* Pass 2 (replay): identical submission logic to the sequential
+               loop; validity comes from the batch (or a CPU fallback). */
+            for (int oi = 0; oi < n_ori; oi++) {
+                float *dst_x = mol.x;
+                float *dst_y = mol.y;
+                float *dst_z = mol.z;
+                const float *p = &ori_xyz[(size_t)oi * na_o * 3];
+                for (int ai = 0; ai < na_o; ai++) {
+                    dst_x[ai] = p[ai * 3];
+                    dst_y[ai] = p[ai * 3 + 1];
+                    dst_z[ai] = p[ai * 3 + 2];
+                }
+                if (!ori_bump[oi]) continue;
+                if (c_master_conf.method == 1) {
+                    c_master_score.primary_score->nb_int.clear();
+                }
+                c_library.num_orients++;
+                bool valid_orient;
+                if (can_batch_orient && batch_ok && lig_row >= 0) {
+                    valid_orient = (ori_valid[oi] != 0);
+                    if (valid_orient)
+                        mol.current_score = ori_score[oi];
+                } else if (can_batch_orient) {
+                    valid_orient =
+                        c_master_score.compute_primary_score(mol);
+                } else {
+                    valid_orient = false;
+                }
+                if (valid_orient || !ori_more[oi]) {
+                    if (c_master_conf.submit_anchor_orientation(mol,
+                                                    (bool)ori_more[oi])) {
+                        /* anchor complete — snapshot its positions */
+                        VSAnchorSet as;
+                        vs_deep_copy_anchors(as.anchors,
+                            c_master_conf.c_ag_conf.anchor_positions);
+                        as.lig_idx = lig_row;
+                        /* Capture the per-anchor IE pair table NOW:
+                           nb_int is cleared per orientation and never rebuilt
+                           during phase-1 scoring (the covalent-neighbor
+                           structure is untouched, so the method-1 pair rule
+                           from Base_Score::initialize_internal_energy gives
+                           the exact table the CPU anchor minimization uses). */
+                        as.np = 0;
+                        as.nb_flat = NULL;
+                        as.ie_vdwA = NULL;
+                        if (!as.anchors.empty() &&
+                            c_master_conf.method == 1) {
+                            std::vector<INTPair> pairs;
+                            for (int a1 = 0; a1 < mol.num_atoms - 1; a1++)
+                                for (int a2 = a1 + 1; a2 < mol.num_atoms; a2++)
+                                    if (mol.atom_segment_ids[a1] !=
+                                            mol.atom_segment_ids[a2] &&
+                                        mol.get_bond(a1, a2) == -1 &&
+                                        !mol.atoms_are_one_three(a1, a2) &&
+                                        !mol.atoms_are_one_four(a1, a2))
+                                        pairs.push_back(INTPair(a1, a2));
+                            int np = (int)pairs.size();
+                            if (np > 0) {
+                                as.np = np;
+                                as.nb_flat = new int[np * 2];
+                                for (int pi = 0; pi < np; pi++) {
+                                    as.nb_flat[pi * 2]     = pairs[pi].first;
+                                    as.nb_flat[pi * 2 + 1] = pairs[pi].second;
+                                }
+                                int na = as.anchors[0].second.num_atoms;
+                                DOCKMol & amol = as.anchors[0].second;
+                                as.ie_vdwA = new float[na];
+                                /* primary_score->ie_vdwA is not allocated
+                                   until grow_periphery's initialize_internal_energy
+                                   call, so recompute it from the anchor's own
+                                   radii/well-depths — the same formula as
+                                   Base_Score::initialize_internal_energy. */
+                                float ie_att = c_master_score.primary_score
+                                                   ->ie_att_exp;
+                                float ie_rep = c_master_score.primary_score
+                                                   ->ie_rep_exp;
+                                for (int ai = 0; ai < na; ai++) {
+                                    as.ie_vdwA[ai] = (float)sqrt(
+                                        amol.amber_at_well_depth[ai] *
+                                        (ie_att / (ie_rep - ie_att)) *
+                                        pow(2.0 * amol.amber_at_radius[ai],
+                                            ie_rep));
                                 }
                             }
-                            job.sets.push_back(std::move(as));
                         }
+                        job.sets.push_back(std::move(as));
                     }
                 }
             }
@@ -254,24 +397,51 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
     if (jobs.empty()) break;
 
     /* ---- Phase 2 (batch): minimize ALL window anchors in ONE pool ---- */
-    /* One LUT row per ligand: the pair table and parameters are shared
-       by all of a ligand's anchors, so keep a single row and spread it
-       to every set (avoids burning 2 rows per ligand on the same data). */
-    int wt_base = 0;
-    for (size_t i = 0; i < jobs.size(); i++) {
-        jobs[i].sets[0].lig_idx = (wt_base++) % maxl;
-        for (size_t k = 1; k < jobs[i].sets.size(); k++)
-            jobs[i].sets[k].lig_idx = jobs[i].sets[0].lig_idx;
+    /* LUT rows were reserved per anchor set during collection (as.lig_idx).
+       Only sets that could not get a row (orientation batching disabled, or
+       the 128-row budget exhausted) are assigned here: they share their
+       ligand's first reserved row when one exists, else a fresh per-ligand
+       row (≤ window ligands, always within budget). */
+    {
+        int fallback_rows = 0;
+        for (size_t i = 0; i < jobs.size(); i++) {
+            int first_reserved = -1;
+            for (size_t k = 0; k < jobs[i].sets.size(); k++)
+                if (jobs[i].sets[k].anchors.empty()) continue;
+                else if (jobs[i].sets[k].lig_idx >= 0) {
+                    first_reserved = jobs[i].sets[k].lig_idx;
+                    break;
+                }
+            int fresh_row = -1;
+            for (size_t k = 0; k < jobs[i].sets.size(); k++) {
+                VSAnchorSet & as = jobs[i].sets[k];
+                if (as.anchors.empty() || as.lig_idx >= 0) continue;
+                if (first_reserved >= 0) {
+                    as.lig_idx = first_reserved;
+                } else {
+                    /* No row was reserved for this ligand (batching
+                       disabled, or budget exhausted before its first
+                       set).  Give ONE fresh row to the whole ligand —
+                       a per-set counter would wrap across ligands and
+                       let a later ligand overwrite this one's row.
+                       window <= maxl guarantees the fresh counter can
+                       never exhaust the LUT. */
+                    if (fresh_row < 0) fresh_row = fallback_rows++;
+                    as.lig_idx = fresh_row;
+                }
+            }
+        }
     }
 
-    /* Register every windowed ligand in the GPU LUT before batching.
-       Mirrors the registration block in grow_periphery:  per-atom
-       grid vdw/es params from the VDW parm lookup and the atom
-       charges; IE params come from the per-anchor snapshot captured
-       at collection time (same pair list the sequential path would
-       have fed to dock_gpu_set_ligand_ie). */
+    /* Register every windowed anchor set in the GPU LUT before batching.
+       Mirrors the registration block in grow_periphery:  per-atom grid
+       vdw/es params from the VDW parm lookup and the atom charges; IE
+       params come from the per-anchor snapshot captured at collection
+time (the same pair list the sequential path would have fed to
+        dock_gpu_set_ligand_ie), plus the run's IE soft-delta and cutoff. */
     for (size_t i = 0; i < jobs.size(); i++) {
-        VSAnchorSet & as = jobs[i].sets[0];
+        for (size_t k = 0; k < jobs[i].sets.size(); k++) {
+        VSAnchorSet & as = jobs[i].sets[k];
         if (as.anchors.empty()) continue;
         DOCKMol & amol = as.anchors[0].second;
         int na = amol.num_atoms;
@@ -291,63 +461,64 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
         float *ie_vdwA_arr = as.ie_vdwA;
         dock_gpu_vs_register_ligand(as.lig_idx, vdwA_arr, vdwB_arr,
                                     chg_arr, af_arr, ie_vdwA_arr,
-                                    nb_flat, np, na);
+                                    nb_flat, np, na, ie_soft, ie_cut);
         delete[] vdwA_arr;
         delete[] vdwB_arr;
         delete[] chg_arr;
         delete[] af_arr;
-    }
-
-    /* Anchor-pool depth: with rigid 6-DOF slots every step packs ~7
-       candidates per slot, so 512 slots ≈ 3584 poses — nearly a full
-       4096-pose GPU_MAX_POSES dispatch.  Slot scratch is only ~3-5 KB
-       each (~2 MB total), vs. a window-sized pool that left >95% of
-       every launch idle.  Dispatches larger than GPU_MAX_BATCH_POSES
-       are split into chunks by ConformerPool::step(). */
-    ConformerPool anchor_pool(GPU_POOL_BATCH_MAX, &active_min, true,
-                              active_min.simplex_mode,
-                              active_min.simplex_crossover);
-    for (size_t i = 0; i < jobs.size(); i++) {
-        VSWindowJob & job = jobs[i];
-        for (size_t k = 0; k < job.sets.size(); k++) {
-            VSAnchorSet & as = job.sets[k];
-            for (size_t a = 0; a < as.anchors.size(); a++) {
-                while (anchor_pool.active_count() >= anchor_pool.capacity()) {
-                    anchor_pool.step();
-                    anchor_pool.poll();
-                }
-                FLOATVec vertex;
-                for (int iv = 0; iv < 6; iv++) vertex.push_back(0.0f);
-                anchor_pool.add(&as.anchors[a].second, vertex,
-                                active_min.anchor_min_trans_step_size,
-                                active_min.anchor_min_rot_step_size,
-                                active_min.anchor_min_tors_step_size,
-                                active_min.anchor_min_score_converge,
-                                active_min.anchor_min_max_iterations,
-                                active_min.anchor_min_max_cycles,
-                                active_min.anchor_min_cycle_converge,
-                                active_min.restrained_min,
-                                active_min.coefficient_restraint,
-                                nullptr, nullptr,
-                                as.lig_idx,
-                                as.anchors[a].second.num_atoms);
-            }
         }
     }
-    /* drain the pool; each slot's mol (in the job's anchor list) is
-       updated in place with the minimized pose */
-    while (!anchor_pool.idle()) {
-        anchor_pool.step();
-        anchor_pool.poll();
+
+    /* Anchor minimization: batch pool with per-pose deterministic RNG. */
+    {
+        ConformerPool anchor_pool(GPU_POOL_BATCH_MAX, &active_min, true,
+                                  active_min.simplex_mode,
+                                  active_min.simplex_crossover);
+        for (size_t i = 0; i < jobs.size(); i++) {
+            VSWindowJob & job = jobs[i];
+            for (size_t k = 0; k < job.sets.size(); k++) {
+                VSAnchorSet & as = job.sets[k];
+                if (!active_min.use_min_rigid_anchor) continue;
+                for (size_t a = 0; a < as.anchors.size(); a++) {
+                    while (anchor_pool.active_count() >= anchor_pool.capacity()) {
+                        anchor_pool.step();
+                        anchor_pool.poll();
+                    }
+                    FLOATVec vertex;
+                    for (int iv = 0; iv < 6; iv++) vertex.push_back(0.0f);
+                    SimplexStage astage;
+                    astage.max_iterations = active_min.anchor_min_max_iterations;
+                    astage.max_cycles     = active_min.anchor_min_max_cycles;
+                    astage.score_converge = active_min.anchor_min_score_converge;
+                    astage.trans_step_size = active_min.anchor_min_trans_step_size;
+                    astage.rot_step_size  = active_min.anchor_min_rot_step_size;
+                    astage.tors_step_size = active_min.anchor_min_tors_step_size;
+                    anchor_pool.add(&as.anchors[a].second, vertex,
+                                    astage,
+                                    SimplexStage{0, 0, 0.0f, 0.0f, 0.0f, 0.0f},
+                                    active_min.anchor_min_cycle_converge,
+                                    false, 0.0f, nullptr, nullptr,
+                                    as.lig_idx,
+                                    as.anchors[a].second.num_atoms,
+                                    seed_key((unsigned)job.serial,
+                                             (unsigned)k, (unsigned)a,
+                                             0x51u, 0x52u));
+                }
+            }
+        }
+        while (!anchor_pool.idle()) {
+            anchor_pool.step();
+            anchor_pool.poll();
+        }
     }
 
 /* ---- Phase 3 (growth): replay each job with anchors_preminimized ---- */
-    int written = 0;
     for (size_t i = 0; i < jobs.size(); i++) {
         VSWindowJob & job = jobs[i];
         /* Rebuild the AG segment/anchor state for THIS job's ligand —
            the collection loop left it pointing at the last ligand seen. */
         copy_molecule(mol, job.mol);
+        c_master_conf.c_ag_conf.dock_mol_serial = job.serial;
         c_master_conf.c_ag_conf.prepare_molecule(mol);
         for (size_t k = 0; k < job.sets.size(); k++) {
             /* Rebuild layers for anchor k of this ligand, matching what
@@ -361,6 +532,11 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
             int nconf = 0;
             while (c_master_conf.next_conformer(mol)) {
                 active_min.minimize_final_pose(mol, c_master_score, c_typer);
+                /* The GPU growth path sets current_score/internal_energy
+                   directly and never refreshes current_data (the ranked
+                   text).  Recompute the final pose's primary score once so
+                   the reported grid score matches the stored score. */
+                c_master_score.compute_primary_score(mol);
                 c_library.submit_scored_pose(mol, c_master_score, active_min);
                 nconf++;
             }
@@ -387,7 +563,6 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
             if (job.sets[k].ie_vdwA) delete[] job.sets[k].ie_vdwA;
         }
     }
-    total_written += written;
     }
     return total_written;
 }
@@ -1117,6 +1292,7 @@ main(int argc, char **argv)
                            USE_MPI);
     } else {
 
+    int mol_serial_seq = 0;   /* library-order serial for per-pose RNG keys */
     while (c_library.get_mol(mol,c_filter.use_database_filter, USE_MPI, c_master_score.amber, c_typer, c_master_score, *active_min)) { 
         // If MPI is used this is done on the compute nodes.
         // filtering must be done here because it needs all prep for docking
@@ -1144,6 +1320,7 @@ main(int argc, char **argv)
 
         c_master_conf.initialize_once = true;  // this is need for initializing the internal energy fuction for rigid docking and minimization
         //parse ligand into rigid and flexible portions
+        c_master_conf.c_ag_conf.dock_mol_serial = mol_serial_seq++;
         c_master_conf.prepare_molecule(mol);
  
         // Writing fragment libraries for denovo is done inside c_master_conf.prepare_molecule, 

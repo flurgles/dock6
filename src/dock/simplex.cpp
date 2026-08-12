@@ -263,7 +263,7 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                 for (j = 0; j < size; j++) {
                     p[i][j] =
                         //p[0][j] + 2.0 * (((float) rand() / (float) RAND_MAX) -
-                        vertex[j] + 2.0 * (((float) rand() / (float) RAND_MAX) -
+                        vertex[j] + 2.0 * (next_rand_01() -
                                          0.5);
                 }
             }

@@ -9,6 +9,41 @@
 #include "dockmol.h"
 using namespace std;
 
+/* ------------------------------------------------------------------ */
+/*  Per-pose deterministic RNG                                         */
+/* ------------------------------------------------------------------ */
+
+void
+Minimizer::set_local_rng_seed(unsigned int seed)
+{
+    m_lcg_state = seed ? seed : 1u;
+    m_lcg_active = true;
+}
+
+void
+Minimizer::set_local_rng_state(unsigned int state)
+{
+    m_lcg_state = state ? state : 1u;
+    m_lcg_active = true;
+}
+
+unsigned int
+Minimizer::local_rng_state() const
+{
+    return m_lcg_state;
+}
+
+float
+Minimizer::next_rand_01()
+{
+    if (m_lcg_active) {
+        /* Numerical Recipes LCG — deterministic, no global state */
+        m_lcg_state = 1664525u * m_lcg_state + 1013904223u;
+        return (float)((m_lcg_state >> 8) & 0xFFFFFF) * (1.0f / 16777216.0f);
+    }
+    return (float)rand() / (float)RAND_MAX;
+}
+
 void
 Minimizer::id_torsions(DOCKMol & mol, FLOATVec & vertex)
 {
