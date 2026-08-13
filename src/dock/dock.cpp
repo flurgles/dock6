@@ -50,6 +50,7 @@
 // +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 #include <time.h>
+#include <chrono>
 #include <iostream>
 #include <iomanip>
 #include <stdio.h>
@@ -154,12 +155,18 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
 {
     int window = dock_gpu_recommended_batch_size();
     if (window < 1) window = 1;
+    auto vswin_ms = []() {
+        return (long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+    };
+    long long t_win0 = 0, t_collect = 0, t_anchor = 0, t_grow = 0;
+    int win_no = 0;
     /* Host-RAM budget: this 11 GiB Steam Deck runs earlyoom (kills when
        free memory drops below ~3.4%); the collection footprint is roughly
        0.14 GB per in-flight ligand (~2 K orientation snapshots each), so
        the window is capped well below the 128-slot LUT limit.  Make it a
        runtime/compile-time parameter if the host budget differs. */
-    const int vs_window_max = 16;
+    const int vs_window_max = 6;
     if (window > vs_window_max) window = vs_window_max;
     int maxl = dock_gpu_vs_max_ligands();
     if (window > maxl) window = maxl;
@@ -176,6 +183,8 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
     int mol_serial = 0;   /* library-order serial for per-pose RNG keys */
     for (;;) {
     jobs.clear();
+    t_win0 = vswin_ms();
+    win_no++;
     int row_next = 0;   /* LUT rows reserved per anchor set, this window */
     while (c_library.get_mol(mol, c_filter.use_database_filter, USE_MPI,
                              c_master_score.amber, c_typer, c_master_score,
@@ -199,6 +208,11 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
 
         VSWindowJob job;
         job.serial = mol_serial++;
+        if (getenv("DOCK_LBAL_DEBUG") != NULL) {
+            fprintf(stderr, "[LBALDBG] collect mol_serial=%d jobs=%zu\n",
+                    job.serial, jobs.size());
+            fflush(stderr);
+        }
 
         while (c_master_conf.next_anchor(mol)) {
             c_library.num_anchors++;
@@ -395,6 +409,7 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
         if ((int)jobs.size() >= window) break;
     }
     if (jobs.empty()) break;
+    t_collect = vswin_ms();
 
     /* ---- Phase 2 (batch): minimize ALL window anchors in ONE pool ---- */
     /* LUT rows were reserved per anchor set during collection (as.lig_idx).
@@ -483,6 +498,8 @@ time (the same pair list the sequential path would have fed to
                     while (anchor_pool.active_count() >= anchor_pool.capacity()) {
                         anchor_pool.step();
                         anchor_pool.poll();
+                        if (getenv("DOCK_LBAL_DEBUG") != NULL)
+                            fprintf(stderr, "[LBALDBG] anchor cap-loop\n");
                     }
                     FLOATVec vertex;
                     for (int iv = 0; iv < 6; iv++) vertex.push_back(0.0f);
@@ -509,10 +526,29 @@ time (the same pair list the sequential path would have fed to
         while (!anchor_pool.idle()) {
             anchor_pool.step();
             anchor_pool.poll();
+            if (getenv("DOCK_LBAL_DEBUG") != NULL) {
+                fprintf(stderr, "[LBALDBG] anchor drain act=%d\n",
+                        (int)anchor_pool.active_count());
+                fflush(stderr);
+            }
         }
     }
+    t_anchor = vswin_ms();
 
-/* ---- Phase 3 (growth): replay each job with anchors_preminimized ---- */
+/* ---- Phase 3 (growth): batch-scheduled replay, anchors preminimized ---- */
+    /* All (job,set) rounds share ONE VS-mode pool.  Rounds are prepped
+       (torsion drive + clash/bump + pool.add) whenever pool capacity
+       allows; NM iterations run for every ligand's slots in the same GPU
+       dispatches; each round's second pass (VS grid+IE scoring, prune,
+       seed rebuild) runs as soon as its slots converge.  This keeps the
+       GPU busy with mixed-ligand batches while the CPU drives/clashes/
+       prunes the other ligands' rounds. */
+    std::vector<VSGrowState> rows;
+    std::vector<std::vector<int> > job_rows(jobs.size());
+    VSGrowState base;   /* parked per-job ligand state (prepare_molecule) */
+    ConformerPool grow_pool(GPU_POOL_BATCH_MAX, &active_min, true,
+                            active_min.simplex_mode,
+                            active_min.simplex_crossover);
     for (size_t i = 0; i < jobs.size(); i++) {
         VSWindowJob & job = jobs[i];
         /* Rebuild the AG segment/anchor state for THIS job's ligand —
@@ -520,15 +556,120 @@ time (the same pair list the sequential path would have fed to
         copy_molecule(mol, job.mol);
         c_master_conf.c_ag_conf.dock_mol_serial = job.serial;
         c_master_conf.c_ag_conf.prepare_molecule(mol);
+        c_master_conf.c_ag_conf.grow_win_park(base);
         for (size_t k = 0; k < job.sets.size(); k++) {
             /* Rebuild layers for anchor k of this ligand, matching what
                next_anchor() would have built in the sequential path. */
+            c_master_conf.c_ag_conf.grow_win_restore(base);
             c_master_conf.c_ag_conf.setup_growth_anchor(k);
             /* restore the anchor positions collected for this job */
             vs_deep_copy_anchors(c_master_conf.c_ag_conf.anchor_positions,
                                  job.sets[k].anchors);
-            c_master_conf.grow_periphery(c_master_score, active_min,
-                                         c_bmp_score, true);
+            rows.push_back(VSGrowState());
+            VSGrowState & g = rows.back();
+            g.route = (int)rows.size() - 1;
+            g.lig_idx = job.sets[k].lig_idx;
+            c_master_conf.c_ag_conf.grow_win_init(g, c_master_score,
+                                                  active_min, c_bmp_score);
+            c_master_conf.c_ag_conf.grow_win_park(g);
+            job_rows[i].push_back(g.route);
+        }
+        c_master_conf.c_ag_conf.grow_win_restore(base);
+    }
+
+    /* scheduler loop: prep adds while capacity allows, then step the
+       shared pool; converged slots unlock their round's second pass.
+       Rows are swapped into the AG only when they have CPU work
+       (adding or a finished drain); pure drain phases run GPU-only. */
+    {
+        int cur_swapped = -1;   /* row index currently parked in the AG */
+        bool any_pending = true;
+        size_t rr = 0;          /* round-robin cursor: one row's CPU work
+                                   per iteration so cost stays O(1) in rows */
+        long long hb_last = vswin_ms(), hb_disp = 0;
+        while (any_pending) {
+            bool any_active = !grow_pool.idle();
+            if (vswin_ms() - hb_last >= 2000) {
+                fprintf(stderr, "[HEART] t=%lldms disp=%lld act=%d\n",
+                        vswin_ms() - t_win0, hb_disp,
+                        (int)grow_pool.active_count());
+                fflush(stderr);
+                hb_last = vswin_ms();
+                hb_disp = 0;
+            }
+            bool any_round_open = false;
+            if (any_active) {
+                /* Enqueue this round's GPU batches first (non-blocking):
+                   the row bookkeeping below then overlaps the kernels. */
+                grow_pool.step_enqueue();
+                hb_disp++;
+            }
+            {
+                /* find the next row with CPU work, starting at rr */
+                size_t k = rows.size();
+                for (size_t s = 0; s < rows.size(); s++) {
+                    size_t r = (rr + s) % rows.size();
+                    if (rows[r].done) continue;
+                    any_round_open = true;
+                    bool needs_state = rows[r].adding ||
+                        (rows[r].inflight == 0 && !rows[r].drain_done);
+                    if (!needs_state) continue;   /* pure drain: GPU-only */
+                    k = r;
+                    break;
+                }
+                rr = (k + 1) % rows.size();
+                if (k < rows.size()) {
+                    size_t r = k;
+                    if (cur_swapped != (int)r) {
+                        if (cur_swapped >= 0)
+                            c_master_conf.c_ag_conf.grow_win_park(rows[cur_swapped]);
+                        c_master_conf.c_ag_conf.grow_win_restore(rows[r]);
+                        cur_swapped = (int)r;
+                    }
+                    if (rows[r].adding)
+                        c_master_conf.c_ag_conf.grow_win_prep(rows[r], grow_pool,
+                                                              c_master_score,
+                                                              active_min,
+                                                              c_bmp_score);
+                    if (!rows[r].adding && rows[r].inflight == 0 &&
+                        !rows[r].drain_done)
+                        c_master_conf.c_ag_conf.grow_win_finish(rows[r],
+                                                                c_master_score,
+                                                                active_min,
+                                                                c_bmp_score);
+                }
+            }
+            if (any_active) {
+                grow_pool.step_finish();
+                std::vector<SimplexSlot*> done_slots = grow_pool.poll();
+                for (size_t s = 0; s < done_slots.size(); s++) {
+                    int tag = (int)(intptr_t)done_slots[s]->user_data;
+                    int r = tag >> 12;
+                    if (r >= 0 && r < (int)rows.size()) rows[r].inflight--;
+                }
+            }
+            /* continue while any round is open or the pool still drains */
+            any_pending = any_round_open || any_active;
+            if (getenv("DOCK_LBAL_DEBUG") != NULL) {
+                fprintf(stderr, "[LBALDBG] grow iter open=%d active=%d "
+                        "act=%d rows=%zu npends=%d\n", any_round_open,
+                        any_active, (int)grow_pool.active_count(),
+                        rows.size(), grow_pool.npending());
+                fflush(stderr);
+            }
+        }
+        if (cur_swapped >= 0)
+            c_master_conf.c_ag_conf.grow_win_park(rows[cur_swapped]);
+    }
+    t_grow = vswin_ms();
+
+    /* submission: same per-job, per-set loop as the serial path */
+    for (size_t i = 0; i < jobs.size(); i++) {
+        VSWindowJob & job = jobs[i];
+        long long t_job0 = vswin_ms();
+        for (size_t jr = 0; jr < job_rows[i].size(); jr++) {
+            VSGrowState & g = rows[job_rows[i][jr]];
+            c_master_conf.c_ag_conf.grow_win_restore(g);
             int nconf = 0;
             while (c_master_conf.next_conformer(mol)) {
                 active_min.minimize_final_pose(mol, c_master_score, c_typer);
@@ -540,10 +681,13 @@ time (the same pair list the sequential path would have fed to
                 c_library.submit_scored_pose(mol, c_master_score, active_min);
                 nconf++;
             }
+            c_master_conf.c_ag_conf.grow_win_park(g);
         }
         c_library.submit_conformations(c_master_score);
         c_library.sort_write(false, USE_MPI, c_master_score, active_min);
         c_library.ranked_poses.clear();
+        fprintf(stderr, "[VSWIN] win%d submit serial=%d sets=%zu t=%lldms\n",
+                win_no, job.serial, job.sets.size(), vswin_ms() - t_job0);
     }
     /* The EOF-triggered ranked write inside get_mol() fires during the
        NEXT window's collection, when ranked_list still holds THIS window's
@@ -551,6 +695,9 @@ time (the same pair list the sequential path would have fed to
        window and clear it so no window is written twice. */
     c_library.write_ranked_ligands(false, c_master_score);
     c_library.ranked_list.clear();
+    fprintf(stderr, "[VSWIN] win%d n_jobs=%zu collect=%lld anchorMin=%lld grow=%lld postGrow=%lld wall=%lldms\n",
+            win_no, jobs.size(), t_collect - t_win0, t_anchor - t_collect,
+            t_grow - t_anchor, vswin_ms() - t_grow, vswin_ms() - t_win0);
     /* Free this window's anchor snapshots (DOCKMol arrays are not
        destructor-managed) before collecting the next window. */
     for (size_t i = 0; i < jobs.size(); i++) {

@@ -1241,6 +1241,15 @@ int dock_gpu_batch_score_vs(const float *xyz, int num_poses, int num_atoms,
     return 0;
 }
 
+int dock_gpu_batch_score_vs_grid(const float *xyz, int num_poses,
+                                 int num_atoms, const int *pose_lig,
+                                 float *out_scores)
+{
+    (void)xyz; (void)num_poses; (void)num_atoms; (void)pose_lig;
+    (void)out_scores;
+    return 0;
+}
+
 int dock_gpu_grid_bounds(float *minx, float *miny, float *minz,
                          float *maxx, float *maxy, float *maxz)
 {

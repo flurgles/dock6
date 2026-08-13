@@ -224,8 +224,19 @@ class Minimizer {
     float           calc_active_rmsd2(DOCKMol &, DOCKMol &);
     void            vector_to_dockmol(DOCKMol &, FLOATVec &);
 
+    // Per-conformer variant: uses the caller's torsion mapping instead of
+    // this minimizer's (shared) members, so one minimizer can serve pool
+    // slots of different ligands.
+    void            vector_to_dockmol(DOCKMol &, FLOATVec &,
+                                      const std::vector<TORSION> &,
+                                      const INTVec &);
+
     // Scale a normalised vertex vector by the step sizes.
     void            scale_vector(FLOATVec &, FLOATVec &, float, float, float);
+
+    // Per-conformer variant of scale_vector (see vector_to_dockmol).
+    void            scale_vector(FLOATVec &, FLOATVec &, float, float, float,
+                                 const INTVec &);
 
 
   protected:

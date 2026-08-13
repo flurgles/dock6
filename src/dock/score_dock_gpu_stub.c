@@ -18,7 +18,7 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     (void)span_x; (void)span_y; (void)span_z;
     (void)origin_x; (void)origin_y; (void)origin_z;
     (void)spacing;
-    return 0;  /* GPU not available, use CPU fallback */
+    return 1;  /* pretend GPU exists so the windowed scheduler runs */
 }
 
 int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
@@ -107,6 +107,35 @@ int dock_gpu_batch_score_vs(const float *xyz, int num_poses, int num_atoms,
     (void)xyz; (void)num_poses; (void)num_atoms; (void)pose_lig;
     (void)out_scores;
     return 0;
+}
+
+int dock_gpu_batch_score_vs_grid(const float *xyz, int num_poses,
+                                 int num_atoms, const int *pose_lig,
+                                 float *out_scores)
+{
+    (void)xyz; (void)num_poses; (void)num_atoms; (void)pose_lig;
+    (void)out_scores;
+    return 0;
+}
+
+int dock_gpu_batch_score_vs_enqueue(const float *xyz, int num_poses,
+                                    int num_atoms, const int *pose_lig,
+                                    float *out_scores, int grid_only)
+{
+    (void)xyz; (void)num_poses; (void)num_atoms; (void)pose_lig;
+    (void)out_scores; (void)grid_only;
+    return 0;
+}
+
+int dock_gpu_batch_score_sync(void)
+{
+    return 0;
+}
+
+void dock_gpu_lbal_stats(long long *host_ms, long long *gpu_ms)
+{
+    *host_ms = 0;
+    *gpu_ms = 0;
 }
 
 int dock_gpu_grid_bounds(float *minx, float *miny, float *minz,

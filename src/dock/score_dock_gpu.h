@@ -168,6 +168,15 @@ int dock_gpu_vs_max_ligands(void);
 int dock_gpu_batch_score_vs(const float *xyz, int num_poses, int num_atoms,
                             const int *pose_lig, float *out_scores);
 
+/* Score N poses against the shared grid, grid component ONLY (no internal
+   energy), each pose belonging to one registered ligand.  Same layout as
+   dock_gpu_batch_score_vs.  Used by the growth prune pass, which needs the
+   grid score and internal energy separately.  Returns 1 on success, 0 on
+   error (caller falls back to CPU scoring). */
+int dock_gpu_batch_score_vs_grid(const float *xyz, int num_poses,
+                                 int num_atoms, const int *pose_lig,
+                                 float *out_scores);
+
 /* Report the grid box volume that poses must occupy to be scorable:
    [minx,maxx]x[miny,maxy]x[minz,maxz] in Angstroms, mirroring
    Base_Grid::is_inside_grid_box() (points within one voxel of the box
@@ -177,6 +186,28 @@ int dock_gpu_batch_score_vs(const float *xyz, int num_poses, int num_atoms,
    success, 0 if the backend cannot provide the box. */
 int dock_gpu_grid_bounds(float *minx, float *miny, float *minz,
                          float *maxx, float *maxy, float *maxz);
+
+/* Async pipelined VS scoring (host/GPU load balancing).
+   Enqueues the batch on an internal stream and returns immediately; the
+   caller may do host work (DBZ, packing the next group) while the GPU
+   runs.  Call dock_gpu_batch_score_sync() after enqueuing a set of
+   batches to wait for completion, then out_scores[] for every enqueued
+   batch is valid.  grid_only != 0 selects the grid-only kernel (growth
+   prune pass).  Enqueued batches are stream-ordered: DtoH results land
+   in internal pinned staging, copied to out_scores at sync time.
+   Returns 1 on success, 0 on error (caller falls back to CPU scoring). */
+int dock_gpu_batch_score_vs_enqueue(const float *xyz, int num_poses,
+                                    int num_atoms, const int *pose_lig,
+                                    float *out_scores, int grid_only);
+
+/* Wait for all enqueued async batches to complete (blocking).
+   Returns 1 on success, 0 if no batches were pending. */
+int dock_gpu_batch_score_sync(void);
+
+/* Report the adaptive governor's smoothed timings: host_ms = EMA of the
+   host time spent preparing one batch (pack+enqueue), gpu_ms = EMA of the
+   time the GPU/stream stays busy until the batch set completes. */
+void dock_gpu_lbal_stats(long long *host_ms, long long *gpu_ms);
 
 
 

@@ -17,6 +17,13 @@ All GPU calls go through the score_dock_gpu.h C API.
 #include "conformer_pool.h"
 #include "dockmol.h"
 #include <cstring>
+#include <chrono>
+
+static long long lbal_now_ms(void)
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 using namespace std;
 
@@ -193,7 +200,16 @@ m_num_atoms = first_stride;
         }
         m_dispatch_capacity = max_cand;
     } else if (m_vs_mode && first_stride > m_num_atoms) {
-        /* A larger ligand arrived — grow the stride (and buffers). */
+        /* A larger ligand arrived — grow the stride (and buffers).  Any
+           pending async batches reference the OLD buffers (their DtoH
+           targets are m_score_buffer + offset), so they must be drained
+           BEFORE the buffers are freed.  Dropping the scores of one
+           round is benign: the affected slots re-score the same vertices
+           on the next enqueue. */
+        if (m_npends > 0) {
+            dock_gpu_batch_score_sync();
+            m_npends = 0;
+        }
         int max_cand = m_batch_max * max(4, size + 1);
         delete[] m_xyz_buffer;
         delete[] m_score_buffer;
@@ -224,6 +240,12 @@ m_num_atoms = first_stride;
     slot.lig_idx          = lig_idx;
     slot.lig_num_atoms    = (m_vs_mode) ? first_stride
                                        : mol->num_atoms;
+    /* Snapshot the DOF→xyz mapping so this slot can be packed even when
+       the pool holds slots of other ligands (the minimizer's members are
+       shared and reflect the most recent id_torsions() call). */
+    slot.torsions             = m_minimizer->torsions;
+    slot.bond_vectors         = m_minimizer->bond_vectors;
+    slot.torsion_scale_factors = m_minimizer->torsion_scale_factors;
     slot.id                 = idx;
     slot.phase              = SlotPhase::INIT;
     slot.size               = size;
@@ -335,6 +357,288 @@ ConformerPool::idle() const
 
 int
 ConformerPool::step()
+{
+    int c = step_enqueue();
+    if (c) return c;                 /* non-VS path finishes in enqueue */
+    return step_finish();
+}
+
+void
+ConformerPool::adapt_split_k()
+{
+    /* Governor: compare the GPU's busy time with the host's step time.
+       gpu ≫ host  → split into more groups so multiple kernels per step
+       keep the GPU fed while the host preps the next step.
+       host ≫ gpu   → merge back into one batch (nothing to feed). */
+    long long h = m_lbal_host, g = m_lbal_gpu;
+    if (h <= 0) h = 1;
+    if (g <= 0) g = 1;
+    double ratio = (double)g / (double)(h + g);
+    if (ratio > 0.55 && m_split_k < 4) m_split_k++;
+    else if (ratio < 0.25 && m_split_k > 1) m_split_k--;
+
+    if ((m_steps_since_lbal++ % 96) == 0) {
+        static long long last_poses = 0, last_ms = 0;
+        long long now = lbal_now_ms();
+        double rate = (last_ms > 0)
+            ? (double)(m_poses_total - last_poses) * 1000.0 / (double)(now - last_ms)
+            : 0.0;
+        fprintf(stderr,
+                "[LBAL] k=%d host=%lldms gpu=%lldms ratio=%.2f poses=%lld rate=%.0f/s\n",
+                m_split_k, h, g, ratio, m_poses_total, rate);
+        last_poses = m_poses_total; last_ms = now;
+        fflush(stderr);
+    }
+}
+
+int
+ConformerPool::step_enqueue()
+{
+    if (!m_use_gpu) return 0;
+    if (m_slots.empty()) return 0;
+    if (!m_vs_mode) return step_legacy();
+
+    m_lbal_t0 = lbal_now_ms();
+
+    int na = m_num_atoms;
+
+    /* Split the active slots into m_split_k groups (round-robin) so one
+       group's packing overlaps the previous group's GPU kernel. */
+    int need_of[4096], act_list[4096];
+    int nact = 0, total = 0;
+    for (size_t si = 0; si < m_slots.size(); si++) {
+        SimplexSlot& slot = m_slots[si];
+        if (slot.phase == SlotPhase::CONVERGED || slot.converged) continue;
+        int need = 0;
+        switch (slot.phase) {
+        case SlotPhase::INIT:    need = slot.size + 1; break;
+        case SlotPhase::REFLECT: need = 4;             break;
+        case SlotPhase::SHRINK:  need = slot.size;     break;
+        default: break;
+        }
+        need_of[nact] = need;
+        act_list[nact] = (int)si;
+        total += need;
+        nact++;
+    }
+    m_poses_total += total;
+
+    /* Nothing ready this round — finish() will convergence-check. */
+    m_npends = 0;
+    if (nact == 0 || total == 0) {
+        if (getenv("DOCK_LBAL_DEBUG") != NULL) {
+            int c_phase = 0, c_flag = 0, c_other = 0;
+            for (size_t si = 0; si < m_slots.size(); si++) {
+                if (m_slots[si].phase == SlotPhase::CONVERGED) c_phase++;
+                else if (m_slots[si].converged) c_flag++;
+                else c_other++;
+            }
+            int d0 = -1;
+            for (size_t si = 0; si < m_slots.size() && d0 < 0; si++) {
+                if (m_slots[si].phase != SlotPhase::CONVERGED &&
+                    !m_slots[si].converged) d0 = (int)si;
+            }
+            fprintf(stderr,
+                    "[LBALDBG] enqueue: nact=%d total=%d slots=%zu "
+                    "conv_phase=%d conv_flag=%d open=%d first_open=%d\n",
+                    nact, total, m_slots.size(), c_phase, c_flag, c_other,
+                    d0);
+        }
+        return 0;
+    }
+
+    int k = m_split_k;
+    int groups = (nact < k) ? nact : k;
+    if (groups < 1) groups = 1;
+
+    /* Group base offsets (packing order: group 0, 1, ... round-robin). */
+    int base[4] = {0, 0, 0, 0};
+    int gtot[4] = {0, 0, 0, 0};
+    int gcnt[4] = {0, 0, 0, 0};
+    /* Cap per group so the TOTAL packed poses never exceed the
+       m_xyz_buffer/m_score_buffer/m_pose_lig buffer capacity
+       (m_dispatch_capacity == buffer size).  A per-group cap of the
+       full capacity would overflow the buffers when k > 1. */
+    int cap = m_dispatch_capacity / groups;
+    if (cap < 1) cap = 1;
+    for (int si = 0; si < nact; si++) {
+        int g = si % groups;
+        if (gtot[g] + need_of[si] > cap) continue;   /* deferred */
+        gtot[g] += need_of[si];
+        gcnt[g]++;
+    }
+    int off = 0;
+    for (int g = 0; g < groups; g++) {
+        base[g] = off;
+        off += gtot[g];
+    }
+    if (off == 0) {
+        if (getenv("DOCK_LBAL_DEBUG") != NULL)
+            fprintf(stderr, "[LBALDBG] enqueue: off==0 nact=%d groups=%d\n",
+                    nact, groups);
+        return 0;
+    }
+
+    /* Default: no slot was enqueued this round (stale bases invalid). */
+    for (size_t si = 0; si < m_slots.size(); si++) m_slot_base[si] = -1;
+
+    /* Pack each group, then enqueue its chunks on the background stream. */
+    bool fail = false;
+    for (int g = 0; g < groups && !fail; g++) {
+        int o = base[g];
+        int filled = 0;
+        for (int si = 0; si < nact; si++) {
+            if ((si % groups) != g) continue;
+            SimplexSlot& slot = m_slots[act_list[si]];
+            m_slot_base[act_list[si]] = o;
+            int before = o;
+            o = pack_slot(slot, o, base[g] + gtot[g]);
+            filled += (o - before);
+        }
+        if (filled == 0) continue;
+
+        /* Emit bounded chunks (≤ GPU_MAX_BATCH_POSES per call). */
+        int dispatched = 0;
+        while (dispatched < filled) {
+            int n = filled - dispatched;
+            if (n > GPU_MAX_BATCH_POSES) n = GPU_MAX_BATCH_POSES;
+            const float *xyz_pos = m_xyz_buffer +
+                (size_t)(base[g] + dispatched) * m_num_atoms * 3;
+            long long t_host = lbal_now_ms();
+            int chunk_ok = dock_gpu_batch_score_vs_enqueue(
+                xyz_pos, n, na, m_pose_lig + base[g] + dispatched,
+                m_score_buffer + base[g] + dispatched, 0);
+            if (!chunk_ok) { fail = true; break; }
+            m_npends++;
+            lbal_now_ms();  /* keep host EMA fed inside the backend */
+            (void)t_host;
+            dispatched += n;
+        }
+    }
+
+    if (fail) {
+        m_lbal_fail = true;
+        return 0;
+    }
+    if (getenv("DOCK_LBAL_DEBUG") != NULL)
+        fprintf(stderr, "[LBALDBG] enqueue: nact=%d total=%d k=%d groups=%d "
+                "filled=%d npends=%d\n", nact, total, m_split_k, groups,
+                off, m_npends);
+    return 0;
+}
+
+int
+ConformerPool::step_finish()
+{
+    if (!m_use_gpu) return 0;
+    if (m_slots.empty()) return 0;
+    if (!m_vs_mode) return 0;
+
+    double host_phase = (double)(lbal_now_ms() - m_lbal_t0);
+    if (host_phase < 0.1) host_phase = 0.1;
+    m_lbal_host = (long long)(0.85 * (double)m_lbal_host + 0.15 * host_phase);
+
+    if (m_lbal_fail) {
+        m_lbal_fail = false;
+        m_npends = 0;
+        int newly = 0;
+        for (auto& slot : m_slots) {
+            if (slot.converged || slot.phase == SlotPhase::CONVERGED) continue;
+            slot.converged = true;
+            slot.phase = SlotPhase::CONVERGED;
+            fill_slot_from_mol(slot, slot.id);
+            m_converged.push_back(&slot);
+            newly++;
+        }
+        return newly;
+    }
+
+    if (m_npends > 0) {
+        dock_gpu_batch_score_sync();
+        dock_gpu_lbal_stats(&m_lbal_host, &m_lbal_gpu);
+        adapt_split_k();
+        m_npends = 0;
+    } else {
+        int newly = 0;
+        for (auto& slot : m_slots) {
+            if (slot.converged || slot.phase == SlotPhase::CONVERGED) continue;
+            if (check_convergence(slot)) {
+                fill_slot_from_mol(slot, slot.id);
+                m_converged.push_back(&slot);
+                newly++;
+            }
+        }
+        if (getenv("DOCK_LBAL_DEBUG") != NULL)
+            fprintf(stderr, "[LBALDBG] finish: npends=0 newly=%d slots=%zu\n",
+                    newly, m_slots.size());
+        return newly;
+    }
+
+    int newly_converged = 0;
+    for (size_t i = 0; i < m_slots.size(); i++) {
+        SimplexSlot& slot = m_slots[i];
+        if (slot.phase == SlotPhase::CONVERGED || slot.converged) continue;
+
+        int sb = m_slot_base[i];
+        if (sb < 0) continue;   /* not enqueued this round — leave for next */
+
+        int ncan = 0;
+        switch (slot.phase) {
+        case SlotPhase::INIT:    ncan = slot.size + 1; break;
+        case SlotPhase::REFLECT: ncan = 4;             break;
+        case SlotPhase::SHRINK:  ncan = slot.size;     break;
+        default: break;
+        }
+        if (ncan == 0) continue;
+        m_slot_base[i] = -1;   /* consumed */
+
+        /* Add restraint energy — same Econstraint per slot per iteration */
+        if (slot.restrained) {
+            float Econstraint = slot.coefficient_restraint *
+                m_minimizer->calc_active_rmsd2(*slot.m_rmsd_ref, *slot.m_refMol);
+            for (int ci = 0; ci < ncan; ci++) {
+                m_score_buffer[sb + ci] += Econstraint;
+            }
+        }
+
+        /* Sentinel check (defense-in-depth: the current kernel
+           score_batch_kernel_atom_parallel never writes a sentinel —
+           out-of-grid atoms just get 0 grid contribution.  Kept in
+           case the kernel is changed to reject out-of-grid poses.) */
+        bool sentinel_hit = false;
+        for (int ci = 0; ci < ncan; ci++) {
+            if (m_score_buffer[sb + ci] < -1.0e30f) {
+                sentinel_hit = true;
+                break;
+            }
+        }
+        if (sentinel_hit) {
+            /* Out-of-grid: restore pre-min pose (matches CPU failure_exit) */
+            copy_crds(*slot.m_mol, *slot.m_refMol);
+            slot.converged = true;
+            slot.phase     = SlotPhase::CONVERGED;
+            m_converged.push_back(&slot);
+            newly_converged++;
+            continue;
+        }
+
+        /* Run decision tree */
+        evaluate_slot(slot, m_score_buffer + sb);
+
+        if (check_convergence(slot)) {
+            fill_slot_from_mol(slot, slot.id);
+            m_converged.push_back(&slot);
+            newly_converged++;
+        }
+    }
+
+    return newly_converged;
+}
+
+/* Legacy whole-cycle implementation (single synchronous dispatch),
+   used when the pool is not in VS mode.  Returns newly converged. */
+int
+ConformerPool::step_legacy()
 {
     if (!m_use_gpu) return 0;
     if (m_slots.empty()) return 0;
@@ -493,10 +797,12 @@ ConformerPool::pack_vertex(SimplexSlot& slot, const float* vertex, int idx)
     m_minimizer->scale_vector(new_vec, vertex_vec,
                                slot.trans_step_size,
                                slot.rot_step_size,
-                               slot.tors_step_size);
+                               slot.tors_step_size,
+                               slot.torsion_scale_factors);
 
     /* Convert scaled DOF vector to molecule coordinates */
-    m_minimizer->vector_to_dockmol(*slot.m_tmpMol, new_vec);
+    m_minimizer->vector_to_dockmol(*slot.m_tmpMol, new_vec,
+                                   slot.torsions, slot.bond_vectors);
 
     /* Extract xyz into flat buffer (row-major: candidate × atom × xyz) */
     for (int a = 0; a < na; a++) {
@@ -817,8 +1123,10 @@ ConformerPool::fill_slot_from_mol(SimplexSlot& slot, int slot_idx)
     m_minimizer->scale_vector(new_vec, vertex_vec,
                                slot.trans_step_size,
                                slot.rot_step_size,
-                               slot.tors_step_size);
-    m_minimizer->vector_to_dockmol(*slot.m_tmpMol, new_vec);
+                               slot.tors_step_size,
+                               slot.torsion_scale_factors);
+    m_minimizer->vector_to_dockmol(*slot.m_tmpMol, new_vec,
+                                   slot.torsions, slot.bond_vectors);
     copy_crds(*slot.m_mol, *slot.m_tmpMol);
     return true;
 }
@@ -879,8 +1187,10 @@ ConformerPool::check_convergence(SimplexSlot& slot)
             for (int j = 0; j < slot.size; j++) vv[j] = slot.p[slot.ilo][j];
             FLOATVec nv;
             m_minimizer->scale_vector(nv, vv, slot.trans_step_size,
-                                       slot.rot_step_size, slot.tors_step_size);
-            m_minimizer->vector_to_dockmol(*slot.m_tmpMol, nv);
+                                       slot.rot_step_size, slot.tors_step_size,
+                                       slot.torsion_scale_factors);
+            m_minimizer->vector_to_dockmol(*slot.m_tmpMol, nv,
+                                           slot.torsions, slot.bond_vectors);
             copy_crds(*slot.m_mol, *slot.m_tmpMol);
             copy_molecule(*slot.m_refMol, *slot.m_mol);
 
@@ -924,8 +1234,10 @@ ConformerPool::check_convergence(SimplexSlot& slot)
         for (int j = 0; j < slot.size; j++) vv[j] = slot.p[slot.ilo][j];
         FLOATVec nv;
         m_minimizer->scale_vector(nv, vv, slot.trans_step_size,
-                                   slot.rot_step_size, slot.tors_step_size);
-        m_minimizer->vector_to_dockmol(*slot.m_tmpMol, nv);
+                                   slot.rot_step_size, slot.tors_step_size,
+                                   slot.torsion_scale_factors);
+        m_minimizer->vector_to_dockmol(*slot.m_tmpMol, nv,
+                                       slot.torsions, slot.bond_vectors);
         copy_crds(*slot.m_mol, *slot.m_tmpMol);
         copy_molecule(*slot.m_refMol, *slot.m_mol);
 

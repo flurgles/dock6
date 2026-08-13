@@ -167,6 +167,14 @@ struct SimplexSlot {
     // Atom count of this slot's molecule (VS path pads all poses to the
     // pool-wide stride = max num_atoms across slots).
     int            lig_num_atoms;
+
+    // Per-slot DOF→xyz mapping, snapshotted at add() time from the
+    // minimizer's (shared) members.  Enables one pool to serve slots of
+    // different ligands whose torsions/bond_vectors/torsion_scale_factors
+    // differ.
+    std::vector<TORSION> torsions;
+    INTVec               bond_vectors;
+    INTVec               torsion_scale_factors;
 };
 
 
@@ -213,6 +221,21 @@ public:
        Returns the number of newly converged conformers (call poll() for them). */
     int step();
 
+    /* Split-cycle variant for the VS scheduler: step_enqueue() packs and
+       enqueues this round's candidates on the GPU's background stream and
+       returns immediately (host work may proceed while the GPU runs);
+       step_finish() waits for the results, distributes scores and runs the
+       decision trees.  The active slots are split into m_split_k groups so
+       one group's packing overlaps the previous group's kernel (adaptive
+       host/GPU load balancing, VS mode).  Step requires enqueue once per
+       finish; step() is enqueue+finish. */
+    int step_enqueue();
+    int step_finish();
+
+    /* Current adaptive split factor (governor state, for diagnostics). */
+int npending() const { return m_npends; }
+    int split_k() const  { return m_split_k; }
+
     /* Collect converged conformers since last call.
        The caller's DOCKMol has been updated to the minimized pose. */
     std::vector<SimplexSlot*> poll();
@@ -255,12 +278,25 @@ private:
     // Per-slot ligand info for the VS path (pose_lig array per candidate).
     int                     m_stride_atoms;  // max num_atoms across slots (padded)
 
+    // Adaptive host/GPU load-balancing governor (VS mode only).
+    int                     m_split_k = 1;   // active slot groups per step
+    long long               m_lbal_host = 0;  // EMA host ms per batch (from backend)
+    long long               m_lbal_gpu = 0;   // EMA GPU busy ms per batch
+    int                     m_steps_since_lbal = 0;
+    int                     m_npends = 0;      // async batches enqueued, pending sync
+    int                     m_slot_base[4096]; // per-slot score offset (set by enqueue, used by finish)
+    bool                    m_lbal_fail = false;  // async enqueue failed this step
+    long long               m_lbal_t0 = 0;        // step start marker (host-phase timing)
+    long long               m_poses_total = 0;    // cumulative candidate poses enqueued
+
     // Internal helpers
+    int  step_legacy();  // non-VS whole-cycle dispatch (synchronous)
     int  pack_slot(SimplexSlot& slot, int offset, int capacity);
     void pack_vertex(SimplexSlot& slot, const float* vertex, int idx);
     void evaluate_slot(SimplexSlot& slot, const float* scores);
     bool fill_slot_from_mol(SimplexSlot& slot, int slot_idx);
     bool check_convergence(SimplexSlot& slot);
+    void adapt_split_k();
 };
 
 #endif  // CONFORMER_POOL_H

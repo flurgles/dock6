@@ -12,6 +12,17 @@ Minimizer::scale_vector(FLOATVec & new_vec, FLOATVec & vertex,
                                         float rot_step_size,
                                         float tors_step_size)
 {
+    scale_vector(new_vec, vertex, trans_step_size, rot_step_size,
+                 tors_step_size, torsion_scale_factors);
+}
+
+void
+Minimizer::scale_vector(FLOATVec & new_vec, FLOATVec & vertex,
+                                        float trans_step_size,
+                                        float rot_step_size,
+                                        float tors_step_size,
+                                        const INTVec & tsf)
+{
     int             i;
 
     new_vec.resize(vertex.size(), 0);
@@ -26,8 +37,7 @@ Minimizer::scale_vector(FLOATVec & new_vec, FLOATVec & vertex,
     for (i = 6; i < vertex.size(); i++) {
         new_vec[i] =
             (vertex[i] * tors_step_size) / ((float) (current_cycle + 1) *
-                                            (float) (torsion_scale_factors
-                                                     [i - 6]));
+                                            (float) (tsf[i - 6]));
     }
 
 }
@@ -35,6 +45,14 @@ Minimizer::scale_vector(FLOATVec & new_vec, FLOATVec & vertex,
 
 void
 Minimizer::vector_to_dockmol(DOCKMol & mol, FLOATVec & v)
+{
+    vector_to_dockmol(mol, v, torsions, bond_vectors);
+}
+
+void
+Minimizer::vector_to_dockmol(DOCKMol & mol, FLOATVec & v,
+                             const std::vector<TORSION> & tors,
+                             const INTVec & bvec)
 {
     DOCKVector      com, // Centre of Mass
                     dv;  // Translation Vector
@@ -79,42 +97,42 @@ Minimizer::vector_to_dockmol(DOCKMol & mol, FLOATVec & v)
     // set new torsion angles
     for (i = 6; i < v.size(); i++) {
 
-        if (bond_vectors[torsions[i - 6].bond_num] == -1) {     // if bond
+        if (bvec[tors[i - 6].bond_num] == -1) {     // if bond
                                                                 // directions
                                                                 // don't matter
 
             current_angle =
-                mol.get_torsion(torsions[i - 6].atom1, torsions[i - 6].atom2,
-                                torsions[i - 6].atom3, torsions[i - 6].atom4);
+                mol.get_torsion(tors[i - 6].atom1, tors[i - 6].atom2,
+                                tors[i - 6].atom3, tors[i - 6].atom4);
             new_angle = (PI / 180.0) * (current_angle + v[i]);
-            mol.set_torsion(torsions[i - 6].atom1, torsions[i - 6].atom2,
-                            torsions[i - 6].atom3, torsions[i - 6].atom4,
+            mol.set_torsion(tors[i - 6].atom1, tors[i - 6].atom2,
+                            tors[i - 6].atom3, tors[i - 6].atom4,
                             new_angle);
 
         } else {                // if bond directions do matter (during flex
                                 // growth)
 
-            if (torsions[i - 6].atom2 == bond_vectors[torsions[i - 6].bond_num]) {
+            if (tors[i - 6].atom2 == bvec[tors[i - 6].bond_num]) {
                 current_angle =
-                    mol.get_torsion(torsions[i - 6].atom1,
-                                    torsions[i - 6].atom2,
-                                    torsions[i - 6].atom3,
-                                    torsions[i - 6].atom4);
+                    mol.get_torsion(tors[i - 6].atom1,
+                                    tors[i - 6].atom2,
+                                    tors[i - 6].atom3,
+                                    tors[i - 6].atom4);
                 new_angle = (PI / 180.0) * (current_angle + v[i]);
-                mol.set_torsion(torsions[i - 6].atom1, torsions[i - 6].atom2,
-                                torsions[i - 6].atom3, torsions[i - 6].atom4,
+                mol.set_torsion(tors[i - 6].atom1, tors[i - 6].atom2,
+                                tors[i - 6].atom3, tors[i - 6].atom4,
                                 new_angle);
             }
 
-            if (torsions[i - 6].atom3 == bond_vectors[torsions[i - 6].bond_num]) {
+            if (tors[i - 6].atom3 == bvec[tors[i - 6].bond_num]) {
                 current_angle =
-                    mol.get_torsion(torsions[i - 6].atom4,
-                                    torsions[i - 6].atom3,
-                                    torsions[i - 6].atom2,
-                                    torsions[i - 6].atom1);
+                    mol.get_torsion(tors[i - 6].atom4,
+                                    tors[i - 6].atom3,
+                                    tors[i - 6].atom2,
+                                    tors[i - 6].atom1);
                 new_angle = (PI / 180.0) * (current_angle + v[i]);
-                mol.set_torsion(torsions[i - 6].atom4, torsions[i - 6].atom3,
-                                torsions[i - 6].atom2, torsions[i - 6].atom1,
+                mol.set_torsion(tors[i - 6].atom4, tors[i - 6].atom3,
+                                tors[i - 6].atom2, tors[i - 6].atom1,
                                 new_angle);
             }
 

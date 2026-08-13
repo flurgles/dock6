@@ -341,6 +341,8 @@ AG_Conformer_Search::identify_rigid_segments(DOCKMol & mol)
         a2 = orig.bonds_origin_atom[bond_list[i].bond_num];
         a3 = orig.bonds_target_atom[bond_list[i].bond_num];
 
+        a1 = a2;
+        a4 = a3;
         max_central = -1;
         nbrs = mol.get_atom_neighbors(a2);
 
@@ -4080,3 +4082,709 @@ vector <float> AG_Conformer_Search::calc_atoms_wt( vector <string> vec_atoms_cal
 
 
 
+
+// +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+// Windowed (batch-scheduler) growth — GPU path.
+//
+// Mirrors grow_periphery's per-round logic (drive -> clash/bump -> pool
+// minimize -> GPU2 score -> prune -> next seeds) but operates on a
+// VSGrowState whose rounds are interleaved across ligands in a SHARED
+// ConformerPool by the dock.cpp phase-3b scheduler.  State that depends
+// on the ligand (layers, bond list, anchors, ...) is parked in the
+// VSGrowState via grow_win_swap and swapped back before every call.
+// +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+void
+AG_Conformer_Search::grow_win_park(VSGrowState & g)
+{
+    std::swap(g.anchor_positions, anchor_positions);
+    std::swap(g.anchor_confs, anchor_confs);
+    std::swap(g.conf_anchors, conf_anchors);
+    std::swap(g.pruned_confs, pruned_confs);
+    std::swap(g.current_anchor, current_anchor);
+    std::swap(g.dock_mol_serial, dock_mol_serial);
+    std::swap(g.layers, layers);
+    std::swap(g.layer_segments, layer_segments);
+    std::swap(g.bond_list, bond_list);
+    std::swap(g.bond_tors_vectors, bond_tors_vectors);
+    std::swap(g.atom_seg_ids, atom_seg_ids);
+    std::swap(g.bond_seg_ids, bond_seg_ids);
+    std::swap(g.assigned_atoms, assigned_atoms);
+    std::swap(g.next_nbrs, next_nbrs);
+    std::swap(g.tmp_nextnbrs, tmp_nextnbrs);
+    std::swap(g.atom_in_anchor, atom_in_anchor);
+    std::swap(g.orig, orig);
+    std::swap(g.orig_segments, orig_segments);
+    std::swap(g.ligand_mol_symmetric, ligand_mol_symmetric);
+}
+
+void
+AG_Conformer_Search::grow_win_restore(const VSGrowState & g)
+{
+    anchor_positions  = g.anchor_positions;
+    anchor_confs      = g.anchor_confs;
+    conf_anchors      = g.conf_anchors;
+    pruned_confs      = g.pruned_confs;
+    current_anchor    = g.current_anchor;
+    dock_mol_serial    = g.dock_mol_serial;
+    layers            = g.layers;
+    layer_segments    = g.layer_segments;
+    bond_list         = g.bond_list;
+    bond_tors_vectors = g.bond_tors_vectors;
+    atom_seg_ids      = g.atom_seg_ids;
+    bond_seg_ids      = g.bond_seg_ids;
+    assigned_atoms    = g.assigned_atoms;
+    next_nbrs         = g.next_nbrs;
+    tmp_nextnbrs      = g.tmp_nextnbrs;
+    atom_in_anchor    = g.atom_in_anchor;
+    orig              = g.orig;
+    orig_segments     = g.orig_segments;
+    ligand_mol_symmetric = g.ligand_mol_symmetric;
+}
+
+void
+AG_Conformer_Search::grow_win_init(VSGrowState & g, Master_Score & score,
+                                   Minimizer & simplex, Bump_Filter & bump)
+{
+    Trace trace("AG_Conformer_Search::grow_win_init()");
+    (void)bump;
+    int i;
+    int num_layers = (int)layers.size();
+    bool ie_prune = false;
+    bool valid_orient = false;
+    CONFORMER tmp_conf;
+    SCOREMol tmp_scoremol;
+    std::vector<SCOREMol> anchor_positions_b4min;
+    float rmsd;
+    std::vector<int>    wl_colors;
+    std::vector<double> wl_weights;
+
+    /* ---- internal-energy init (mirrors grow_periphery L1183-1201) ---- */
+    if (score.use_primary_score) {
+        trace.note("AG_conformer::grow_win_init:reinitialize energy ");
+        score.primary_score->use_internal_energy = use_internal_energy;
+        if (use_internal_energy || score.c_int.use_primary_score) {
+            if (use_internal_energy) {
+                score.primary_score->ie_att_exp = ie_att_exp;
+                score.primary_score->ie_rep_exp = ie_rep_exp;
+                score.primary_score->ie_diel = ie_diel;
+                score.primary_score->ie_soft_delta = ie_soft_delta;
+                ie_prune = true;
+            }
+            if (!use_internal_energy) {
+                initialize_internal_energy_parms(use_internal_energy,
+                    score.primary_score->ie_rep_exp,
+                    score.primary_score->ie_att_exp,
+                    score.primary_score->ie_diel,
+                    score.primary_score->ie_soft_delta,
+                    growth_score_cutoff);
+            }
+            /* The LUT row for this ligand was already registered by the
+               batch driver's phase-2 (dock.cpp); skip the legacy
+               single-ligand uploads, which are unused in VS mode. */
+            score.primary_score->initialize_internal_energy(
+                anchor_positions[0].second);
+        }
+    }
+    /* Snapshot THIS row's pair list + per-atom IE: primary_score is
+       shared across the window's rows and re-initialized per row, so the
+       per-round LUT refresh must not read it. */
+    if (score.primary_score->ie_vdwA != NULL) {
+        int np = score.primary_score->nb_int.size();
+        g.nb_flat.resize(np * 2);
+        for (int pi = 0; pi < np; pi++) {
+            g.nb_flat[pi * 2]     = score.primary_score->nb_int[pi].first;
+            g.nb_flat[pi * 2 + 1] = score.primary_score->nb_int[pi].second;
+        }
+        int na_ie = anchor_positions[0].second.num_atoms;
+        g.ie_vdwA_snap.assign(score.primary_score->ie_vdwA,
+                              score.primary_score->ie_vdwA + na_ie);
+    }
+    g.ie_prune = ie_prune;
+
+    /* ---- anchors: preminimized by the batch driver ---- */
+    if (verbose) cout << "-----------------------------------" << endl
+         << "VERBOSE GROWTH STATS : ANCHOR #" << current_anchor << endl << endl;
+
+    if (simplex.use_min_rigid_anchor) {
+        simplex.bond_vectors.clear();
+        simplex.bond_vectors.resize(anchor_positions[0].second.num_bonds, -1);
+    }
+    for (i = 0; i < (int)anchor_positions.size(); i++)
+        anchor_positions_b4min.push_back(anchor_positions[i]);
+
+    /* ---- seed init (mirrors grow_periphery L1360-1504) ---- */
+    for (i = 0; i < (int)anchor_positions.size(); i++) {
+        if (score.use_primary_score) {
+            valid_orient = score.primary_score->compute_score(
+                anchor_positions[i].second);
+            if (!valid_orient && verbose)
+                cout << "Error scoring Anchor #" << current_anchor
+                     << " Orient #" << i << ": "
+                     << anchor_positions[i].second.current_data << endl;
+        } else valid_orient = true;
+
+        if (valid_orient) {
+            g.exp_seeds.push_back(tmp_conf);
+            g.exp_seeds[g.exp_seeds.size() - 1].layer_num = 1;
+            g.exp_seeds[g.exp_seeds.size() - 1].score =
+                anchor_positions[i].second.current_score;
+            g.exp_seeds[g.exp_seeds.size() - 1].used = false;
+            copy_molecule(g.exp_seeds[g.exp_seeds.size() - 1].structure,
+                          anchor_positions[i].second);
+
+            g.b4min_seeds.push_back(tmp_conf);
+            g.b4min_seeds[g.b4min_seeds.size() - 1].layer_num = 1;
+            g.b4min_seeds[g.b4min_seeds.size() - 1].score =
+                anchor_positions[i].second.current_score;
+            g.b4min_seeds[g.b4min_seeds.size() - 1].used = false;
+            copy_molecule(g.b4min_seeds[g.b4min_seeds.size() - 1].structure,
+                          anchor_positions_b4min[i].second);
+        }
+    }
+
+    g.seeds.clear(); g.seeds.reserve(500);
+    sort(g.exp_seeds.begin(), g.exp_seeds.end(), conformer_less_than);
+    sort(g.b4min_seeds.begin(), g.b4min_seeds.end(), conformer_less_than);
+
+    /* filter confs by scores */
+    for (int j = 0; j < (int)g.exp_seeds.size(); j++) {
+        if (g.exp_seeds[j].score > anchor_score_cutoff)
+            g.exp_seeds[j].used = true;
+    }
+
+    /* cluster prune (mirrors grow_periphery L1414-1464) */
+    if (cluster) {
+        float RMSD_CUTOFF = pruning_clustering_cutoff;
+        if (pruning_cluster_rmsd_type == "weisfeiler" && ligand_mol_symmetric
+            && !g.exp_seeds.empty()) {
+            compute_wl_weights(layers, layer_segments, wl_weights);
+            {
+                static WL_RMSD wl;
+                wl.wl_color_refine(g.exp_seeds[0].structure, wl_colors, true);
+            }
+        }
+        for (int j = 0; j < (int)g.exp_seeds.size(); j++) {
+            if (!g.exp_seeds[j].used) {
+                for (int k = j + 1; k < (int)g.exp_seeds.size(); k++) {
+                    if (!g.exp_seeds[k].used) {
+                        if ((pruning_cluster_rmsd_type == "hungarian" ||
+                             pruning_cluster_rmsd_type == "min" ||
+                             pruning_cluster_rmsd_type == "weisfeiler") &&
+                            (!ligand_mol_symmetric))
+                            rmsd = calc_layer_rmsd(g.exp_seeds[j], g.exp_seeds[k]);
+                        else if (pruning_cluster_rmsd_type == "hungarian")
+                            rmsd = calc_layer_rmsd_hungarian(g.exp_seeds[j], g.exp_seeds[k]);
+                        else if (pruning_cluster_rmsd_type == "min")
+                            rmsd = calc_layer_rmsd_min(g.exp_seeds[j], g.exp_seeds[k]);
+                        else if (pruning_cluster_rmsd_type == "weisfeiler")
+                            rmsd = calc_layer_rmsd_weisfeiler(g.exp_seeds[j], g.exp_seeds[k],
+                                                              wl_colors, wl_weights.data());
+                        else
+                            rmsd = calc_layer_rmsd(g.exp_seeds[j], g.exp_seeds[k]);
+                        rmsd = MAX(rmsd, 0.001);
+                        if ((float)k / rmsd > RMSD_CUTOFF)
+                            g.exp_seeds[k].used = true;
+                    }
+                }
+            }
+        }
+    }
+
+    /* seed build (mirrors grow_periphery L1467-1504) */
+    int anchor_count = 0;
+    conf_anchors.clear();
+    conf_anchors.reserve(anchor_positions.size());
+    for (int j = 0; j < (int)g.exp_seeds.size(); j++) {
+        g.exp_seeds[j].conformer_num = count_conf_num;
+        g.exp_seeds[j].parent_num    = -1;
+        g.b4min_seeds[j].conformer_num = count_conf_num;
+        g.b4min_seeds[j].parent_num    = -1;
+        if (!g.exp_seeds[j].used) {
+            g.exp_seeds[j].anchor_num   = anchor_count;
+            g.b4min_seeds[j].anchor_num = anchor_count;
+            conf_anchors.push_back(g.b4min_seeds[j]);
+            if (print_growth_tree) conf_header(g.exp_seeds[j], "Minimized Anchor", score);
+            if (print_growth_tree) conf_header(g.b4min_seeds[j], "Unminimized Anchor", score);
+            if (print_growth_tree) g.b4min_seeds[j].structure.simplex_text = "";
+            g.seeds.push_back(g.exp_seeds[j]);
+            if (print_growth_tree) g.all_gen_seeds.push_back(g.exp_seeds[j]);
+            if (print_growth_tree) g.all_gen_b4min_seeds.push_back(g.b4min_seeds[j]);
+            anchor_count++;
+        }
+        count_conf_num++;
+    }
+
+    if (verbose) cout << g.seeds.size() << "/" << anchor_positions.size()
+               << " anchor orients retained (max " << num_anchor_poses << ")"
+               << endl;
+
+    if (verbose) {
+        for (int layer_count = 1; layer_count < num_layers; layer_count++)
+            cout << "Lyr " << layer_count << "-"
+                 << layers[layer_count].segments.size() << " Segs|";
+        cout << "number of layers:" << num_layers << endl;
+    }
+
+    g.i = 1;
+    g.l = 0;
+    g.num_layers = num_layers;
+    g.k_add = 0;
+    g.inflight = 0;
+    g.adding = true;
+    g.drain_done = false;
+    g.done = false;
+}
+
+void
+AG_Conformer_Search::grow_win_prep(VSGrowState & g, ConformerPool & pool,
+                                   Master_Score & score,
+                                   Minimizer & simplex, Bump_Filter & bump)
+{
+    if (g.done) return;
+
+    /* A single-layer ligand has no layers to grow (mirrors the sequential
+       grow_periphery loop `for (i = 1; i < num_layers; i++)`, which never
+       enters for num_layers==1).  The anchors are already the final
+       conformers; skipping ahead avoids indexing layers[g.seeds[0].layer_num]
+       (== layers[1]) on a size-1 vector when the round's verbose block runs
+       before the first drain. */
+    if (!g.drain_done && g.i >= g.num_layers) {
+        if (print_growth_tree)
+            for (int ii = 0; ii < (int)g.seeds.size(); ii++)
+                print_branch(g.all_gen_seeds, g.all_gen_b4min_seeds,
+                             g.seeds[ii], score);
+        g.pruned_confs.clear(); g.pruned_confs.reserve(g.seeds.size());
+        SCOREMol tmp_scoremol;
+        for (int ii = 0; ii < (int)g.seeds.size(); ii++) {
+            g.pruned_confs.push_back(tmp_scoremol);
+            g.pruned_confs[ii].first = g.seeds[ii].score;
+            copy_molecule(g.pruned_confs[ii].second, g.seeds[ii].structure);
+        }
+        pruned_confs = g.pruned_confs;
+        count_conf_num++;
+        g.seeds.clear();
+        g.exp_seeds.clear();
+        g.b4min_seeds.clear();
+        g.all_gen_seeds.clear();
+        g.all_gen_b4min_seeds.clear();
+        g.done = true;
+        return;
+    }
+
+    int i = g.i;
+    int l = g.l;
+
+    /* advance to the next round once the current one is drained/pruned */
+    if (g.drain_done) {
+        g.l++;
+        if (g.l >= (int)layers[g.i].segments.size()) {
+            g.l = 0;
+            g.i++;
+        }
+        if (g.i >= g.num_layers) {
+            /* END GROWTH (mirrors grow_periphery L1988-2010) */
+            if (print_growth_tree)
+                for (int ii = 0; ii < (int)g.seeds.size(); ii++)
+                    print_branch(g.all_gen_seeds, g.all_gen_b4min_seeds,
+                                 g.seeds[ii], score);
+            g.pruned_confs.clear(); g.pruned_confs.reserve(g.seeds.size());
+            SCOREMol tmp_scoremol;
+            for (int ii = 0; ii < (int)g.seeds.size(); ii++) {
+                g.pruned_confs.push_back(tmp_scoremol);
+                g.pruned_confs[ii].first = g.seeds[ii].score;
+                copy_molecule(g.pruned_confs[ii].second, g.seeds[ii].structure);
+            }
+            pruned_confs = g.pruned_confs;
+            count_conf_num++;
+            g.seeds.clear();
+            g.exp_seeds.clear();
+            g.b4min_seeds.clear();
+            g.all_gen_seeds.clear();
+            g.all_gen_b4min_seeds.clear();
+            g.done = true;
+            return;
+        }
+        g.drain_done = false;
+        g.drive_done = false;
+        g.adding = true;
+        g.k_add = 0;
+        g.inflight = 0;
+        i = g.i;
+        l = g.l;
+    }
+    if (!g.adding) return;
+
+
+    /* drive this round's torsion sampling (once) */
+    if (!g.drive_done) {
+        g.exp_seeds.clear(); g.exp_seeds.reserve(1000);
+        g.b4min_seeds.clear(); g.b4min_seeds.reserve(1000);
+
+        if (verbose && g.seeds.size() > 0) {
+            int bond = layer_segments[layers[g.seeds[0].layer_num].segments[l]].rot_bond;
+            cout << "Lyr:" << i << " Seg:" << l << " Bond:"
+                 << bond_list[bond].bond_num
+                 << " : Sampling "
+                 << g.seeds[0].structure.amber_bt_torsion_total[bond_list[bond].bond_num]
+                 << " dihedrals "
+                 << g.seeds[0].structure.atom_names[bond_list[bond].atom1] << "("
+                 << g.seeds[0].structure.atom_types[bond_list[bond].atom1] << ")  "
+                 << g.seeds[0].structure.atom_names[bond_list[bond].atom2] << "("
+                 << g.seeds[0].structure.atom_types[bond_list[bond].atom2] << ")  "
+                 << g.seeds[0].structure.atom_names[bond_list[bond].atom3] << "("
+                 << g.seeds[0].structure.atom_types[bond_list[bond].atom3] << ")  "
+                 << g.seeds[0].structure.atom_names[bond_list[bond].atom4] << "("
+                 << g.seeds[0].structure.atom_types[bond_list[bond].atom4] << ")"
+                 << endl;
+        }
+
+        for (int j = 0; j < (int)g.seeds.size(); j++) {
+            if (score.ir_ensemble)
+                segment_torsion_drive(g.seeds[j], l, g.exp_seeds,
+                                      score.c_mg_nrg.numgrids);
+            else
+                segment_torsion_drive(g.seeds[j], l, g.exp_seeds, 1);
+        }
+        g.cb_ok.assign(g.exp_seeds.size(), 0);
+        g.k_add = 0;
+        g.drive_done = true;
+    }
+
+    /* Re-register this set's LUT row for THIS round's active atom set.
+       The row was registered during phase-2 with the anchor's active
+       flags; each growth round activates additional atoms, and the VS
+       kernels skip atoms whose LUT flag is 0 — without this refresh the
+       grid/IE scores (and the pool's NM iterations) would only cover the
+       anchor subset of the molecule.  All samples of a round share the
+       same active set (exp_seeds[0]), and the pair list is the full
+       molecule's (built at init), so only the flags change per round. */
+    if (!g.exp_seeds.empty() && dock_gpu_is_active()) {
+        DOCKMol & amol = anchor_positions[0].second;
+        int na = amol.num_atoms;
+        std::vector<float> vdwA(na), vdwB(na), chg(na);
+        std::vector<int> af(na);
+        for (int a = 0; a < na; a++) {
+            int at = amol.amber_at_id[a];
+            vdwA[a] = score.primary_score->vdwA[at];
+            vdwB[a] = score.primary_score->vdwB[at];
+            chg[a]  = amol.charges[a];
+            af[a]   = g.exp_seeds[0].structure.atom_active_flags[a] ? 1 : 0;
+        }
+        int np = (int)(g.nb_flat.size() / 2);
+        dock_gpu_vs_register_ligand(g.lig_idx, vdwA.data(), vdwB.data(),
+                                    chg.data(), af.data(),
+                                    g.ie_vdwA_snap.data(), g.nb_flat.data(),
+                                    np, na,
+                                    score.primary_score->ie_soft_delta,
+                                    score.primary_score->ie_vdw_cutoff_sq);
+    }
+
+    /* first pass: b4min save + clash/bump + pool.add (resumable) */
+    while (g.k_add < (int)g.exp_seeds.size()) {
+        /* backpressure: stop adding when the shared pool is full; the
+           scheduler steps the pool and we resume here */
+        if (pool.active_count() >= pool.capacity()) return;
+
+        const int k = g.k_add;
+        g.b4min_seeds.push_back(g.exp_seeds[k]);
+
+        if (segment_clash_check(g.exp_seeds[k].structure, i, l)) {
+            if (bump.check_growth_bumps(g.exp_seeds[k].structure)) {
+                g.cb_ok[k] = 2;
+                FLOATVec vertex;
+                for (int iv = 0; iv < 6; iv++) vertex.push_back(0.0f);
+                simplex.id_torsions(g.exp_seeds[k].structure, vertex);
+                simplex.torsion_scale_factors.resize(simplex.torsions.size(), 1);
+                /* id_torsions leaves bond_vectors at whatever grow_win_init
+                   set (anchor-sized); the torsion list may reference bonds
+                   of the full grown structure, so size it per-seed before
+                   the pool snapshots it. */
+                simplex.bond_vectors.clear();
+                simplex.bond_vectors.resize(
+                    g.exp_seeds[k].structure.num_bonds, -1);
+                if (simplex.use_min_flex_growth) {
+                    float pool_score_converge;
+                    if (simplex.use_min_flex_growth_ramp) {
+                        float diff_interval =
+                            simplex.initial_score_converge -
+                            simplex.flex_min_score_converge;
+                        float adj_unit =
+                            diff_interval / (float)(g.num_layers - 1);
+                        adj_unit *= (float)i;
+                        pool_score_converge =
+                            simplex.initial_score_converge - adj_unit;
+                    } else {
+                        pool_score_converge = simplex.flex_min_cycle_converge;
+                    }
+                    float stageA_converge =
+                        (simplex.use_min_flex_growth_ramp)
+                            ? pool_score_converge
+                            : simplex.flex_min_score_converge;
+                    SimplexStage gA;
+                    gA.max_iterations  = simplex.flex_min_torsion_iterations;
+                    gA.max_cycles      = simplex.flex_min_max_cycles;
+                    gA.score_converge  = stageA_converge;
+                    gA.trans_step_size = 0.0f;
+                    gA.rot_step_size   = 0.0f;
+                    gA.tors_step_size  = simplex.flex_min_tors_step_size;
+                    SimplexStage gB;
+                    gB.max_iterations  = simplex.flex_min_max_iterations;
+                    gB.max_cycles      = simplex.flex_min_max_cycles;
+                    gB.score_converge  = pool_score_converge;
+                    gB.trans_step_size = simplex.flex_min_trans_step_size;
+                    gB.rot_step_size   = simplex.flex_min_rot_step_size;
+                    gB.tors_step_size  = simplex.flex_min_tors_step_size;
+
+                    int added = pool.add(
+                        &g.exp_seeds[k].structure, vertex, gA, gB,
+                        simplex.flex_min_cycle_converge,
+                        simplex.restrained_min,
+                        simplex.coefficient_restraint,
+                        nullptr,
+                        reinterpret_cast<void*>((intptr_t)
+                            (((size_t)g.route << 12) | (size_t)k)),
+                        g.lig_idx,
+                        g.exp_seeds[k].structure.num_atoms,
+                        seed_key((unsigned)dock_mol_serial,
+                                 (unsigned)current_anchor,
+                                 (unsigned)i, (unsigned)l,
+                                 (unsigned)k));
+                    if (added >= 0) g.inflight++;
+                }
+            } else {
+                g.cb_ok[k] = 1;
+            }
+        }
+        g.k_add++;
+    }
+    g.adding = false;
+}
+
+void
+AG_Conformer_Search::grow_win_score_round(VSGrowState & g, Master_Score & score)
+{
+    g.gpu2_ok = false;
+    if (!score.use_primary_score) return;
+    if (g.exp_seeds.empty()) return;
+    const int n2 = (int)g.exp_seeds.size();
+    const int na2 = g.exp_seeds[0].structure.num_atoms;
+    if (na2 <= 0) return;
+
+    std::vector<float> xyz2((size_t)n2 * na2 * 3);
+    for (int kk = 0; kk < n2; kk++) {
+        DOCKMol & s2 = g.exp_seeds[kk].structure;
+        for (int a = 0; a < na2; a++) {
+            xyz2[(size_t)kk * na2 * 3 + a * 3 + 0] = s2.x[a];
+            xyz2[(size_t)kk * na2 * 3 + a * 3 + 1] = s2.y[a];
+            xyz2[(size_t)kk * na2 * 3 + a * 3 + 2] = s2.z[a];
+        }
+    }
+    g.g2_grid.resize((size_t)n2);
+    g.g2_comb.resize((size_t)n2);
+    g.g2_valid.assign((size_t)n2, 0);
+
+    bool ok = true;
+    for (int off = 0; off < n2; off += GPU_MAX_BATCH_POSES) {
+        int cnt = n2 - off;
+        if (cnt > GPU_MAX_BATCH_POSES) cnt = GPU_MAX_BATCH_POSES;
+        std::vector<int> pose_lig(cnt, g.lig_idx);
+        if (!dock_gpu_batch_score_vs_grid(
+                &xyz2[(size_t)off * na2 * 3], cnt, na2,
+                pose_lig.data(), &g.g2_grid[off])) {
+            ok = false; break;
+        }
+        if (!dock_gpu_batch_score_vs(
+                &xyz2[(size_t)off * na2 * 3], cnt, na2,
+                pose_lig.data(), &g.g2_comb[off])) {
+            ok = false; break;
+        }
+    }
+    float gminx, gminy, gminz, gmaxx, gmaxy, gmaxz;
+    if (ok && dock_gpu_grid_bounds(&gminx, &gminy, &gminz,
+                                   &gmaxx, &gmaxy, &gmaxz)) {
+        for (int kk = 0; kk < n2; kk++) {
+            DOCKMol & s2 = g.exp_seeds[kk].structure;
+            bool inb = true;
+            for (int a = 0; a < na2 && inb; a++) {
+                if (!s2.atom_active_flags[a]) continue;
+                if (!(s2.x[a] > gminx && s2.x[a] < gmaxx &&
+                      s2.y[a] > gminy && s2.y[a] < gmaxy &&
+                      s2.z[a] > gminz && s2.z[a] < gmaxz))
+                    inb = false;
+            }
+            g.g2_valid[kk] = inb ? 1 : 0;
+        }
+    } else ok = false;
+    g.gpu2_ok = ok;
+}
+
+void
+AG_Conformer_Search::grow_win_finish(VSGrowState & g, Master_Score & score,
+                                     Minimizer & simplex, Bump_Filter & bump)
+{
+    (void)simplex;
+    if (g.adding || g.inflight > 0 || g.done) {
+        return;
+    }
+
+    const int i = g.i;
+    const int l = g.l;
+    const int j_last = (int)g.seeds.size() - 1;
+
+    grow_win_score_round(g, score);
+
+    /* second pass: score + prune (mirrors grow_periphery L1786-1876) */
+    bool valid_orient = false;
+    for (int k = 0; k < (int)g.exp_seeds.size(); k++) {
+        if (g.cb_ok[k] == 2) {
+            if (score.use_primary_score) {
+                if (g.gpu2_ok) {
+                    valid_orient = (g.g2_valid[k] != 0);
+                    g.exp_seeds[k].structure.current_score = g.g2_grid[k];
+                    g.exp_seeds[k].structure.internal_energy =
+                        g.g2_comb[k] - g.g2_grid[k];
+                    if (getenv("DOCK_GPU2_DEBUG") && k == 0) {
+                        DOCKMol ref = g.exp_seeds[k].structure;
+                        bool cpu_ok = score.compute_primary_score(ref);
+                        fprintf(stderr,
+                            "GPU2 r%d i=%d l=%d na=%d "
+                            "gpu_grid=%f gpu_comb=%f "
+                            "cpu_grid=%f cpu_ie=%f "
+                            "cpu_ok=%d cutoff=%f\n",
+                            g.route, i, l,
+                            g.exp_seeds[k].structure.num_atoms,
+                            g.g2_grid[k], g.g2_comb[k],
+                            ref.current_score, ref.internal_energy,
+                            cpu_ok, growth_score_cutoff_begin /
+                                pow(growth_score_scaling_factor, i));
+                    }
+                } else {
+                    valid_orient = score.compute_primary_score(g.exp_seeds[k].structure);
+                    valid_orient = score.compute_primary_score(g.b4min_seeds[k].structure);
+                }
+            } else valid_orient = true;
+
+            if (valid_orient) {
+                if (print_growth_tree) {
+                    ostringstream text;
+                    text << i << ":" << l << ":" << j_last << ":" << k;
+                    conf_header(g.exp_seeds[k], text.str(), score);
+                    conf_header(g.b4min_seeds[k], text.str(), score);
+                    g.b4min_seeds[k].structure.simplex_text = "";
+                }
+                g.exp_seeds[k].score =
+                    g.exp_seeds[k].structure.current_score +
+                    g.exp_seeds[k].structure.internal_energy;
+                g.b4min_seeds[k].score = g.exp_seeds[k].score;
+
+                growth_score_cutoff =
+                    growth_score_cutoff_begin / (pow(growth_score_scaling_factor, i));
+                if (g.exp_seeds[k].structure.current_score <= growth_score_cutoff) {
+                    if (g.ie_prune) {
+                        if (g.exp_seeds[k].structure.internal_energy >
+                            internal_energy_cutoff) {
+                            g.exp_seeds[k].used = true;
+                            g.confs_pruned_bad_score++;
+                        }
+                    }
+                } else {
+                    g.exp_seeds[k].used = true;
+                    g.confs_pruned_bad_score++;
+                }
+            } else {
+                g.exp_seeds[k].used = true;
+                g.confs_pruned_outside_grid++;
+            }
+        } else if (g.cb_ok[k] == 1) {
+            g.exp_seeds[k].used = true;
+            g.confs_pruned_bump_filter++;
+        } else {
+            g.exp_seeds[k].used = true;
+            g.confs_pruned_clash_overlap++;
+        }
+    }
+
+    /* pruning section (mirrors grow_periphery L1880-1979) */
+    g.seeds.clear(); g.seeds.reserve(500);
+    sort(g.exp_seeds.begin(), g.exp_seeds.end(), conformer_less_than);
+    sort(g.b4min_seeds.begin(), g.b4min_seeds.end(), conformer_less_than);
+
+    if (cluster) {
+        float RMSD_CUTOFF = pruning_clustering_cutoff;
+        std::vector<int>    wl_colors2;
+        std::vector<double> wl_weights2;
+        if (pruning_cluster_rmsd_type == "weisfeiler" && ligand_mol_symmetric
+            && !g.exp_seeds.empty()) {
+            compute_wl_weights(layers, layer_segments, wl_weights2);
+            {
+                static WL_RMSD wl;
+                wl.wl_color_refine(g.exp_seeds[0].structure, wl_colors2, true);
+            }
+        }
+        float rmsd;
+        for (int j = 0; j < (int)g.exp_seeds.size(); j++) {
+            if (!g.exp_seeds[j].used) {
+                for (int k = j + 1; k < (int)g.exp_seeds.size(); k++) {
+                    if (!g.exp_seeds[k].used) {
+                        if ((pruning_cluster_rmsd_type == "hungarian" ||
+                             pruning_cluster_rmsd_type == "min" ||
+                             pruning_cluster_rmsd_type == "weisfeiler") &&
+                            (!ligand_mol_symmetric))
+                            rmsd = calc_layer_rmsd(g.exp_seeds[j], g.exp_seeds[k]);
+                        else if (pruning_cluster_rmsd_type == "hungarian")
+                            rmsd = calc_layer_rmsd_hungarian(g.exp_seeds[j], g.exp_seeds[k]);
+                        else if (pruning_cluster_rmsd_type == "min")
+                            rmsd = calc_layer_rmsd_min(g.exp_seeds[j], g.exp_seeds[k]);
+                        else if (pruning_cluster_rmsd_type == "weisfeiler")
+                            rmsd = calc_layer_rmsd_weisfeiler(g.exp_seeds[j], g.exp_seeds[k],
+                                                              wl_colors2, wl_weights2.data());
+                        else
+                            rmsd = calc_layer_rmsd(g.exp_seeds[j], g.exp_seeds[k]);
+                        rmsd = MAX(rmsd, 0.001);
+                        if ((float)k / rmsd > RMSD_CUTOFF) {
+                            g.exp_seeds[k].used = true;
+                            g.confs_pruned_clustered++;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /* copy pruned confs to seed list (mirrors grow_periphery L1946-1958) */
+    for (int j = 0; ((j < (int)g.exp_seeds.size()) &&
+                     ((int)g.seeds.size() < num_growth_poses)); j++) {
+        if (!g.exp_seeds[j].used) {
+            g.seeds.push_back(g.exp_seeds[j]);
+            if (print_growth_tree) g.all_gen_seeds.push_back(g.exp_seeds[j]);
+            if (print_growth_tree) g.all_gen_b4min_seeds.push_back(g.b4min_seeds[j]);
+        }
+    }
+
+    if (verbose) {
+        cout << "Lyr:" << i << " Seg:" << l << " ";
+        cout << g.seeds.size() << "/" << g.exp_seeds.size() << " retained, Pruning: ";
+        if (g.confs_pruned_outside_grid>0) cout << g.confs_pruned_outside_grid << "-outside grid ";
+        if (g.confs_pruned_bad_score>0) cout << g.confs_pruned_bad_score << "-score ";
+        if (cluster && g.confs_pruned_clustered>0) cout << g.confs_pruned_clustered << "-clustered ";
+        if (use_clash_penalty && g.confs_pruned_clash_overlap>0) cout << g.confs_pruned_clash_overlap << "-clash overlap ";
+        if (bump.bump_filter && g.confs_pruned_bump_filter>0) cout << g.confs_pruned_bump_filter << "-bump filter ";
+        if (print_growth_tree) cout << " (" << g.all_gen_seeds.size() << " in growth tree)";
+        cout << endl;
+    }
+    g.confs_pruned_bad_score = 0;
+    g.confs_pruned_clash_overlap = 0;
+    g.confs_pruned_outside_grid = 0;
+    g.confs_pruned_bump_filter = 0;
+    g.confs_pruned_clustered = 0;
+
+    if (verbose) dock_gpu_monitor(i, l, (int)layers[i].segments.size());
+
+    /* Round fully processed.  Signal prep() to advance the cursor and
+       run the next round; prep()'s drain_done block also hosts the
+       end-of-growth pruned_confs build.  adding=true re-enables the
+       scheduler's prep() call for this row. */
+    g.drain_done = true;
+    g.adding = true;
+}

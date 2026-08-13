@@ -27,6 +27,15 @@
 #include <stdio.h>
 #include <math.h>
 #include <vector>
+#include <chrono>
+
+static void gpu_stat(const char *name, int poses, int atoms, long long start_ms)
+{
+    long long now = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    fprintf(stderr, "[GPUSTAT] %s poses=%d atoms=%d t=%lldms\n",
+            name, poses, atoms, now - start_ms);
+}
 
 #define GPU_MAX_POSES       4096
 #define GPU_MAX_ATOMS       512
@@ -261,6 +270,64 @@ __global__ void hip_ie_vs_kernel(const float *xyz,
     }
 }
 
+/* Grid-component-only virtual-screen kernel.  Identical to hip_ie_vs_kernel
+   minus the internal-energy pair loop — the growth prune pass needs the
+   grid score and internal energy as separate numbers (dock_gpu_batch_score_vs
+   returns their sum).  Per-pose ligand rows come from the LUT via pose_lig. */
+__global__ void hip_grid_vs_kernel(const float *xyz,
+                                   const float *lut_vdwA, const float *lut_vdwB,
+                                   const float *lut_charges,
+                                   hipTextureObject_t avdw, hipTextureObject_t bvdw,
+                                   hipTextureObject_t es,
+                                   const int *lut_active_flags,
+                                   const int *pose_lig,
+                                   unsigned int *pose_counter,
+                                   float *out_scores,
+                                   HipKernelParams p)
+{
+    __shared__ float s_partial[HIP_SCORE_THREADS];
+    __shared__ unsigned int s_candidate;
+    const int tid = (int)threadIdx.x;
+    const int tg_size = (int)blockDim.x;
+
+    if (tid == 0) {
+        s_candidate = atomicAdd(pose_counter, 1u);
+    }
+    __syncthreads();
+
+    while ((int)s_candidate < p.num_poses) {
+        const int pose = (int)s_candidate;
+        const int lig  = pose_lig[pose];
+        const int stride = pose * p.num_atoms * 3;
+        const int lstride = lig * GPU_MAX_ATOMS;
+        float total = 0.0f;
+
+        for (int a = tid; a < p.num_atoms; a += tg_size) {
+            if (lut_active_flags[lstride + a] == 0) continue;
+            const float x = xyz[stride + a*3];
+            const float y = xyz[stride + a*3 + 1];
+            const float z = xyz[stride + a*3 + 2];
+            const float vdw  = hip_sample_grid(avdw, x, y, z, p);
+            const float bwdv = hip_sample_grid(bvdw, x, y, z, p);
+            const float esv  = hip_sample_grid(es,   x, y, z, p);
+            total += lut_vdwA[lstride + a]*vdw
+                   - lut_vdwB[lstride + a]*bwdv
+                   + lut_charges[lstride + a]*esv;
+        }
+
+        s_partial[tid] = total;
+        __syncthreads();
+
+        if (tid == 0) {
+            float final_score = 0.0f;
+            for (int i = 0; i < tg_size; i++) final_score += s_partial[i];
+            out_scores[pose] = final_score;
+            s_candidate = atomicAdd(pose_counter, 1u);
+        }
+        __syncthreads();
+    }
+}
+
 /* ================================================================== */
 /*  Static state                                                       */
 /* ================================================================== */
@@ -294,6 +361,47 @@ static hipArray *d_avdw = NULL, *d_bvdw = NULL, *d_es = NULL;
 static hipTextureObject_t h_avdw = 0, h_bvdw = 0, h_es = 0;
 
 static HipKernelParams g_params;
+
+/* ================================================================== */
+/*  Async pipelining state (host/GPU load balancing)                   */
+/* ================================================================== */
+
+/* One background stream for all async batch scoring.  All enqueues are
+   stream-ordered, so the shared device buffers (d_xyz, d_pose_lig,
+   d_pose_counter, d_scores) are never touched by two kernels at once. */
+#define LBAL_RING     4
+
+static hipStream_t g_stream = 0;
+static float *g_pin_xyz[LBAL_RING] = {0};
+static int   *g_pin_lig[LBAL_RING] = {0};
+static float *g_pin_score[LBAL_RING] = {0};
+static int    g_pin_busy[LBAL_RING] = {0};
+
+/* Pending async batches: results are copied into the caller's buffers at
+   dock_gpu_batch_score_sync() time. */
+#define LBAL_MAX_PENDING 64
+struct PendingBatch {
+    const float *xyz;
+    const int   *pose_lig;
+    float       *out;
+    int         poses;
+    int         atoms;
+    int         ring;
+    int         grid_only;
+    long long   t0;
+};
+static PendingBatch g_pending[LBAL_MAX_PENDING];
+static int g_npending = 0;
+
+/* Governor EMAs (smoothed host-prep vs GPU-busy timings). */
+static double g_host_ms_ema = 1.0;
+static double g_gpu_ms_ema = 1.0;
+
+static long long lbal_now_ms(void)
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 /* ================================================================== */
 /*  HIP utility helpers                                                */
@@ -429,6 +537,24 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     CHECK_HIP(hipMalloc(&d_lut_pair_indices, sizeof(int) * (size_t)GPU_MAX_LUT_LIGANDS * GPU_LUT_MAX_PAIRS));
     CHECK_HIP(hipMalloc(&d_pose_lig,        sizeof(int) * GPU_MAX_POSES));
 
+    /* Async pipeline: one background stream + pinned staging ring. */
+    CHECK_HIP(hipStreamCreate(&g_stream));
+    g_npending = 0;
+    for (int i = 0; i < LBAL_RING; i++) {
+        CHECK_HIP(hipHostMalloc(&g_pin_xyz[i],
+                                sizeof(float) * (size_t)GPU_MAX_POSES * GPU_MAX_ATOMS * 3,
+                                hipHostMallocDefault));
+        CHECK_HIP(hipHostMalloc(&g_pin_lig[i],
+                                sizeof(int) * (size_t)GPU_MAX_POSES,
+                                hipHostMallocDefault));
+        CHECK_HIP(hipHostMalloc(&g_pin_score[i],
+                                sizeof(float) * (size_t)GPU_MAX_POSES,
+                                hipHostMallocDefault));
+        g_pin_busy[i] = 0;
+    }
+    g_host_ms_ema = 1.0;
+    g_gpu_ms_ema = 1.0;
+
     g_initialized = 1;
     g_num_atoms = 0;
     g_num_nb_pairs = 0;
@@ -533,6 +659,8 @@ int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
 
     const int threads = HIP_SCORE_THREADS;
     const int blocks = (num_poses + threads - 1) / threads;
+    const long long t0b = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
     hipLaunchKernelGGL(hip_grid_kernel, dim3(blocks), dim3(threads), 0, 0,
                        d_xyz, d_vdwA, d_vdwB, d_charges,
                        h_avdw, h_bvdw, h_es, d_active_flags,
@@ -540,6 +668,7 @@ int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
     CHECK_HIP(hipGetLastError());
     CHECK_HIP(hipDeviceSynchronize());
     CHECK_HIP(hipMemcpy(out_scores, d_scores, sizeof(float) * (size_t)num_poses, hipMemcpyDeviceToHost));
+    gpu_stat("grid", num_poses, num_atoms, t0b);
     return 1;
 }
 
@@ -575,6 +704,8 @@ int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses, int
     kp.num_nb_pairs = g_num_nb_pairs;
 
     const int threads = HIP_SCORE_THREADS;
+    const long long t0b = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
     /* Persistent kernel: each block is an independent workgroup that claims
        poses via an atomic work counter.  Launch as many workgroups as the
        recommended batch size (mirrors the Vulkan persistent dispatch). */
@@ -590,6 +721,7 @@ int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses, int
     CHECK_HIP(hipGetLastError());
     CHECK_HIP(hipDeviceSynchronize());
     CHECK_HIP(hipMemcpy(out_scores, d_scores, sizeof(float) * (size_t)num_poses, hipMemcpyDeviceToHost));
+    gpu_stat("ie", num_poses, num_atoms, t0b);
     return 1;
 }
 
@@ -688,6 +820,9 @@ int dock_gpu_batch_score_vs(const float *xyz, int num_poses, int num_atoms,
     if (!g_initialized || g_num_lut_ligands == 0) return 0;
     if (num_poses > GPU_MAX_POSES || num_atoms > GPU_MAX_ATOMS) return 0;
 
+    long long t0 = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+
     const size_t xyz_bytes = sizeof(float) * (size_t)num_poses * (size_t)num_atoms * 3;
     CHECK_HIP(hipMemcpy(d_xyz, xyz, xyz_bytes, hipMemcpyHostToDevice));
     CHECK_HIP(hipMemcpy(d_pose_lig, pose_lig, sizeof(int) * (size_t)num_poses, hipMemcpyHostToDevice));
@@ -714,7 +849,172 @@ int dock_gpu_batch_score_vs(const float *xyz, int num_poses, int num_atoms,
     CHECK_HIP(hipGetLastError());
     CHECK_HIP(hipDeviceSynchronize());
     CHECK_HIP(hipMemcpy(out_scores, d_scores, sizeof(float) * (size_t)num_poses, hipMemcpyDeviceToHost));
+    gpu_stat("ie_vs", num_poses, num_atoms, t0);
     return 1;
+}
+
+int dock_gpu_batch_score_vs_grid(const float *xyz, int num_poses,
+                                 int num_atoms, const int *pose_lig,
+                                 float *out_scores)
+{
+    if (!g_initialized || g_num_lut_ligands == 0) return 0;
+    if (num_poses > GPU_MAX_POSES || num_atoms > GPU_MAX_ATOMS) return 0;
+
+    long long t0 = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+
+    const size_t xyz_bytes = sizeof(float) * (size_t)num_poses * (size_t)num_atoms * 3;
+    CHECK_HIP(hipMemcpy(d_xyz, xyz, xyz_bytes, hipMemcpyHostToDevice));
+    CHECK_HIP(hipMemcpy(d_pose_lig, pose_lig, sizeof(int) * (size_t)num_poses, hipMemcpyHostToDevice));
+
+    unsigned int zero = 0;
+    CHECK_HIP(hipMemcpy(d_pose_counter, &zero, sizeof(zero), hipMemcpyHostToDevice));
+
+    HipKernelParams kp = g_params;
+    kp.num_atoms = num_atoms;
+    kp.num_poses = num_poses;
+    kp.ie_soft_delta = 0.0f;
+    kp.ie_cutoff_sq = 1e10f;
+    kp.num_nb_pairs = 0;
+
+    int blocks = dock_gpu_recommended_batch_size();
+    if (blocks < 1) blocks = 1;
+
+    hipLaunchKernelGGL(hip_grid_vs_kernel, dim3(blocks), dim3(HIP_SCORE_THREADS), 0, 0,
+                       d_xyz, d_lut_vdwA, d_lut_vdwB, d_lut_charges,
+                       h_avdw, h_bvdw, h_es,
+                       d_lut_active_flags,
+                       d_pose_lig, d_pose_counter, d_scores, kp);
+    CHECK_HIP(hipGetLastError());
+    CHECK_HIP(hipDeviceSynchronize());
+    CHECK_HIP(hipMemcpy(out_scores, d_scores, sizeof(float) * (size_t)num_poses, hipMemcpyDeviceToHost));
+    gpu_stat("grid_vs", num_poses, num_atoms, t0);
+    return 1;
+}
+
+/* ================================================================== */
+/*  Async VS batch scoring (host/GPU load balancing)                   */
+/* ================================================================== */
+
+int dock_gpu_batch_score_vs_enqueue(const float *xyz, int num_poses,
+                                    int num_atoms, const int *pose_lig,
+                                    float *out_scores, int grid_only)
+{
+    if (!g_initialized || g_num_lut_ligands == 0) return 0;
+    if (num_poses > GPU_MAX_POSES || num_atoms > GPU_MAX_ATOMS) return 0;
+    if (g_npending >= LBAL_MAX_PENDING) return 0;
+
+    long long t0 = lbal_now_ms();
+
+    /* Hand the batch to the GPU via a pinned staging slot so the async
+       copies never touch pageable host memory (which would silently turn
+       hipMemcpyAsync into a blocking copy). */
+    int ring = -1;
+    for (int i = 0; i < LBAL_RING; i++) {
+        if (!g_pin_busy[i]) { ring = i; break; }
+    }
+    if (ring < 0) {
+        /* Ring exhausted (rare: a step enqueued a huge pose volume).
+           Drain the pipeline first — keeps ordering and correctness. */
+        dock_gpu_batch_score_sync();
+        ring = 0;
+    }
+    g_pin_busy[ring] = 1;
+
+    const size_t xyz_bytes = sizeof(float) * (size_t)num_poses * (size_t)num_atoms * 3;
+    memcpy(g_pin_xyz[ring], xyz, xyz_bytes);
+    memcpy(g_pin_lig[ring], pose_lig, sizeof(int) * (size_t)num_poses);
+
+    CHECK_HIP(hipMemcpyAsync(d_xyz, g_pin_xyz[ring], xyz_bytes,
+                             hipMemcpyHostToDevice, g_stream));
+    CHECK_HIP(hipMemcpyAsync(d_pose_lig, g_pin_lig[ring],
+                             sizeof(int) * (size_t)num_poses,
+                             hipMemcpyHostToDevice, g_stream));
+
+    static const unsigned int zero_async = 0;
+    CHECK_HIP(hipMemcpyAsync(d_pose_counter, &zero_async, sizeof(zero_async),
+                             hipMemcpyHostToDevice, g_stream));
+
+    HipKernelParams kp = g_params;
+    kp.num_atoms = num_atoms;
+    kp.num_poses = num_poses;
+    kp.ie_soft_delta = grid_only ? 0.0f : g_ie_soft_delta;
+    kp.ie_cutoff_sq = grid_only ? 1e10f : g_ie_cutoff_sq;
+    kp.num_nb_pairs = grid_only ? 0 : g_num_nb_pairs;
+
+    int blocks = dock_gpu_recommended_batch_size();
+    if (blocks < 1) blocks = 1;
+
+    if (grid_only) {
+        hipLaunchKernelGGL(hip_grid_vs_kernel, dim3(blocks), dim3(HIP_SCORE_THREADS),
+                           0, g_stream,
+                           d_xyz, d_lut_vdwA, d_lut_vdwB, d_lut_charges,
+                           h_avdw, h_bvdw, h_es,
+                           d_lut_active_flags,
+                           d_pose_lig, d_pose_counter, d_scores, kp);
+    } else {
+        hipLaunchKernelGGL(hip_ie_vs_kernel, dim3(blocks), dim3(HIP_SCORE_THREADS),
+                           0, g_stream,
+                           d_xyz, d_lut_vdwA, d_lut_vdwB, d_lut_charges,
+                           h_avdw, h_bvdw, h_es,
+                           d_lut_active_flags, d_lut_ie_vdwA,
+                           d_lut_pair_starts, d_lut_pair_indices,
+                           d_pose_lig, d_pose_counter, d_scores, kp);
+    }
+    CHECK_HIP(hipGetLastError());
+
+    CHECK_HIP(hipMemcpyAsync(g_pin_score[ring], d_scores,
+                             sizeof(float) * (size_t)num_poses,
+                             hipMemcpyDeviceToHost, g_stream));
+
+    /* Record the pending batch; its scores land in out_scores at sync. */
+    PendingBatch &pb = g_pending[g_npending++];
+    pb.xyz = xyz;
+    pb.pose_lig = pose_lig;
+    pb.out = out_scores;
+    pb.poses = num_poses;
+    pb.atoms = num_atoms;
+    pb.ring = ring;
+    pb.grid_only = grid_only;
+    pb.t0 = t0;
+
+    /* Governor input: host-side cost of preparing one batch. */
+    double dur = (double)(lbal_now_ms() - t0);
+    if (dur < 0.1) dur = 0.1;
+    g_host_ms_ema = 0.85 * g_host_ms_ema + 0.15 * dur;
+    return 1;
+}
+
+int dock_gpu_batch_score_sync(void)
+{
+    if (!g_initialized) return 0;
+    if (g_npending == 0) return 0;
+
+    long long t_sync = lbal_now_ms();
+    CHECK_HIP(hipStreamSynchronize(g_stream));
+
+    for (int i = 0; i < g_npending; i++) {
+        PendingBatch &pb = g_pending[i];
+        memcpy(pb.out, g_pin_score[pb.ring],
+               sizeof(float) * (size_t)pb.poses);
+        gpu_stat(pb.grid_only ? "grid_vs" : "ie_vs", pb.poses, pb.atoms, pb.t0);
+        double dur = (double)(lbal_now_ms() - pb.t0);
+        if (dur < 0.1) dur = 0.1;
+        g_gpu_ms_ema = 0.85 * g_gpu_ms_ema + 0.15 * dur;
+        g_pin_busy[pb.ring] = 0;
+    }
+    g_npending = 0;
+
+    double dur = (double)(lbal_now_ms() - t_sync);
+    if (dur < 0.1) dur = 0.1;
+    g_gpu_ms_ema = 0.85 * g_gpu_ms_ema + 0.15 * dur;
+    return 1;
+}
+
+void dock_gpu_lbal_stats(long long *host_ms, long long *gpu_ms)
+{
+    *host_ms = (long long)(g_host_ms_ema + 0.5);
+    *gpu_ms = (long long)(g_gpu_ms_ema + 0.5);
 }
 
 int dock_gpu_grid_bounds(float *minx, float *miny, float *minz,
@@ -759,6 +1059,15 @@ void dock_gpu_cleanup(void)
     if (d_lut_pair_starts) { hipFree(d_lut_pair_starts); d_lut_pair_starts = NULL; }
     if (d_lut_pair_indices){ hipFree(d_lut_pair_indices);d_lut_pair_indices = NULL; }
     if (d_pose_lig)        { hipFree(d_pose_lig);        d_pose_lig = NULL; }
+
+    for (int i = 0; i < LBAL_RING; i++) {
+        if (g_pin_xyz[i])   { hipHostFree(g_pin_xyz[i]);   g_pin_xyz[i] = NULL; }
+        if (g_pin_lig[i])   { hipHostFree(g_pin_lig[i]);   g_pin_lig[i] = NULL; }
+        if (g_pin_score[i]) { hipHostFree(g_pin_score[i]); g_pin_score[i] = NULL; }
+        g_pin_busy[i] = 0;
+    }
+    if (g_stream) { hipStreamDestroy(g_stream); g_stream = 0; }
+    g_npending = 0;
 
     g_initialized = 0;
     g_num_atoms = 0;
