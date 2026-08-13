@@ -376,19 +376,7 @@ ConformerPool::adapt_split_k()
     double ratio = (double)g / (double)(h + g);
     if (ratio > 0.55 && m_split_k < 4) m_split_k++;
     else if (ratio < 0.25 && m_split_k > 1) m_split_k--;
-
-    if ((m_steps_since_lbal++ % 96) == 0) {
-        static long long last_poses = 0, last_ms = 0;
-        long long now = lbal_now_ms();
-        double rate = (last_ms > 0)
-            ? (double)(m_poses_total - last_poses) * 1000.0 / (double)(now - last_ms)
-            : 0.0;
-        fprintf(stderr,
-                "[LBAL] k=%d host=%lldms gpu=%lldms ratio=%.2f poses=%lld rate=%.0f/s\n",
-                m_split_k, h, g, ratio, m_poses_total, rate);
-        last_poses = m_poses_total; last_ms = now;
-        fflush(stderr);
-    }
+    m_steps_since_lbal++;
 }
 
 int
@@ -421,31 +409,9 @@ ConformerPool::step_enqueue()
         total += need;
         nact++;
     }
-    m_poses_total += total;
-
     /* Nothing ready this round — finish() will convergence-check. */
     m_npends = 0;
-    if (nact == 0 || total == 0) {
-        if (getenv("DOCK_LBAL_DEBUG") != NULL) {
-            int c_phase = 0, c_flag = 0, c_other = 0;
-            for (size_t si = 0; si < m_slots.size(); si++) {
-                if (m_slots[si].phase == SlotPhase::CONVERGED) c_phase++;
-                else if (m_slots[si].converged) c_flag++;
-                else c_other++;
-            }
-            int d0 = -1;
-            for (size_t si = 0; si < m_slots.size() && d0 < 0; si++) {
-                if (m_slots[si].phase != SlotPhase::CONVERGED &&
-                    !m_slots[si].converged) d0 = (int)si;
-            }
-            fprintf(stderr,
-                    "[LBALDBG] enqueue: nact=%d total=%d slots=%zu "
-                    "conv_phase=%d conv_flag=%d open=%d first_open=%d\n",
-                    nact, total, m_slots.size(), c_phase, c_flag, c_other,
-                    d0);
-        }
-        return 0;
-    }
+    if (nact == 0 || total == 0) return 0;
 
     int k = m_split_k;
     int groups = (nact < k) ? nact : k;
@@ -472,12 +438,7 @@ ConformerPool::step_enqueue()
         base[g] = off;
         off += gtot[g];
     }
-    if (off == 0) {
-        if (getenv("DOCK_LBAL_DEBUG") != NULL)
-            fprintf(stderr, "[LBALDBG] enqueue: off==0 nact=%d groups=%d\n",
-                    nact, groups);
-        return 0;
-    }
+    if (off == 0) return 0;
 
     /* Default: no slot was enqueued this round (stale bases invalid). */
     for (size_t si = 0; si < m_slots.size(); si++) m_slot_base[si] = -1;
@@ -520,10 +481,6 @@ ConformerPool::step_enqueue()
         m_lbal_fail = true;
         return 0;
     }
-    if (getenv("DOCK_LBAL_DEBUG") != NULL)
-        fprintf(stderr, "[LBALDBG] enqueue: nact=%d total=%d k=%d groups=%d "
-                "filled=%d npends=%d\n", nact, total, m_split_k, groups,
-                off, m_npends);
     return 0;
 }
 
@@ -568,9 +525,6 @@ ConformerPool::step_finish()
                 newly++;
             }
         }
-        if (getenv("DOCK_LBAL_DEBUG") != NULL)
-            fprintf(stderr, "[LBALDBG] finish: npends=0 newly=%d slots=%zu\n",
-                    newly, m_slots.size());
         return newly;
     }
 

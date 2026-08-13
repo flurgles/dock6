@@ -287,7 +287,6 @@ private:
     int                     m_slot_base[4096]; // per-slot score offset (set by enqueue, used by finish)
     bool                    m_lbal_fail = false;  // async enqueue failed this step
     long long               m_lbal_t0 = 0;        // step start marker (host-phase timing)
-    long long               m_poses_total = 0;    // cumulative candidate poses enqueued
 
     // Internal helpers
     int  step_legacy();  // non-VS whole-cycle dispatch (synchronous)
