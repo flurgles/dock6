@@ -157,6 +157,13 @@ int dock_gpu_vs_register_ligand(int lig_idx,
                                 int num_atoms,
                                 float ie_soft_delta, float ie_cutoff_sq);
 
+/* Refresh only a registered ligand's per-atom active flags (called every
+   growth round; the coefficient rows, IE parameters and pair tables are
+   constant for the whole growth of one ligand, so this is the cheap
+   per-round LUT update).  Returns 1 on success, 0 on error. */
+int dock_gpu_vs_update_active_flags(int lig_idx, const int *active_flags,
+                                    int num_atoms);
+
 /* Max ligand-table rows the backend accepts. */
 int dock_gpu_vs_max_ligands(void);
 
@@ -200,9 +207,22 @@ int dock_gpu_batch_score_vs_enqueue(const float *xyz, int num_poses,
                                     int num_atoms, const int *pose_lig,
                                     float *out_scores, int grid_only);
 
+/* Second internal stream (e.g. the per-round growth screen), so the pool's
+   simplex batches and the screen batches can overlap on the device.
+   Same semantics as the primary enqueue; drain with
+   dock_gpu_batch_score_sync2(). */
+int dock_gpu_batch_score_vs_enqueue2(const float *xyz, int num_poses,
+                                     int num_atoms, const int *pose_lig,
+                                     float *out_scores, int grid_only);
+
 /* Wait for all enqueued async batches to complete (blocking).
    Returns 1 on success, 0 if no batches were pending. */
 int dock_gpu_batch_score_sync(void);
+int dock_gpu_batch_score_sync2(void);
+
+/* Number of still-pending batches on the secondary stream (scheduler
+   needs to keep iterating until a screen's results can be consumed). */
+int dock_gpu_npends2(void);
 
 /* Report the adaptive governor's smoothed timings: host_ms = EMA of the
    host time spent preparing one batch (pack+enqueue), gpu_ms = EMA of the

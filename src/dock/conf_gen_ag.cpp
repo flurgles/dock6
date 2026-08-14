@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <limits.h>
 #include <sstream>
+#include <thread>
 #include <time.h>
 
 #include "amber_typer.h"
@@ -4439,12 +4440,42 @@ AG_Conformer_Search::grow_win_prep(VSGrowState & g, ConformerPool & pool,
                  << endl;
         }
 
-        for (int j = 0; j < (int)g.seeds.size(); j++) {
-            if (score.ir_ensemble)
-                segment_torsion_drive(g.seeds[j], l, g.exp_seeds,
-                                      score.c_mg_nrg.numgrids);
-            else
-                segment_torsion_drive(g.seeds[j], l, g.exp_seeds, 1);
+        {
+            /* Parallel drive: each seed is independent (segment_torsion_drive
+               only reads the row's const layer tables + its own seed and
+               writes its own conformer list).  Order-preserving merge keeps
+               exp_seeds identical to the serial path (deterministic). */
+            const int num_seeds = (int)g.seeds.size();
+            const unsigned hw = std::thread::hardware_concurrency();
+            const int nworkers =
+                (hw > 1 && num_seeds > 8) ? (int)std::min<unsigned>(hw, 8) : 1;
+            if (nworkers > 1) {
+                std::vector<std::vector<CONFORMER> > per_seed(num_seeds);
+                std::vector<std::thread> workers;
+                workers.reserve(nworkers);
+                for (int t = 0; t < nworkers; t++)
+                    workers.push_back(std::thread([&, t]() {
+                        const int num_rec = score.ir_ensemble
+                            ? score.c_mg_nrg.numgrids : 1;
+                        for (int j = t; j < num_seeds; j += nworkers)
+                            segment_torsion_drive(g.seeds[j], l,
+                                                  per_seed[j], num_rec);
+                    }));
+                for (int t = 0; t < nworkers; t++)
+                    workers[t].join();
+                for (int j = 0; j < num_seeds; j++)
+                    g.exp_seeds.insert(g.exp_seeds.end(),
+                                       per_seed[j].begin(),
+                                       per_seed[j].end());
+            } else {
+                for (int j = 0; j < num_seeds; j++) {
+                    if (score.ir_ensemble)
+                        segment_torsion_drive(g.seeds[j], l, g.exp_seeds,
+                                              score.c_mg_nrg.numgrids);
+                    else
+                        segment_torsion_drive(g.seeds[j], l, g.exp_seeds, 1);
+                }
+            }
         }
         g.cb_ok.assign(g.exp_seeds.size(), 0);
         g.k_add = 0;
@@ -4462,22 +4493,10 @@ AG_Conformer_Search::grow_win_prep(VSGrowState & g, ConformerPool & pool,
     if (!g.exp_seeds.empty() && dock_gpu_is_active()) {
         DOCKMol & amol = anchor_positions[0].second;
         int na = amol.num_atoms;
-        std::vector<float> vdwA(na), vdwB(na), chg(na);
         std::vector<int> af(na);
-        for (int a = 0; a < na; a++) {
-            int at = amol.amber_at_id[a];
-            vdwA[a] = score.primary_score->vdwA[at];
-            vdwB[a] = score.primary_score->vdwB[at];
-            chg[a]  = amol.charges[a];
-            af[a]   = g.exp_seeds[0].structure.atom_active_flags[a] ? 1 : 0;
-        }
-        int np = (int)(g.nb_flat.size() / 2);
-        dock_gpu_vs_register_ligand(g.lig_idx, vdwA.data(), vdwB.data(),
-                                    chg.data(), af.data(),
-                                    g.ie_vdwA_snap.data(), g.nb_flat.data(),
-                                    np, na,
-                                    score.primary_score->ie_soft_delta,
-                                    score.primary_score->ie_vdw_cutoff_sq);
+        for (int a = 0; a < na; a++)
+            af[a] = g.exp_seeds[0].structure.atom_active_flags[a] ? 1 : 0;
+        dock_gpu_vs_update_active_flags(g.lig_idx, af.data(), na);
     }
 
     /* first pass: b4min save + clash/bump + pool.add (resumable) */
@@ -4571,32 +4590,37 @@ AG_Conformer_Search::grow_win_score_round(VSGrowState & g, Master_Score & score)
     const int na2 = g.exp_seeds[0].structure.num_atoms;
     if (na2 <= 0) return;
 
-    std::vector<float> xyz2((size_t)n2 * na2 * 3);
+    /* Persistent staging: the stream-ordered batches reference these
+       buffers until dock_gpu_batch_score_sync2() copies results out. */
+    g.g2_xyz.resize((size_t)n2 * na2 * 3);
+    g.g2_pose_lig.assign((size_t)n2, g.lig_idx);
     for (int kk = 0; kk < n2; kk++) {
         DOCKMol & s2 = g.exp_seeds[kk].structure;
         for (int a = 0; a < na2; a++) {
-            xyz2[(size_t)kk * na2 * 3 + a * 3 + 0] = s2.x[a];
-            xyz2[(size_t)kk * na2 * 3 + a * 3 + 1] = s2.y[a];
-            xyz2[(size_t)kk * na2 * 3 + a * 3 + 2] = s2.z[a];
+            g.g2_xyz[(size_t)kk * na2 * 3 + a * 3 + 0] = s2.x[a];
+            g.g2_xyz[(size_t)kk * na2 * 3 + a * 3 + 1] = s2.y[a];
+            g.g2_xyz[(size_t)kk * na2 * 3 + a * 3 + 2] = s2.z[a];
         }
     }
     g.g2_grid.resize((size_t)n2);
     g.g2_comb.resize((size_t)n2);
     g.g2_valid.assign((size_t)n2, 0);
 
+    /* Async on the secondary stream: grid-only pass, then grid+IE pass.
+       dock.cpp syncs stream2 at the top of the row block, so the consume
+       (prune) half of the next grow_win_finish() sees valid scores. */
     bool ok = true;
     for (int off = 0; off < n2; off += GPU_MAX_BATCH_POSES) {
         int cnt = n2 - off;
         if (cnt > GPU_MAX_BATCH_POSES) cnt = GPU_MAX_BATCH_POSES;
-        std::vector<int> pose_lig(cnt, g.lig_idx);
-        if (!dock_gpu_batch_score_vs_grid(
-                &xyz2[(size_t)off * na2 * 3], cnt, na2,
-                pose_lig.data(), &g.g2_grid[off])) {
+        if (!dock_gpu_batch_score_vs_enqueue2(
+                &g.g2_xyz[(size_t)off * na2 * 3], cnt, na2,
+                &g.g2_pose_lig[off], &g.g2_grid[off], 1)) {
             ok = false; break;
         }
-        if (!dock_gpu_batch_score_vs(
-                &xyz2[(size_t)off * na2 * 3], cnt, na2,
-                pose_lig.data(), &g.g2_comb[off])) {
+        if (!dock_gpu_batch_score_vs_enqueue2(
+                &g.g2_xyz[(size_t)off * na2 * 3], cnt, na2,
+                &g.g2_pose_lig[off], &g.g2_comb[off], 0)) {
             ok = false; break;
         }
     }
@@ -4629,11 +4653,36 @@ AG_Conformer_Search::grow_win_finish(VSGrowState & g, Master_Score & score,
         return;
     }
 
+    if (g.gpu2_pending) {
+        /* Async screen results are ready (dock.cpp synced stream2 at the
+           top of the row block): prune and promote now. */
+        grow_win_prune(g, score, bump);
+        g.gpu2_pending = false;
+        g.drain_done = true;
+        g.adding = true;
+        return;
+    }
+
+    /* Enqueue the screen on stream2; the prune half runs on the next
+       selection of this row, once dock.cpp has synced the results. */
+    grow_win_score_round(g, score);
+    g.gpu2_pending = g.gpu2_ok;
+    if (g.gpu2_pending) return;
+
+    /* Backend unavailable: score on the CPU now (prune loop's fallback)
+       and advance immediately. */
+    grow_win_prune(g, score, bump);
+    g.drain_done = true;
+    g.adding = true;
+}
+
+void
+AG_Conformer_Search::grow_win_prune(VSGrowState & g, Master_Score & score,
+                                    Bump_Filter & bump)
+{
     const int i = g.i;
     const int l = g.l;
     const int j_last = (int)g.seeds.size() - 1;
-
-    grow_win_score_round(g, score);
 
     /* second pass: score + prune (mirrors grow_periphery L1786-1876) */
     bool valid_orient = false;

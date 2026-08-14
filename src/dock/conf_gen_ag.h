@@ -203,6 +203,11 @@ class VSGrowState {
     std::vector<float>  g2_grid;    // GPU2 grid-only scores (VS LUT)
     std::vector<float>  g2_comb;    // GPU2 grid+IE scores (VS LUT)
     bool                gpu2_ok = false;
+    bool                gpu2_pending = false; // async screen in flight (stream2)
+    /* Persistent staging for the async GPU2 screen: must outlive the
+       stream-ordered batch until dock_gpu_batch_score_sync2(). */
+    std::vector<float>  g2_xyz;
+    std::vector<int>    g2_pose_lig;
     /* Per-set IE snapshot: primary_score is shared across the window's
        rows and initialize_internal_energy() rebuilds nb_int/ie_vdwA per
        row — the LUT refresh must use THIS row's pair list. */
@@ -449,11 +454,16 @@ class           AG_Conformer_Search {
     void            grow_win_prep(VSGrowState &, ConformerPool &,
                                   Master_Score &, Minimizer &, Bump_Filter &);
     // Second pass (GPU2 VS scoring) + prune + seed rebuild; advances the
-    // (i, l) cursor; builds pruned_confs when growth ends.
+    // (i, l) cursor; builds pruned_confs when growth ends.  With the async
+    // screen, finish splits into an enqueue pass (gpu2_pending set) and a
+    // consume pass (results already synced by dock.cpp) that prunes.
     void            grow_win_finish(VSGrowState &, Master_Score &,
                                     Minimizer &, Bump_Filter &);
+    // Prune + seed rebuild (the consume half of grow_win_finish).
+    void            grow_win_prune(VSGrowState &, Master_Score &,
+                                   Bump_Filter &);
     // GPU2 dispatch used by grow_win_finish (kept separate so dock.cpp
-    // can run it without holding a swapped-in state).
+    // can run it without holding a swapped-in state).  Async on stream2.
     void            grow_win_score_round(VSGrowState &, Master_Score &);
 
 

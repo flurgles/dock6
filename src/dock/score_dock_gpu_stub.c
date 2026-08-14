@@ -96,6 +96,13 @@ int dock_gpu_vs_register_ligand(int lig_idx,
     return 0;
 }
 
+int dock_gpu_vs_update_active_flags(int lig_idx, const int *active_flags,
+                                    int num_atoms)
+{
+    (void)lig_idx; (void)active_flags; (void)num_atoms;
+    return 0;
+}
+
 int dock_gpu_vs_max_ligands(void)
 {
     return 0;
@@ -128,6 +135,25 @@ int dock_gpu_batch_score_vs_enqueue(const float *xyz, int num_poses,
 }
 
 int dock_gpu_batch_score_sync(void)
+{
+    return 0;
+}
+
+int dock_gpu_batch_score_vs_enqueue2(const float *xyz, int num_poses,
+                                     int num_atoms, const int *pose_lig,
+                                     float *out_scores, int grid_only)
+{
+    (void)xyz; (void)num_poses; (void)num_atoms; (void)pose_lig;
+    (void)out_scores; (void)grid_only;
+    return 0;
+}
+
+int dock_gpu_batch_score_sync2(void)
+{
+    return 0;
+}
+
+int dock_gpu_npends2(void)
 {
     return 0;
 }

@@ -566,6 +566,16 @@ time (the same pair list the sequential path would have fed to
                                    per iteration so cost stays O(1) in rows */
         while (any_pending) {
             bool any_active = !grow_pool.idle();
+            bool any_gpu2 = false;
+            for (size_t r = 0; r < rows.size(); r++)
+                if (rows[r].gpu2_pending) { any_gpu2 = true; break; }
+            if (any_gpu2) {
+                /* GPU2 screens are stream-ordered on the secondary stream:
+                   sync at the top of the iteration so the row block (prep
+                   LUT re-register / finish consume) sees valid results and
+                   the LUT is quiescent. */
+                dock_gpu_batch_score_sync2();
+            }
             bool any_round_open = false;
             if (any_active) {
                 /* Enqueue this round's GPU batches first (non-blocking):
@@ -654,7 +664,7 @@ time (the same pair list the sequential path would have fed to
                 }
             }
             /* continue while any round is open or the pool still drains */
-            any_pending = any_round_open || any_active;
+            any_pending = any_round_open || any_active || any_gpu2;
         }
         if (cur_swapped >= 0)
             c_master_conf.c_ag_conf.grow_win_park(rows[cur_swapped]);
