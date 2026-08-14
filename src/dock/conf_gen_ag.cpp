@@ -4617,6 +4617,7 @@ AG_Conformer_Search::grow_win_score_round(VSGrowState & g, Master_Score & score)
         }
     } else ok = false;
     g.gpu2_ok = ok;
+
 }
 
 void

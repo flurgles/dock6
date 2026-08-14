@@ -668,6 +668,12 @@ time (the same pair list the sequential path would have fed to
             c_master_conf.c_ag_conf.grow_win_restore(g);
             int nconf = 0;
             while (c_master_conf.next_conformer(mol)) {
+                /* nb_int/ie_vdwA are global score state rebuilt per row
+                   (grow_win_init) — by submission time they belong to the
+                   last-processed row, not this ligand.  Rebuild from the
+                   final pose so minimization and the final report use the
+                   correct pair list. */
+                c_master_score.primary_score->initialize_internal_energy(mol);
                 active_min.minimize_final_pose(mol, c_master_score, c_typer);
                 /* The GPU growth path sets current_score/internal_energy
                    directly and never refreshes current_data (the ranked

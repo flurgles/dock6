@@ -100,6 +100,7 @@ ConformerPool::ConformerPool(int batch_max, Minimizer* minimizer, bool use_gpu,
     , m_active_flags(nullptr)
     , m_dispatch_capacity(0)
 {
+    for (int i = 0; i < 4096; i++) m_slot_base[i] = -1;
     m_slots.reserve(batch_max);
 }
 
@@ -167,6 +168,7 @@ ConformerPool::add(DOCKMol* mol,
         if ((int)m_slots.size() >= m_batch_max) return -1;
         idx = (int)m_slots.size();
     }
+    m_slot_base[idx] = -1;   /* not enqueued this round until packed */
 
     int size = (int)initial_vertex.size();
 
