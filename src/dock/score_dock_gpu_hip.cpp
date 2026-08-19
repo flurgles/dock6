@@ -858,7 +858,7 @@ int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses, int
 
     hipLaunchKernelGGL(hip_ie_kernel, dim3(blocks), dim3(threads), 0, 0,
                        d_xyz[0], d_vdwA, d_vdwB, d_charges,
-                       d_avdw_lin, d_bvdw_lin, d_es_lin,
+                       h_avdw, h_bvdw, h_es,
                        d_active_flags, d_ie_vdwA,
                        d_pair_starts, d_pair_indices,
                        d_pose_counter[0], d_scores[0], kp);
