@@ -79,6 +79,7 @@
 
 #ifndef __APPLE__
 #include <sys/sysinfo.h>
+#include <malloc.h>
 #endif
 
 
@@ -121,6 +122,36 @@ struct VSAnchorSet {
     int                 np;         /* IE pair count (per-anchor capture)  */
     int                *nb_flat;    /* IE pair list snapshot               */
     float              *ie_vdwA;    /* per-atom IE vdW A params snapshot   */
+    VSAnchorSet() : lig_idx(-1), np(0), nb_flat(nullptr), ie_vdwA(nullptr) {}
+    ~VSAnchorSet()
+    {
+        delete[] nb_flat;
+        delete[] ie_vdwA;
+    }
+    VSAnchorSet(VSAnchorSet&& other) noexcept
+        : anchors(std::move(other.anchors)), lig_idx(other.lig_idx),
+          np(other.np), nb_flat(other.nb_flat), ie_vdwA(other.ie_vdwA)
+    {
+        other.nb_flat = nullptr;
+        other.ie_vdwA = nullptr;
+    }
+    VSAnchorSet& operator=(VSAnchorSet&& other) noexcept
+    {
+        if (this != &other) {
+            delete[] nb_flat;
+            delete[] ie_vdwA;
+            anchors = std::move(other.anchors);
+            lig_idx = other.lig_idx;
+            np      = other.np;
+            nb_flat = other.nb_flat;
+            ie_vdwA = other.ie_vdwA;
+            other.nb_flat = nullptr;
+            other.ie_vdwA = nullptr;
+        }
+        return *this;
+    }
+    VSAnchorSet(const VSAnchorSet&) = delete;
+    VSAnchorSet& operator=(const VSAnchorSet&) = delete;
 };
 
 /* Deep-copy anchor positions into dst, reusing dst's existing per-mol
@@ -143,6 +174,21 @@ struct VSWindowJob {
     DOCKMol               mol;      /* prepared ligand (for growth replay) */
     vector<VSAnchorSet>   sets;     /* one entry per completed anchor      */
     int                   serial;   /* library-order index (per-pose RNG)  */
+    VSWindowJob() : serial(0) {}
+    VSWindowJob(VSWindowJob&& other) noexcept
+        : mol(std::move(other.mol)), sets(std::move(other.sets)),
+          serial(other.serial) {}
+    VSWindowJob& operator=(VSWindowJob&& other) noexcept
+    {
+        if (this != &other) {
+            mol    = other.mol;
+            sets   = std::move(other.sets);
+            serial = other.serial;
+        }
+        return *this;
+    }
+    VSWindowJob(const VSWindowJob&) = delete;
+    VSWindowJob& operator=(const VSWindowJob&) = delete;
 };
 
 static int
@@ -201,16 +247,24 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
         VSWindowJob job;
         job.serial = mol_serial++;
 
-        while (c_master_conf.next_anchor(mol)) {
+            /* Per-anchor orientation buffers live outside the anchor loop: their
+       capacity is reused across anchors, so per-anchor allocation traffic
+       stays flat regardless of the host allocator. */
+    std::vector<float> ori_xyz;
+    std::vector<int>   ori_bump;
+    std::vector<int>   ori_more;
+    std::vector<float> ori_score;
+    std::vector<char>  ori_valid;
+    while (c_master_conf.next_anchor(mol)) {
             c_library.num_anchors++;
             c_orient.match_ligand(mol);
 
             /* Pass 1: stream this anchor's orientations WITHOUT scoring.
                Orientation scoring (a ~1000-score/anchor CPU hot spot) is
                deferred to one batched LUT dispatch after collection. */
-            std::vector<float> ori_xyz;
-            std::vector<int>   ori_bump;
-            std::vector<int>   ori_more;
+            ori_xyz.clear();
+            ori_bump.clear();
+            ori_more.clear();
             while (c_orient.new_next_orientation(mol)) {
                 ori_bump.push_back(
                     c_bmp_score.check_anchor_bumps(mol,
@@ -226,8 +280,8 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
             const int na_o  = mol.num_atoms;
             int lig_row = -1;
             bool batch_ok = false;
-            std::vector<float> ori_score(n_ori > 0 ? (size_t)n_ori : 1, 0.0f);
-            std::vector<char>  ori_valid((size_t)n_ori, 0);
+            ori_score.resize(n_ori > 0 ? (size_t)n_ori : 1, 0.0f);
+            ori_valid.resize((size_t)n_ori, 0);
             if (n_ori > 0 && can_batch_orient && dock_gpu_is_active() &&
                 row_next < maxl) {
                 /* Reserve a LUT row for THIS anchor set and register the
@@ -330,10 +384,16 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
                 if (valid_orient || !ori_more[oi]) {
                     if (c_master_conf.submit_anchor_orientation(mol,
                                                     (bool)ori_more[oi])) {
-                        /* anchor complete — snapshot its positions */
+                        /* anchor complete — snapshot its positions.
+                           Move instead of deep-copy: anchor_positions is
+                           cleared and refilled by the next anchor set
+                           (conf_gen_ag.cpp), and the copied set is
+                           immutable here, so stealing the buffers halves
+                           the per-anchor host traffic on any platform. */
                         VSAnchorSet as;
-                        vs_deep_copy_anchors(as.anchors,
+                        as.anchors.swap(
                             c_master_conf.c_ag_conf.anchor_positions);
+                        c_master_conf.c_ag_conf.anchor_positions.reserve(1000);
                         as.lig_idx = lig_row;
                         /* Capture the per-anchor IE pair table NOW:
                            nb_int is cleared per orientation and never rebuilt
@@ -347,15 +407,25 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
                         if (!as.anchors.empty() &&
                             c_master_conf.method == 1) {
                             std::vector<INTPair> pairs;
-                            for (int a1 = 0; a1 < mol.num_atoms - 1; a1++)
-                                for (int a2 = a1 + 1; a2 < mol.num_atoms; a2++)
-                                    if (mol.atom_segment_ids[a1] !=
-                                            mol.atom_segment_ids[a2] &&
-                                        mol.get_bond(a1, a2) == -1 &&
-                                        !mol.atoms_are_one_three(a1, a2) &&
-                                        !mol.atoms_are_one_four(a1, a2))
+                            DOCKMol & cmol = as.anchors[0].second;
+                            for (int a1 = 0; a1 < cmol.num_atoms - 1; a1++)
+                                for (int a2 = a1 + 1; a2 < cmol.num_atoms; a2++)
+                                    if (cmol.atom_segment_ids[a1] !=
+                                            cmol.atom_segment_ids[a2] &&
+                                        cmol.get_bond(a1, a2) == -1 &&
+                                        !cmol.atoms_are_one_three(a1, a2) &&
+                                        !cmol.atoms_are_one_four(a1, a2))
                                         pairs.push_back(INTPair(a1, a2));
                             int np = (int)pairs.size();
+                            if (getenv("DOCK_GPU2_DEBUG"))
+                                fprintf(stderr,
+                                    "CAPTDBG set=%d seg0=%d seg7=%d seg10=%d "
+                                    "np=%d\n",
+                                    (int)job.sets.size(),
+                                    cmol.atom_segment_ids[0],
+                                    cmol.atom_segment_ids[7],
+                                    cmol.atom_segment_ids[10],
+                                    np);
                             if (np > 0) {
                                 as.np = np;
                                 as.nb_flat = new int[np * 2];
@@ -470,18 +540,74 @@ time (the same pair list the sequential path would have fed to
         }
     }
 
-    /* Anchor minimization: batch pool with per-pose deterministic RNG. */
+    /* The phase-1 anchor copies carry degraded bond state (their pair
+       table comes out ~125 pairs short of the live molecule's), so
+       refresh every LUT row from the live molecule's canonical IE table
+       (the same table grow_win_init snapshots) before the anchor
+       batching below. */
+    for (size_t i = 0; i < jobs.size(); i++) {
+        VSWindowJob & job = jobs[i];
+        c_master_score.primary_score->initialize_internal_energy(job.mol);
+        int np = (int)c_master_score.primary_score->nb_int.size();
+        std::vector<int> nb_flat(np * 2);
+        for (int pi = 0; pi < np; pi++) {
+            nb_flat[pi * 2] =
+                c_master_score.primary_score->nb_int[pi].first;
+            nb_flat[pi * 2 + 1] =
+                c_master_score.primary_score->nb_int[pi].second;
+        }
+        for (size_t k = 0; k < job.sets.size(); k++) {
+            VSAnchorSet & as = job.sets[k];
+            if (as.anchors.empty()) continue;
+            dock_gpu_vs_update_pairs(
+                as.lig_idx, c_master_score.primary_score->ie_vdwA,
+                nb_flat.data(), np, job.mol.num_atoms);
+            if (getenv("DOCK_GPU2_DEBUG"))
+                fprintf(stderr, "PAIRREF l=%d np=%d cap=%d\n",
+                        as.lig_idx, np, as.np);
+        }
+    }
+
+    /* Anchor minimization: batch pool with per-pose deterministic RNG.
+       DOCK_LBAL_CPU_MIN=1 routes anchor and growth minimization through
+       the sequential CPU path (whole-seed Minimizer::minimize), which is
+       far cheaper than the GPU pool for small DOF sets on latency-bound
+       APUs (measured ~5000 anchors: ~7s CPU vs ~100s GPU pool). */
+    bool cpu_min = (getenv("DOCK_LBAL_CPU_MIN") != NULL);
+    bool pool_cpu = (getenv("DOCK_POOL_CPU") != NULL);
     {
-        ConformerPool anchor_pool(GPU_POOL_BATCH_MAX, &active_min, true,
+        ConformerPool anchor_pool(GPU_POOL_BATCH_MAX, &active_min, !cpu_min && !pool_cpu,
                                   active_min.simplex_mode,
-                                  active_min.simplex_crossover);
+                                  active_min.simplex_crossover,
+                                  c_master_score.primary_score);
+        if (getenv("DOCK_GPU2_DEBUG") && !jobs.empty() && !jobs[0].sets.empty() &&
+            !jobs[0].sets[0].anchors.empty()) {
+            DOCKMol & a0 = jobs[0].sets[0].anchors[0].second;
+            fprintf(stderr, "ABEF x=%.3f y=%.3f z=%.3f s=%.4f na=%d\n",
+                    a0.x[0], a0.y[0], a0.z[0], a0.current_score,
+                    a0.num_atoms);
+            for (int ai = 0; ai < (int)jobs[0].sets[0].anchors.size(); ai++) {
+                DOCKMol & am = jobs[0].sets[0].anchors[ai].second;
+                if (am.current_score < 700.0f)
+                    fprintf(stderr, "RAW%02d x=%.3f y=%.3f z=%.3f s=%.4f\n",
+                            ai, am.x[0], am.y[0], am.z[0], am.current_score);
+            }
+        }
         for (size_t i = 0; i < jobs.size(); i++) {
             VSWindowJob & job = jobs[i];
             for (size_t k = 0; k < job.sets.size(); k++) {
                 VSAnchorSet & as = job.sets[k];
                 if (!active_min.use_min_rigid_anchor) continue;
+                if (getenv("DOCK_LBAL_DEBUG"))
+                    fprintf(stderr, "[ANCHSET] job=%zu set=%zu n=%zu\n",
+                            i, k, as.anchors.size());
                 for (size_t a = 0; a < as.anchors.size(); a++) {
+                    int ploop = 0;
                     while (anchor_pool.active_count() >= anchor_pool.capacity()) {
+                        ploop++;
+                        if (getenv("DOCK_LBAL_DEBUG") && (ploop % 1000) == 0)
+                            fprintf(stderr, "[PLOOP] iter=%d active=%d\n",
+                                    ploop, (int)anchor_pool.active_count());
                         anchor_pool.step();
                         anchor_pool.poll();
                     }
@@ -502,7 +628,7 @@ time (the same pair list the sequential path would have fed to
                                     as.lig_idx,
                                     as.anchors[a].second.num_atoms,
                                     seed_key((unsigned)job.serial,
-                                             (unsigned)k, (unsigned)a,
+                                             (unsigned)k + 1, (unsigned)a,
                                              0x51u, 0x52u));
                 }
             }
@@ -510,6 +636,56 @@ time (the same pair list the sequential path would have fed to
         while (!anchor_pool.idle()) {
             anchor_pool.step();
             anchor_pool.poll();
+            if (getenv("DOCK_LBAL_DEBUG")) {
+                static long long aiter = 0;
+                if ((++aiter % 50) == 0) {
+#ifdef __GLIBC__
+                    /* Return freed brk pages to the OS: the anchor pool's
+                       churn (mol copies, slot recycle) leaves large freed
+                       holes behind glibc's never-shrinking brk; trimming
+                       keeps peak RSS at the live set, not the traffic. */
+                    malloc_trim(0);
+#endif
+                    struct mallinfo2 mi = mallinfo2();
+                    long stm_d = 0;
+                    {
+                        FILE* sf = fopen("/proc/self/statm", "r");
+                        if (sf) {
+                            long a, b, c, d, e, f;
+                            if (fscanf(sf, "%ld %ld %ld %ld %ld %ld",
+                                       &a, &b, &c, &d, &e, &f) == 6)
+                                stm_d = f;
+                            fclose(sf);
+                        }
+                    }
+                    fprintf(stderr, "[ANCHOR] iter=%lld active=%d "
+                            "uord=%zu arena=%zu free=%zu top=%zu "
+                            "data=%ldKB mmap=%zu hblks=%d\n",
+                            aiter, (int)anchor_pool.active_count(),
+                            (size_t)mi.uordblks, (size_t)mi.arena,
+                            (size_t)mi.fordblks, (size_t)mi.keepcost,
+                            stm_d * (4096 / 1024),
+                            (size_t)mi.hblkhd, mi.hblks);
+                }
+            }
+        }
+        if (getenv("DOCK_GPU2_DEBUG") && !jobs.empty() && !jobs[0].sets.empty() &&
+            !jobs[0].sets[0].anchors.empty()) {
+            DOCKMol & a0 = jobs[0].sets[0].anchors[0].second;
+            fprintf(stderr, "AAFT x=%.3f y=%.3f z=%.3f s=%.4f\n",
+                    a0.x[0], a0.y[0], a0.z[0], a0.current_score);
+            for (int ai = 0; ai < 8 && ai < (int)jobs[0].sets[0].anchors.size();
+                 ai++) {
+                DOCKMol & am = jobs[0].sets[0].anchors[ai].second;
+                fprintf(stderr, "ANCH%02d x=%.3f y=%.3f z=%.3f s=%.4f\n",
+                        ai, am.x[0], am.y[0], am.z[0], am.current_score);
+            }
+            for (int ai = 8; ai < (int)jobs[0].sets[0].anchors.size(); ai++) {
+                DOCKMol & am = jobs[0].sets[0].anchors[ai].second;
+                if (am.current_score < 700.0f)
+                    fprintf(stderr, "LOW%02d x=%.3f y=%.3f z=%.3f s=%.4f\n",
+                            ai, am.x[0], am.y[0], am.z[0], am.current_score);
+            }
         }
     }
 
@@ -523,37 +699,64 @@ time (the same pair list the sequential path would have fed to
        prunes the other ligands' rounds. */
     std::vector<VSGrowState> rows;
     std::vector<std::vector<int> > job_rows(jobs.size());
-    VSGrowState base;   /* parked per-job ligand state (prepare_molecule) */
-    ConformerPool grow_pool(GPU_POOL_BATCH_MAX, &active_min, true,
+    /* The growth pool is shared across ALL rows of the window.  The serial
+       path gives each (anchor,layer) batch its own GPU_POOL_BATCH_MAX
+       slots, so the shared pool must scale with the row count to keep the
+       per-row slot budget (and the round's clash-passing sample set) from
+       being starved when many rows interleave.  Capped at 4096: the pool's
+       per-slot bookkeeping arrays (m_slot_base, need_of, act_list) are
+       fixed at that size. */
+    int grow_cap = (int)rows.size() * GPU_POOL_BATCH_MAX;
+    if (grow_cap < GPU_POOL_BATCH_MAX) grow_cap = GPU_POOL_BATCH_MAX;
+    if (grow_cap > 4096) grow_cap = 4096;
+    ConformerPool grow_pool(grow_cap, &active_min, !cpu_min && !pool_cpu,
                             active_min.simplex_mode,
-                            active_min.simplex_crossover);
+                            active_min.simplex_crossover,
+                            c_master_score.primary_score);
+    /* Per-job parked base (prepare_molecule state), built on demand.
+       Rows are stubbed here; grow_win_init runs lazily when the
+       scheduler first picks each row (see lazy_prep below), so only
+       the in-flight rows hold their full anchor copies + seed
+       structures instead of every row of the window at once. */
+    std::vector<VSGrowState> job_base(jobs.size());
+    std::vector<bool> job_base_ok(jobs.size(), false);
     for (size_t i = 0; i < jobs.size(); i++) {
-        VSWindowJob & job = jobs[i];
-        /* Rebuild the AG segment/anchor state for THIS job's ligand —
-           the collection loop left it pointing at the last ligand seen. */
-        copy_molecule(mol, job.mol);
-        c_master_conf.c_ag_conf.dock_mol_serial = job.serial;
-        c_master_conf.c_ag_conf.prepare_molecule(mol);
-        c_master_conf.c_ag_conf.grow_win_park(base);
-        for (size_t k = 0; k < job.sets.size(); k++) {
-            /* Rebuild layers for anchor k of this ligand, matching what
-               next_anchor() would have built in the sequential path. */
-            c_master_conf.c_ag_conf.grow_win_restore(base);
-            c_master_conf.c_ag_conf.setup_growth_anchor(k);
-            /* restore the anchor positions collected for this job */
-            vs_deep_copy_anchors(c_master_conf.c_ag_conf.anchor_positions,
-                                 job.sets[k].anchors);
+        for (size_t k = 0; k < jobs[i].sets.size(); k++) {
             rows.push_back(VSGrowState());
             VSGrowState & g = rows.back();
             g.route = (int)rows.size() - 1;
-            g.lig_idx = job.sets[k].lig_idx;
-            c_master_conf.c_ag_conf.grow_win_init(g, c_master_score,
-                                                  active_min, c_bmp_score);
-            c_master_conf.c_ag_conf.grow_win_park(g);
+            g.lig_idx = jobs[i].sets[k].lig_idx;
+            g.job_idx = (int)i;
+            g.set_idx = (int)k;
             job_rows[i].push_back(g.route);
         }
-        c_master_conf.c_ag_conf.grow_win_restore(base);
     }
+    auto lazy_prep = [&](VSGrowState & g) {
+        if (g.prepped) return;
+        int ji = g.job_idx;
+        if (!job_base_ok[ji]) {
+            /* Rebuild the AG segment/anchor state for THIS job's ligand —
+               the collection loop left it pointing at the last ligand seen. */
+            copy_molecule(mol, jobs[ji].mol);
+            c_master_conf.c_ag_conf.dock_mol_serial = jobs[ji].serial;
+            c_master_conf.c_ag_conf.prepare_molecule(mol);
+            c_master_conf.c_ag_conf.grow_win_park(job_base[ji]);
+            job_base_ok[ji] = true;
+        }
+        c_master_conf.c_ag_conf.grow_win_restore(job_base[ji]);
+        c_master_conf.c_ag_conf.setup_growth_anchor(g.set_idx);
+        /* restore the anchor positions collected for this job */
+        vs_deep_copy_anchors(c_master_conf.c_ag_conf.anchor_positions,
+                             jobs[ji].sets[g.set_idx].anchors);
+        c_master_conf.c_ag_conf.grow_win_init(g, c_master_score,
+                                              active_min, c_bmp_score);
+        /* NOTE: no grow_win_park(g) here — the scheduler's swap-in has
+           already restored this row into the AG, and the drive inside
+           grow_win_prep reads the AG's layers/bond_list; parking now
+           would empty them (crash in segment_torsion_drive).  The next
+           scheduler swap-in parks the row when it is swapped out. */
+        g.prepped = true;
+    };
 
     /* scheduler loop: prep adds while capacity allows, then step the
        shared pool; converged slots unlock their round's second pass.
@@ -564,9 +767,33 @@ time (the same pair list the sequential path would have fed to
         bool any_pending = true;
         size_t rr = 0;          /* round-robin cursor: one row's CPU work
                                    per iteration so cost stays O(1) in rows */
+        long long dbg_iter = 0;
         while (any_pending) {
+            dbg_iter++;
+            if (getenv("DOCK_LBAL_DEBUG") && (dbg_iter % 250) == 0) {
+#ifdef __GLIBC__
+                /* Same trim rationale as the anchor drain: growth-round
+                   churn leaves freed brk holes behind; keep peak RSS at
+                   the live set. */
+                malloc_trim(0);
+#endif
+                fprintf(stderr, "[SCHED] iter=%lld act=%d g2=%d open=%d rows=%d\n",
+                        dbg_iter, !grow_pool.idle(), 0, 0, (int)rows.size());
+                for (size_t r = 0; r < rows.size(); r++)
+                    fprintf(stderr,
+                        "  [ROW%zu] done=%d add=%d inf=%d dd=%d g2p=%d i=%d l=%d "
+                        "kadd=%d exp=%d seeds=%d\n",
+                        r, rows[r].done, rows[r].adding, rows[r].inflight,
+                        rows[r].drain_done, rows[r].gpu2_pending, rows[r].i,
+                        rows[r].l, rows[r].k_add, (int)rows[r].exp_seeds.size(),
+                        (int)rows[r].seeds.size());
+            }
             bool any_active = !grow_pool.idle();
             bool any_gpu2 = false;
+            if (getenv("DOCK_LBAL_DEBUG") && (dbg_iter % 250) == 0) {
+                fprintf(stderr, "[SCHED2] pool_active=%d\n",
+                        (int)grow_pool.active_count());
+            }
             for (size_t r = 0; r < rows.size(); r++)
                 if (rows[r].gpu2_pending) { any_gpu2 = true; break; }
             if (any_gpu2) {
@@ -604,11 +831,13 @@ time (the same pair list the sequential path would have fed to
                         c_master_conf.c_ag_conf.grow_win_restore(rows[r]);
                         cur_swapped = (int)r;
                     }
-                    if (rows[r].adding)
+                    if (rows[r].adding) {
+                        lazy_prep(rows[r]);
                         c_master_conf.c_ag_conf.grow_win_prep(rows[r], grow_pool,
                                                               c_master_score,
                                                               active_min,
                                                               c_bmp_score);
+                    }
                     if (!rows[r].adding && rows[r].inflight == 0 &&
                         !rows[r].drain_done)
                         c_master_conf.c_ag_conf.grow_win_finish(rows[r],
@@ -641,11 +870,13 @@ time (the same pair list the sequential path would have fed to
                         c_master_conf.c_ag_conf.grow_win_restore(rows[r]);
                         cur_swapped = (int)r;
                     }
-                    if (rows[r].adding)
+                    if (rows[r].adding) {
+                        lazy_prep(rows[r]);
                         c_master_conf.c_ag_conf.grow_win_prep(rows[r], grow_pool,
                                                               c_master_score,
                                                               active_min,
                                                               c_bmp_score);
+                    }
                     if (!rows[r].adding && rows[r].inflight == 0 &&
                         !rows[r].drain_done)
                         c_master_conf.c_ag_conf.grow_win_finish(rows[r],
@@ -656,6 +887,11 @@ time (the same pair list the sequential path would have fed to
             }
             if (any_active) {
                 grow_pool.step_finish();
+            }
+            {
+                /* Drain converged slots regardless of pool activity:
+                   CPU-mode pools converge inside add() and would never
+                   release their rounds otherwise. */
                 std::vector<SimplexSlot*> done_slots = grow_pool.poll();
                 for (size_t s = 0; s < done_slots.size(); s++) {
                     int tag = (int)(intptr_t)done_slots[s]->user_data;
@@ -705,18 +941,9 @@ time (the same pair list the sequential path would have fed to
        window and clear it so no window is written twice. */
     c_library.write_ranked_ligands(false, c_master_score);
     c_library.ranked_list.clear();
-    /* Free this window's anchor snapshots (DOCKMol arrays are not
-       destructor-managed) before collecting the next window. */
-    for (size_t i = 0; i < jobs.size(); i++) {
-        VSWindowJob & job = jobs[i];
-        job.mol.clear_molecule();
-        for (size_t k = 0; k < job.sets.size(); k++) {
-            for (size_t a = 0; a < job.sets[k].anchors.size(); a++)
-                job.sets[k].anchors[a].second.clear_molecule();
-            if (job.sets[k].nb_flat) delete[] job.sets[k].nb_flat;
-            if (job.sets[k].ie_vdwA) delete[] job.sets[k].ie_vdwA;
-        }
-    }
+    /* This window's snapshots are freed by the containers' destructors
+       (VSAnchorSet frees nb_flat/ie_vdwA; DOCKMol/vector members free the
+       anchor arrays) when jobs is cleared at the next window boundary. */
     }
     return total_written;
 }
@@ -730,6 +957,22 @@ using namespace std;
 int
 main(int argc, char **argv)
 {
+
+#ifdef __GLIBC__
+    /* The VS batch path churns multi-MB temporary buffers (orientation
+       snapshots, anchor sets).  glibc grows brk to the cumulative
+       allocation flow and never shrinks it, so a long virtual-screen
+       run's RSS peak equals total traffic instead of live data.  Push
+       large blocks to mmap (returned to the OS on free) so RSS tracks
+       live use on any Linux host. */
+    mallopt(M_MMAP_THRESHOLD, 1 << 20);
+    mallopt(M_MMAP_MAX, 65536);
+    /* Trim aggressively: the VS churn (anchor mol copies, slot recycle)
+       frees multi-GB total traffic; with a tiny trim threshold glibc
+       returns freed brk pages to the OS instead of keeping them
+       resident, so RSS peaks at the live set. */
+    mallopt(M_TRIM_THRESHOLD, 0);
+#endif
 
 #ifndef __APPLE__
     // set up memory info
@@ -1439,7 +1682,8 @@ main(int argc, char **argv)
     // Else if you are doing flexible, rigid, or fixed anchor docking, enter here
     } else {
 
-    if (dock_gpu_is_active() && c_master_conf.method == 1) {
+    if (dock_gpu_is_active() && c_master_conf.method == 1 &&
+        getenv("DOCK_NO_WINDOWED") == NULL) {
         /* GPU virtual-screen windowed batching */
         gpu_vs_batch_drive(c_library, c_master_conf, c_orient, c_bmp_score,
                            c_master_score, c_typer, c_filter, *active_min,

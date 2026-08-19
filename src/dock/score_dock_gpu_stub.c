@@ -30,9 +30,15 @@ int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
 }
 
 int dock_gpu_set_ligand(const float *vdwA, const float *vdwB,
-                        const float *charges, int num_atoms)
+                         const float *charges, int num_atoms)
 {
     (void)vdwA; (void)vdwB; (void)charges; (void)num_atoms;
+    return 0;  /* not implemented on CPU */
+}
+
+int dock_gpu_set_scales(float vdw_scale, float es_scale)
+{
+    (void)vdw_scale; (void)es_scale;
     return 0;  /* not implemented on CPU */
 }
 

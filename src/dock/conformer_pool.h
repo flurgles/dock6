@@ -95,6 +95,9 @@ struct SimplexSlot {
     int            ihi;                // index of highest (worst)  score
     int            inhi;               // index of 2nd-highest (2nd-worst) score
     int            ilo;                // index of lowest  (best)  score
+    int            shrink_skips;       // consecutive rejected shrinks (force after 1)
+    float*         p_saved;            // flat (N+1)*N copy of p[] taken at REFLECT
+                                        // failure, for reverting a rejected shrink
 
     // Working buffers (pre-allocated per slot)
     FLOATVec       centroid;           // pbar — dimension = size
@@ -189,7 +192,8 @@ public:
        minimizer: shared Minimizer for vector_to_dockmol / scale_vector / copy_crds.
        use_gpu:   true → pool dispatches GPU work; false → step() is a no-op. */
     ConformerPool(int batch_max, Minimizer* minimizer, bool use_gpu,
-                  int simplex_mode = 0, int simplex_crossover = 17);
+                  int simplex_mode = 0, int simplex_crossover = 17,
+                  Base_Score* score = nullptr);
 
     ~ConformerPool();
 
@@ -256,6 +260,7 @@ private:
     int                     m_batch_max;
     Minimizer*              m_minimizer;        // shared for dof→xyz
     bool                    m_use_gpu;
+    Base_Score*             m_score = nullptr;  // scoring function for CPU whole-seed path
     int                     m_simplex_mode;        // 0=classical, 1=adaptive, 2=dim-aware
     int                     m_simplex_crossover;   // crossover DOF for dim-aware mode
     int                     m_num_atoms;   // ligand atom count, set on first add()

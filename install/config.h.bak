@@ -1,0 +1,32 @@
+# DOCK configuration file for GNU compilers with ROCm HIP GPU backend.
+# Compiles for AMD (ROCm via hipcc) and, with HIP_PLATFORM=nvcc,
+# NVIDIA (CUDA).  See src/dock/Makefile GPU_BACKEND=hip.
+#
+# Fixed architecture for this build (Steam Deck Van Gogh APU, RDNA2):
+# pass --offload-arch=gfx1035.  For NVIDIA, use --offload-arch=sm_XX
+# (e.g. sm_50 for a 960M) with the CUDA toolkit installed.
+
+CC=          gcc
+CFLAGS=      -O3 -ffast-math -march=native -mtune=native -std=gnu17
+CXX=         g++
+CXXFLAGS=    -O3 -ffast-math -march=native -mtune=native -std=c++11
+DOCK_SUFFIX= .hip
+FC=          gfortran
+FFLAGS=      -O3 -fno-automatic -fno-second-underscore -std=legacy
+LIBS=        -lm -lpthread
+LINK_WITHOUT_FORTRAN_MAIN=
+LOAD=        g++
+
+# GPU backend selection: hip -> ROCm HIP.
+# The dock Makefile compiles score_dock_gpu_hip.o with hipcc and links
+# -lamdhip64.  HIPCC/HIP_ARCH may be overridden on the command line.
+GPU_BACKEND= hip
+
+# Macro definitions for NAB
+AR=          ar rv
+LEX=         flex -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600
+OCFLAGS=     -O3 -std=gnu17 -D_ANSI_SOURCE
+RANLIB=      ranlib
+DOCKHOME=/home/deck/dock6/dock6
+# Created for the HIP (ROCm) GPU backend.DOCKHOME=/home/deck/dock6/dock6
+# Created at Sat Aug  1 09:49:49 PM PDT 2026 via ./configure gnu.hip

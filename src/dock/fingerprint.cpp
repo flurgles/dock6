@@ -399,6 +399,12 @@ Fingerprint::return_noH_environment( DOCKMol & mol, int atom_num )
 
     string return_string = atom_keys_1[atom_num];
 
+    if (getenv("DOCK_LBAL_DEBUG") && (atom_num < 0 ||
+        (size_t)atom_num >= tmp_atom_vec.size())) {
+        fprintf(stderr, "[BICKEL] return_noH_environment OOB atom_num=%d"
+                " n=%zu mol.na=%d\n", atom_num, tmp_atom_vec.size(),
+                mol.num_atoms);
+    }
 
     // Clear the atom and bond vecs for this molecule
     // alpha.clear();

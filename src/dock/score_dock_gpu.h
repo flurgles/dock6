@@ -113,6 +113,12 @@ int dock_gpu_set_ligand(const float *vdwA, const float *vdwB,
 /* Release all GPU resources. */
 void dock_gpu_cleanup(void);
 
+/* Set vdw and electrostatic scaling factors for GPU scoring.
+   Must be called after dock_gpu_init() and before any batch_score call.
+   Mirrors the CPU grid_score_vdw_scale and grid_score_es_scale parameters.
+   Returns 1 on success, 0 on error. */
+int dock_gpu_set_scales(float vdw_scale, float es_scale);
+
 /* Returns 1 if GPU is active and ready for batch scoring. */
 int dock_gpu_is_active(void);
 
@@ -164,8 +170,18 @@ int dock_gpu_vs_register_ligand(int lig_idx,
 int dock_gpu_vs_update_active_flags(int lig_idx, const int *active_flags,
                                     int num_atoms);
 
+/* Replace a registered ligand's IE pair table + per-atom ie_vdwA.
+   Returns 1 on success, 0 on error. */
+int dock_gpu_vs_update_pairs(int lig_idx, const float *ie_vdwA,
+                             const int *nb_int_pairs, int num_nb_pairs,
+                             int num_atoms);
+
 /* Max ligand-table rows the backend accepts. */
 int dock_gpu_vs_max_ligands(void);
+
+/* Debug: dump a registered ligand's pair table as (a1,a2) pairs.
+   Returns the total pair count (may exceed max_out); -1 on error. */
+int dock_gpu_vs_dump_pairs(int lig_idx, int *out_pairs, int max_out);
 
 /* Score N poses against the shared grid, each pose belonging to one
    registered ligand.  xyz is flat N * num_atoms * 3 (num_atoms = padded

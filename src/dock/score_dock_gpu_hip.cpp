@@ -65,6 +65,8 @@ struct HipKernelParams {
     float  ie_cutoff_sq;
     int    num_nb_pairs;
     int    num_poses;
+    float  vdw_scale;
+    float  es_scale;
 };
 
 /* ================================================================== */
@@ -93,6 +95,79 @@ __device__ __forceinline__ float hip_sample_grid(hipTextureObject_t tex,
     return tex3D<float>(tex, u, v, w);
 }
 
+__device__ __forceinline__ void hip_sample_grid_cpu(float x, float y, float z,
+                                                     const HipKernelParams &p,
+                                                     const float *avdw, const float *bvdw, const float *es,
+                                                     float &vdw_out, float &bwdv_out, float &es_out)
+{
+    const float sx = (x - p.origin_x) / p.spacing;
+    const float sy = (y - p.origin_y) / p.spacing;
+    const float sz = (z - p.origin_z) / p.spacing;
+    /* CPU INTFLOOR: (int)floor(x + 0.00001) - uses double precision floor.
+       Match exactly by using double precision floor. */
+    const int ix = (int)floor((double)sx + 1e-5);
+    const int iy = (int)floor((double)sy + 1e-5);
+    const int iz = (int)floor((double)sz + 1e-5);
+    const float fx = sx - (float)ix;
+    const float fy = sy - (float)iy;
+    const float fz = sz - (float)iz;
+
+    const int sx0 = fmaxf(0, fminf(p.span_x - 1, ix));
+    const int sx1 = fmaxf(0, fminf(p.span_x - 1, ix + 1));
+    const int sy0 = fmaxf(0, fminf(p.span_y - 1, iy));
+    const int sy1 = fmaxf(0, fminf(p.span_y - 1, iy + 1));
+    const int sz0 = fmaxf(0, fminf(p.span_z - 1, iz));
+    const int sz1 = fmaxf(0, fminf(p.span_z - 1, iz + 1));
+
+    /* CPU neighbor ordering (matching Base_Grid::find_grid_neighbors):
+       neighbors[0] = (x_above, y_above, z_above)
+       neighbors[1] = (x_above, y_above, z_below)
+       neighbors[2] = (x_above, y_below, z_above)
+       neighbors[3] = (x_below, y_above, z_above)
+       neighbors[4] = (x_above, y_below, z_below)
+       neighbors[5] = (x_below, y_above, z_below)
+       neighbors[6] = (x_below, y_below, z_above)
+       neighbors[7] = (x_below, y_below, z_below) */
+    const int stride_xy = p.span_x * p.span_y;
+    const int n0 = sz1 * stride_xy + sy1 * p.span_x + sx1;  // x_above, y_above, z_above
+    const int n1 = sz0 * stride_xy + sy1 * p.span_x + sx1;  // x_above, y_above, z_below
+    const int n2 = sz1 * stride_xy + sy0 * p.span_x + sx1;  // x_above, y_below, z_above
+    const int n3 = sz1 * stride_xy + sy1 * p.span_x + sx0;  // x_below, y_above, z_above
+    const int n4 = sz0 * stride_xy + sy0 * p.span_x + sx1;  // x_above, y_below, z_below
+    const int n5 = sz0 * stride_xy + sy1 * p.span_x + sx0;  // x_below, y_above, z_below
+    const int n6 = sz1 * stride_xy + sy0 * p.span_x + sx0;  // x_below, y_below, z_above
+    const int n7 = sz0 * stride_xy + sy0 * p.span_x + sx0;  // x_below, y_below, z_below
+
+    auto interp = [&](const float *g) {
+        float a8 = g[n7];
+        float a7 = g[n6] - a8;
+        float a6 = g[n5] - a8;
+        float a5 = g[n4] - a8;
+        float a4 = g[n3] - a8 - a7 - a6;
+        float a3 = g[n2] - a8 - a7 - a5;
+        float a2 = g[n1] - a8 - a6 - a5;
+        float a1 = g[n0] - a8 - a7 - a6 - a5 - a4 - a3 - a2;
+        return a1 * fx * fy * fz + a2 * fx * fy + a3 * fx * fz + a4 * fy * fz +
+               a5 * fx + a6 * fy + a7 * fz + a8;
+    };
+
+    vdw_out  = interp(avdw);
+    bwdv_out = interp(bvdw);
+    es_out   = interp(es);
+}
+
+__device__ __forceinline__ bool hip_pose_oob(float x, float y, float z, const HipKernelParams &p)
+{
+    if (isnan(x) || isnan(y) || isnan(z) || isinf(x) || isinf(y) || isinf(z)) return true;
+    const float minx = p.origin_x + p.spacing;
+    const float maxx = p.origin_x + (float)(p.span_x - 2) * p.spacing;
+    const float miny = p.origin_y + p.spacing;
+    const float maxy = p.origin_y + (float)(p.span_y - 2) * p.spacing;
+    const float minz = p.origin_z + p.spacing;
+    const float maxz = p.origin_z + (float)(p.span_z - 2) * p.spacing;
+    return (x < minx || x > maxx || y < miny || y > maxy || z < minz || z > maxz);
+}
+
 /* Grid-only batch kernel: one thread per pose. */
 __global__ void hip_grid_kernel(const float *xyz,
                                 const float *vdwA, const float *vdwB,
@@ -116,7 +191,7 @@ __global__ void hip_grid_kernel(const float *xyz,
         const float vdw  = hip_sample_grid(avdw, x, y, z, p);
         const float bwdv = hip_sample_grid(bvdw, x, y, z, p);
         const float esv  = hip_sample_grid(es,   x, y, z, p);
-        score += vdwA[a]*vdw - vdwB[a]*bwdv + charges[a]*esv;
+        score += vdwA[a]*vdw*p.vdw_scale - vdwB[a]*bwdv*p.vdw_scale + charges[a]*esv*p.es_scale;
     }
     out_scores[tid] = score;
 }
@@ -159,7 +234,7 @@ __global__ void hip_ie_kernel(const float *xyz,
             const float vdw  = hip_sample_grid(avdw, x, y, z, p);
             const float bwdv = hip_sample_grid(bvdw, x, y, z, p);
             const float esv  = hip_sample_grid(es,   x, y, z, p);
-            total += vdwA[a]*vdw - vdwB[a]*bwdv + charges[a]*esv;
+            total += vdwA[a]*vdw*p.vdw_scale - vdwB[a]*bwdv*p.vdw_scale + charges[a]*esv*p.es_scale;
 
             const int start = pair_starts[a];
             const int end   = pair_starts[a + 1];
@@ -235,13 +310,14 @@ __global__ void hip_ie_vs_kernel(const float *xyz,
             const float vdw  = hip_sample_grid(avdw, x, y, z, p);
             const float bwdv = hip_sample_grid(bvdw, x, y, z, p);
             const float esv  = hip_sample_grid(es,   x, y, z, p);
-            total += lut_vdwA[lstride + a]*vdw
-                   - lut_vdwB[lstride + a]*bwdv
-                   + lut_charges[lstride + a]*esv;
+            total += lut_vdwA[lstride + a]*vdw*p.vdw_scale
+                   - lut_vdwB[lstride + a]*bwdv*p.vdw_scale
+                   + lut_charges[lstride + a]*esv*p.es_scale;
 
             const int start = lut_pair_starts[lstride + a];
             const int end   = lut_pair_starts[lstride + a + 1];
-            for (int i = start; i < end; i++) {
+            const int cap_end = end < GPU_LUT_MAX_PAIRS ? end : GPU_LUT_MAX_PAIRS;
+            for (int i = start; i < cap_end; i++) {
                 const int a2 = lut_pair_indices[lig * GPU_LUT_MAX_PAIRS + i];
                 if (a2 < 0 || a2 >= p.num_atoms) continue;
                 if (lut_active_flags[lstride + a2] == 0) continue;
@@ -310,10 +386,10 @@ __global__ void hip_grid_vs_kernel(const float *xyz,
             const float vdw  = hip_sample_grid(avdw, x, y, z, p);
             const float bwdv = hip_sample_grid(bvdw, x, y, z, p);
             const float esv  = hip_sample_grid(es,   x, y, z, p);
-            total += lut_vdwA[lstride + a]*vdw
-                   - lut_vdwB[lstride + a]*bwdv
-                   + lut_charges[lstride + a]*esv;
-        }
+            total += lut_vdwA[lstride + a]*vdw*p.vdw_scale
+                   - lut_vdwB[lstride + a]*bwdv*p.vdw_scale
+                   + lut_charges[lstride + a]*esv*p.es_scale;
+       }
 
         s_partial[tid] = total;
         __syncthreads();
@@ -359,6 +435,15 @@ static int   *d_pose_lig[2] = {NULL, NULL};
    and Metal backends. */
 static hipArray *d_avdw = NULL, *d_bvdw = NULL, *d_es = NULL;
 static hipTextureObject_t h_avdw = 0, h_bvdw = 0, h_es = 0;
+
+/* Linear grid arrays for manual trilinear sampling (CPU bit-exact parity).
+   Lazily populated on first VS kernel launch to avoid interfering with
+   texture upload in dock_gpu_init. */
+static float *d_avdw_lin = NULL, *d_bvdw_lin = NULL, *d_es_lin = NULL;
+static int g_grids_copied_to_linear = 0;
+
+/* Host grid pointers for lazy linear array population. */
+static const float *g_avdw_host = NULL, *g_bvdw_host = NULL, *g_es_host = NULL;
 
 static HipKernelParams g_params;
 
@@ -487,6 +572,19 @@ static int hip_upload_grid_texture(hipArray **arr_out, hipTextureObject_t *tex_o
     return 1;
 }
 
+/* Lazy copy of grid data from host to linear device arrays for manual sampling.
+   Called once on first VS kernel launch to avoid interfering with texture upload. */
+static void hip_ensure_grids_copied_to_linear(const float *avdw, const float *bvdw, const float *es,
+                                               int span_x, int span_y, int span_z) {
+    if (g_grids_copied_to_linear) return;
+    size_t grid_elems = (size_t)span_x * (size_t)span_y * (size_t)span_z;
+    size_t grid_bytes = grid_elems * sizeof(float);
+    CHECK_HIP(hipMemcpy(d_avdw_lin, avdw, grid_bytes, hipMemcpyHostToDevice));
+    CHECK_HIP(hipMemcpy(d_bvdw_lin, bvdw, grid_bytes, hipMemcpyHostToDevice));
+    CHECK_HIP(hipMemcpy(d_es_lin, es, grid_bytes, hipMemcpyHostToDevice));
+    g_grids_copied_to_linear = 1;
+}
+
 /* ================================================================== */
 /*  GPU abstraction API                                                */
 /* ================================================================== */
@@ -524,6 +622,20 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
         return 0;
     }
 
+    /* Store host pointers for lazy linear array population. */
+    g_avdw_host = avdw;
+    g_bvdw_host = bvdw;
+    g_es_host = es;
+
+    /* Allocate linear grid arrays for manual trilinear sampling (CPU bit-exact parity).
+       Data is lazily copied on first VS kernel launch. */
+    size_t grid_elems = (size_t)span_x * (size_t)span_y * (size_t)span_z;
+    size_t grid_bytes = grid_elems * sizeof(float);
+    CHECK_HIP(hipMalloc(&d_avdw_lin, grid_bytes));
+    CHECK_HIP(hipMalloc(&d_bvdw_lin, grid_bytes));
+    CHECK_HIP(hipMalloc(&d_es_lin, grid_bytes));
+    g_grids_copied_to_linear = 0;
+
     CHECK_HIP(hipMalloc(&d_vdwA,     sizeof(float) * GPU_MAX_ATOMS));
     CHECK_HIP(hipMalloc(&d_vdwB,     sizeof(float) * GPU_MAX_ATOMS));
     CHECK_HIP(hipMalloc(&d_charges,  sizeof(float) * GPU_MAX_ATOMS));
@@ -542,7 +654,7 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     CHECK_HIP(hipMalloc(&d_lut_charges,     vs_lig_bytes));
     CHECK_HIP(hipMalloc(&d_lut_ie_vdwA,     vs_lig_bytes));
     CHECK_HIP(hipMalloc(&d_lut_active_flags, sizeof(int) * (size_t)GPU_MAX_LUT_LIGANDS * GPU_MAX_ATOMS));
-    CHECK_HIP(hipMalloc(&d_lut_pair_starts,  sizeof(int) * (size_t)GPU_MAX_LUT_LIGANDS * (GPU_MAX_ATOMS + 1)));
+CHECK_HIP(hipMalloc(&d_lut_pair_starts,  sizeof(int) * (size_t)GPU_MAX_LUT_LIGANDS * (GPU_MAX_ATOMS + 1)));
     CHECK_HIP(hipMalloc(&d_lut_pair_indices, sizeof(int) * (size_t)GPU_MAX_LUT_LIGANDS * GPU_LUT_MAX_PAIRS));
     for (int s = 0; s < 2; s++) CHECK_HIP(hipMalloc(&d_pose_lig[s],        sizeof(int) * GPU_MAX_POSES));
 
@@ -650,6 +762,14 @@ int dock_gpu_set_ligand_ie(const float *ie_vdwA, const float *ie_vdwB,
     return 1;
 }
 
+int dock_gpu_set_scales(float vdw_scale, float es_scale)
+{
+    if (!g_initialized) return 0;
+    g_params.vdw_scale = vdw_scale;
+    g_params.es_scale = es_scale;
+    return 1;
+}
+
 int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
                          const int *active_flags, float *out_scores)
 {
@@ -723,6 +843,10 @@ int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses, int
     kp.ie_cutoff_sq = g_ie_cutoff_sq;
     kp.num_nb_pairs = g_num_nb_pairs;
 
+    /* Lazy-copy grid data to linear arrays for manual trilinear sampling. */
+    hip_ensure_grids_copied_to_linear(g_avdw_host, g_bvdw_host, g_es_host,
+                                       kp.span_x, kp.span_y, kp.span_z);
+
     const int threads = HIP_SCORE_THREADS;
     const long long t0b = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -734,7 +858,7 @@ int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses, int
 
     hipLaunchKernelGGL(hip_ie_kernel, dim3(blocks), dim3(threads), 0, 0,
                        d_xyz[0], d_vdwA, d_vdwB, d_charges,
-                       h_avdw, h_bvdw, h_es,
+                       d_avdw_lin, d_bvdw_lin, d_es_lin,
                        d_active_flags, d_ie_vdwA,
                        d_pair_starts, d_pair_indices,
                        d_pose_counter[0], d_scores[0], kp);
@@ -901,8 +1025,8 @@ int dock_gpu_batch_score_vs(const float *xyz, int num_poses, int num_atoms,
 }
 
 int dock_gpu_batch_score_vs_grid(const float *xyz, int num_poses,
-                                 int num_atoms, const int *pose_lig,
-                                 float *out_scores)
+                                  int num_atoms, const int *pose_lig,
+                                  float *out_scores)
 {
     if (!g_initialized || g_num_lut_ligands == 0) return 0;
     if (num_poses > GPU_MAX_POSES || num_atoms > GPU_MAX_ATOMS) return 0;
@@ -1119,6 +1243,99 @@ int dock_gpu_grid_bounds(float *minx, float *miny, float *minz,
     return 1;
 }
 
+int dock_gpu_vs_update_pairs(int lig_idx, const float *ie_vdwA,
+                             const int *nb_int_pairs, int num_nb_pairs,
+                             int num_atoms)
+{
+    if (!g_initialized) return 0;
+    if (lig_idx < 0 || lig_idx >= GPU_MAX_LUT_LIGANDS) return 0;
+    if (num_atoms <= 0 || num_atoms > GPU_MAX_ATOMS) return 0;
+    if (num_nb_pairs > GPU_LUT_MAX_PAIRS) return 0;
+
+    /* The LUT is shared by both streams: drain any in-flight stream-2
+       (GPU2 screen) batches before rewriting the ligand row. */
+    dock_gpu_batch_score_sync2();
+
+    /* Upload new IE parameters */
+    const size_t row_off = (size_t)lig_idx * GPU_MAX_ATOMS;
+    CHECK_HIP(hipMemcpy(d_lut_ie_vdwA + row_off, ie_vdwA,
+                        sizeof(float) * (size_t)num_atoms,
+                        hipMemcpyHostToDevice));
+    const size_t tail_bytes = sizeof(float) * (size_t)(GPU_MAX_ATOMS - num_atoms);
+    if (tail_bytes > 0) {
+        CHECK_HIP(hipMemset(d_lut_ie_vdwA + row_off + num_atoms, 0, tail_bytes));
+    }
+
+    /* Build CSR pair table for this ligand */
+    std::vector<int> counts(num_atoms, 0);
+    for (int p = 0; p < num_nb_pairs; p++) {
+        int a1 = nb_int_pairs[p*2];
+        if (a1 >= 0 && a1 < num_atoms) counts[a1]++;
+    }
+    std::vector<int> starts(num_atoms + 1, 0);
+    std::vector<int> offsets(num_atoms, 0);
+    int total = 0;
+    for (int a = 0; a < num_atoms; a++) {
+        starts[a] = total;
+        offsets[a] = total;
+        total += counts[a];
+    }
+    starts[num_atoms] = total;
+
+    std::vector<int> indices(GPU_LUT_MAX_PAIRS, -1);
+    int cap = total < GPU_LUT_MAX_PAIRS ? total : GPU_LUT_MAX_PAIRS;
+    for (int p = 0; p < num_nb_pairs && cap > 0; p++) {
+        int a1 = nb_int_pairs[p*2];
+        int a2 = nb_int_pairs[p*2+1];
+        if (a1 >= 0 && a1 < num_atoms && offsets[a1] < cap) indices[offsets[a1]++] = a2;
+    }
+
+    const int lig_off = lig_idx * GPU_MAX_ATOMS;
+    CHECK_HIP(hipMemcpy(d_lut_pair_starts + lig_off, starts.data(),
+                        sizeof(int) * (size_t)(num_atoms + 1), hipMemcpyHostToDevice));
+    size_t pair_off = (size_t)lig_idx * GPU_LUT_MAX_PAIRS;
+    CHECK_HIP(hipMemcpy(d_lut_pair_indices + pair_off, indices.data(),
+                        sizeof(int) * (size_t)GPU_LUT_MAX_PAIRS, hipMemcpyHostToDevice));
+
+    return 1;
+}
+
+int dock_gpu_vs_dump_pairs(int lig_idx, int *out_pairs, int max_out)
+{
+    if (!g_initialized) return -1;
+    if (lig_idx < 0 || lig_idx >= GPU_MAX_LUT_LIGANDS) return -1;
+
+    /* Drain streams before reading to ensure we see the latest pair table. */
+    dock_gpu_batch_score_sync();
+    dock_gpu_batch_score_sync2();
+
+    std::vector<int> pair_starts(GPU_MAX_ATOMS + 1);
+    std::vector<int> pair_indices(GPU_LUT_MAX_PAIRS);
+
+    int lig_off = lig_idx * GPU_MAX_ATOMS;
+    CHECK_HIP(hipMemcpy(pair_starts.data(), d_lut_pair_starts + lig_off,
+                        sizeof(int) * (GPU_MAX_ATOMS + 1), hipMemcpyDeviceToHost));
+
+    size_t pair_off = (size_t)lig_idx * GPU_LUT_MAX_PAIRS;
+    CHECK_HIP(hipMemcpy(pair_indices.data(), d_lut_pair_indices + pair_off,
+                        sizeof(int) * GPU_LUT_MAX_PAIRS, hipMemcpyDeviceToHost));
+
+    int total = 0;
+    for (int a = 0; a < GPU_MAX_ATOMS; a++) {
+        int start = pair_starts[a];
+        int end = pair_starts[a + 1];
+        for (int p = start; p < end; p++) {
+            int a2 = pair_indices[p];
+            if (a2 >= 0 && total < max_out) {
+                out_pairs[total * 2] = a;
+                out_pairs[total * 2 + 1] = a2;
+                total++;
+            }
+        }
+    }
+    return total;
+}
+
 void dock_gpu_cleanup(void)
 {
     if (h_avdw)          { hipDestroyTextureObject(h_avdw); h_avdw = 0; }
@@ -1145,10 +1362,16 @@ void dock_gpu_cleanup(void)
     if (d_lut_charges)     { hipFree(d_lut_charges);     d_lut_charges = NULL; }
     if (d_lut_ie_vdwA)     { hipFree(d_lut_ie_vdwA);     d_lut_ie_vdwA = NULL; }
     if (d_lut_active_flags){ hipFree(d_lut_active_flags);d_lut_active_flags = NULL; }
-    if (d_lut_pair_starts) { hipFree(d_lut_pair_starts); d_lut_pair_starts = NULL; }
+if (d_lut_pair_starts) { hipFree(d_lut_pair_starts); d_lut_pair_starts = NULL; }
     if (d_lut_pair_indices){ hipFree(d_lut_pair_indices);d_lut_pair_indices = NULL; }
     if (d_pose_lig[0])        { hipFree(d_pose_lig[0]);        d_pose_lig[0] = NULL; }
     if (d_pose_lig[1])        { hipFree(d_pose_lig[1]);        d_pose_lig[1] = NULL; }
+
+    if (d_avdw_lin) { hipFree(d_avdw_lin); d_avdw_lin = NULL; }
+    if (d_bvdw_lin) { hipFree(d_bvdw_lin); d_bvdw_lin = NULL; }
+    if (d_es_lin)   { hipFree(d_es_lin);   d_es_lin = NULL; }
+    g_grids_copied_to_linear = 0;
+    g_avdw_host = g_bvdw_host = g_es_host = NULL;
 
     for (int i = 0; i < g_ring_count; i++) {
         if (g_pin_xyz[i])   { hipHostFree(g_pin_xyz[i]);   g_pin_xyz[i] = NULL; }

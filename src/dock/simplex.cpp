@@ -186,6 +186,8 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
 
     iteration = 0;
 
+    char dbg_path_seen = '?';
+
     do {
 
         // initialize all the simplex points
@@ -324,6 +326,12 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
             }
             delta = y[0];
 
+            if (getenv("DOCK_POOL_DEBUG")) {
+                fprintf(stderr, "DOSX init n=%d", size + 1);
+                for (i = 0; i < size + 1; i++) fprintf(stderr, " y%d=%.5f", i, y[i]);
+                fprintf(stderr, "\n");
+            }
+
         }
 
             // Begin a new iteration
@@ -352,6 +360,7 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
             {
             int use_speculative = use_gpu;
             float batch_scores[4];
+            char dbg_path = '?';
             FLOATVec prr_exp(size), prr_cA(size), prr_cB(size);
             for (i = 0; i < size; i++) {
                 prr_exp[i] = gamma * pr[i] + (1.0 - gamma) * pbar[i];
@@ -423,9 +432,11 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                 if (yprr_exp < y[ilo]) {
                     for (i = 0; i < size; i++) p[ihi][i] = prr_exp[i];
                     y[ihi] = yprr_exp;
+                    dbg_path = 'E';
                 } else {
                     for (i = 0; i < size; i++) p[ihi][i] = pr[i];
                     y[ihi] = ypr;
+                    dbg_path = 'R';
                 }
 
             } else if (ypr >= y[inhi]) {
@@ -441,6 +452,7 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                     for (i = 0; i < size; i++) p[ihi][i] = pr[i];
                     y[ihi] = ypr;
                     replace_flag = true;
+                    dbg_path = 'O';
                 }
 
                 float yprr_contract;
@@ -469,10 +481,12 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                     for (i = 0; i < size; i++) p[ihi][i] = prr[i];
                     y[ihi] = yprr_contract;
                     replace_flag = true;
+                    dbg_path = 'C';
                 }
 
                 if (replace_flag == false) {
                     /* SHRINK — can't eliminate high point */
+                    dbg_path = 'S';
                     /* Collect shrink vertices and batch-score them */
                     std::vector<FLOATVec> shrink_verts;
                     for (i = 0; i < size + 1; i++) {
@@ -529,7 +543,10 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
                 /* ---- Middling: accept reflected point ---- */
                 for (i = 0; i < size; i++) p[ihi][i] = pr[i];
                 y[ihi] = ypr;
+                dbg_path = 'M';
             }
+
+            dbg_path_seen = dbg_path;
         }
 
         // ID Best & Worst vertices in current simplex
@@ -572,6 +589,11 @@ Simplex_Minimizer::do_minimize(Base_Score & score, DOCKMol & mol,
         score.compute_score(min_mol);
         // end print out of trajectory
 **/
+
+    if (getenv("DOCK_POOL_DEBUG")) {
+            fprintf(stderr, "DOSX step it=%d path=%c delta=%.6f ylo=%.5f\n",
+                    iteration, dbg_path_seen, (double)fabs(y[ihi] - y[ilo]), (double)y[ilo]);
+        }
 
     } while ((iteration++ < max_iterations)
              && (fabs(y[ihi] - y[ilo]) > score_converge));

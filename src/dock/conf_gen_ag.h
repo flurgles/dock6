@@ -162,6 +162,14 @@ class VSGrowState {
     int             lig_idx = -1;   // GPU LUT row for this ligand
     int             route   = 0;    // scheduler row index (user_data tag hi bits)
 
+    // Lazy-prep support: rows are stubbed at window start; the full
+    // grow_win_init runs when the scheduler first picks the row, so only
+    // the in-flight rows' anchor copies + seed structures are live
+    // (the eager prep of every row held all ~90MB-per-row states at once).
+    int             job_idx = -1;   // owning VSWindowJob
+    int             set_idx = -1;   // anchor set within the job
+    bool            prepped = false; // grow_win_init ran for this row
+
     int             i = 1;          // current layer (growth starts at 1)
     int             l = 0;          // current segment within layer
     int             num_layers = 1;
@@ -173,6 +181,8 @@ class VSGrowState {
     bool            drain_done = false; // round fully drained + pruned
     bool            done = false;   // growth complete
     bool            ie_prune = false;   // internal-energy pruning active
+    bool            cpu_min_round = false; // poses refined by CPU minimizer
+                                          // (keep CPU scores; skip GPU re-score)
 
     // Ligand state parked here while the shared AG_Conformer_Search is
     // serving another row (grow_win_swap).
@@ -216,6 +226,14 @@ class VSGrowState {
 
     std::vector<CONFORMER> all_gen_seeds;      // growth tree (print_growth_tree)
     std::vector<CONFORMER> all_gen_b4min_seeds;
+
+    /* LBAL round-phase debug timings (DOCK_LBAL_DEBUG) */
+    long    dbg_prep_us = 0;
+    long    dbg_drive_us = 0;
+    long    dbg_add_us = 0;
+    long    dbg_prune_us = 0;
+    int     dbg_nseeds = 0;
+    int     dbg_nexp = 0;
 
     std::vector<SCOREMol> pruned_confs;        // final output for next_conformer
 
@@ -442,7 +460,7 @@ class           AG_Conformer_Search {
     // one AG_Conformer_Search).  park() exchanges (this left empty);
     // restore() deep-copies (state kept in g).
     void            grow_win_park(VSGrowState &);
-    void            grow_win_restore(const VSGrowState &);
+    void            grow_win_restore(VSGrowState &);
     // Seed build from anchor_positions (anchors_preminimized path) +
     // IE/LUT setup.  Must run with this object's members holding the
     // ligand's state (anchor_positions, dock_mol_serial loaded).

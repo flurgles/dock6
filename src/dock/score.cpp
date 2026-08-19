@@ -244,6 +244,7 @@ Energy_Score::initialize(AMBER_TYPER & typer)
                           g.span[0], g.span[1], g.span[2],
                           g.origin[0], g.origin[1], g.origin[2],
                           g.spacing);
+            dock_gpu_set_scales(vdw_scale, es_scale);
         }
     } 
 }

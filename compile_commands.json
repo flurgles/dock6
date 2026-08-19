@@ -1,0 +1,302 @@
+[
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/amber_typer.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null amber_typer.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/base_grid.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null base_grid.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/base_mpi.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null base_mpi.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/base_score.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null base_score.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/bobyqa.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null bobyqa.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/conf_gen_ag.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null conf_gen_ag.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/conf_gen_cg.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null conf_gen_cg.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/conf_gen_dn.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null conf_gen_dn.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/conf_gen_dn_ga.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null conf_gen_dn_ga.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/conf_gen_ga.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null conf_gen_ga.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/conf_gen_hdb.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null conf_gen_hdb.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/conformer_pool.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null conformer_pool.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/conjugate_gradient.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null conjugate_gradient.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/dock.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null dock.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/dockmol.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null dockmol.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/filter.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null filter.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/fingerprint.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null fingerprint.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/fraggraph.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null fraggraph.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/fragment.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null fragment.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/gasteiger.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null gasteiger.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/grid.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null grid.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/hungarian.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null hungarian.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/iso_align.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null iso_align.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/library_file.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null library_file.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/limit_max_change.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null limit_max_change.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/master_conf.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null master_conf.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/master_score.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null master_score.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/mem_info.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null mem_info.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/minimizer.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null minimizer.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/minimizer_gpu.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null minimizer_gpu.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/minimizer_helpers.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null minimizer_helpers.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/minimizer_transform.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null minimizer_transform.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/orient.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null orient.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/rddrive.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null rddrive.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/rdtyper.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null rdtyper.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/sasa.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null sasa.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/score.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null score.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/score_amber.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null score_amber.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/score_chemgrid.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null score_chemgrid.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/score_descriptor.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null score_descriptor.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/score_dock_gpu_vulkan.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null score_dock_gpu_vulkan.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/score_footprint.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null score_footprint.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/score_gist.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null score_gist.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/score_hbond.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null score_hbond.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/score_internal.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null score_internal.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/score_multigrid.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null score_multigrid.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/score_ph4.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null score_ph4.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/score_sasa.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null score_sasa.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/score_solvent.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null score_solvent.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/score_volume.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null score_volume.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/simplex.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null simplex.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/simplex_input.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null simplex_input.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/simplex_stubs.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null simplex_stubs.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/sphere.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null sphere.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/steepest_descent.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null steepest_descent.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/trace.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null trace.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/utils.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null utils.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/weisfeiler_leman.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null weisfeiler_leman.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/xlogp.cpp",
+  "command": "g++ -c -O3 -std=c++11 -DUSE_HIP -o /dev/null xlogp.cpp"
+ },
+ {
+  "directory": "/home/deck/dock6/dock6/src/dock",
+  "file": "/home/deck/dock6/dock6/src/dock/score_dock_gpu_hip.cpp",
+  "command": "clang++ -c -std=c++17 -DUSE_HIP -D__HIP_PLATFORM_AMD__ -I/opt/rocm/include -o /dev/null score_dock_gpu_hip.cpp"
+ }
+]

@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -22,6 +23,12 @@ class Bump_Filter;
 class Master_Score;
 
 using namespace std;
+
+static long us_clock(void)
+{
+    return (long)std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 
 
@@ -247,6 +254,14 @@ AG_Conformer_Search::prepare_molecule(DOCKMol & mol)
 {
         // DTM - 11-12-08
         int        i;
+
+        if (getenv("DOCK_LBAL_DEBUG")) {
+            fprintf(stderr, "[PREP] mol na=%d nb=%d alloc=%d"
+                    " bond_types=%p atom_types=%p wfl=%d\n",
+                    mol.num_atoms, mol.num_bonds, (int)mol.arrays_allocated,
+                    (void*)mol.bond_types, (void*)mol.atom_types,
+                    (int)write_fragment_libraries);
+        }
 
         copy_molecule(orig, mol);
 
@@ -1513,6 +1528,18 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                << " anchor orients retained (max " << num_anchor_poses << ")" 
                << " t=" << ((double) (clock() - start)) / CLOCKS_PER_SEC << "s" << endl;
 
+    if (getenv("DOCK_GPU2_DEBUG")) {
+        fprintf(stderr, "[ANCHDBG] classic anchor=%d retained=%d scores:",
+                current_anchor, (int)seeds.size());
+        for (j = 0; j < (int)exp_seeds.size() && j < 20; j++)
+            if (!exp_seeds[j].used)
+                fprintf(stderr, " %.4f@(%.2f,%.2f,%.2f)", exp_seeds[j].score,
+                        exp_seeds[j].structure.x[0],
+                        exp_seeds[j].structure.y[0],
+                        exp_seeds[j].structure.z[0]);
+        fprintf(stderr, "\n");
+    }
+
     // /////////////////////////// GROWTH ///////////////////////////////
 
     // counters for printing pruning stats
@@ -1677,10 +1704,10 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                                          nullptr,
                                          reinterpret_cast<void*>((intptr_t)k),
                                          -1, 0,
-                                         seed_key((unsigned)dock_mol_serial,
-                                                  (unsigned)current_anchor,
-                                                  (unsigned)i, (unsigned)l,
-                                                  (unsigned)k));
+seed_key((unsigned)dock_mol_serial,
+                                         (unsigned)current_anchor,
+                                         (unsigned)i, (unsigned)l,
+                                         (unsigned)k));
                                 }
                             } else {
                                 /* CPU fallback: per-conformer minimization */
@@ -1882,6 +1909,15 @@ if (exp_seeds[k].structure.current_score <= growth_score_cutoff) {
  
             // Pruning section
             seeds.clear(); seeds.reserve(500);
+            if (getenv("DOCK_GPU2_DEBUG")) {
+                int bidx = 0;
+                for (int bq = 1; bq < (int)exp_seeds.size(); bq++)
+                    if (exp_seeds[bq].score < exp_seeds[bidx].score) bidx = bq;
+                fprintf(stderr, "CPUBEST i=%d l=%d grid=%f ie=%f n=%d\n",
+                        i, l, exp_seeds[bidx].structure.current_score,
+                        exp_seeds[bidx].structure.internal_energy,
+                        (int)exp_seeds.size());
+            }
             sort(exp_seeds.begin(), exp_seeds.end(), conformer_less_than);
             sort(b4min_seeds.begin(), b4min_seeds.end(), conformer_less_than);
 
@@ -4120,14 +4156,20 @@ AG_Conformer_Search::grow_win_park(VSGrowState & g)
 }
 
 void
-AG_Conformer_Search::grow_win_restore(const VSGrowState & g)
+AG_Conformer_Search::grow_win_restore(VSGrowState & g)
 {
+    /* Deep copy the parked state back into the AG.  The park/restore
+       pair in the phase-3 prep loop restores from `base` once per
+       anchor set WITHOUT re-parking between sets, so the source must
+       stay intact — std::move would empty `base` after the first set
+       and crash setup_growth_anchor() on the second (empty
+       orig_segments, fault at 0x600). */
     anchor_positions  = g.anchor_positions;
     anchor_confs      = g.anchor_confs;
     conf_anchors      = g.conf_anchors;
     pruned_confs      = g.pruned_confs;
     current_anchor    = g.current_anchor;
-    dock_mol_serial    = g.dock_mol_serial;
+    dock_mol_serial   = g.dock_mol_serial;
     layers            = g.layers;
     layer_segments    = g.layer_segments;
     bond_list         = g.bond_list;
@@ -4185,6 +4227,17 @@ AG_Conformer_Search::grow_win_init(VSGrowState & g, Master_Score & score,
                single-ligand uploads, which are unused in VS mode. */
             score.primary_score->initialize_internal_energy(
                 anchor_positions[0].second);
+            if (getenv("DOCK_GPU2_DEBUG"))
+                fprintf(stderr,
+                    "GROWDBG set=%d na=%d na_snap=%d "
+                    "seg0=%d seg7=%d seg10=%d "
+                    "np=%d\n",
+                    current_anchor, anchor_positions[0].second.num_atoms,
+                    (int)atom_seg_ids.size(),
+                    anchor_positions[0].second.atom_segment_ids[0],
+                    anchor_positions[0].second.atom_segment_ids[7],
+                    anchor_positions[0].second.atom_segment_ids[10],
+                    (int)score.primary_score->nb_int.size());
         }
     }
     /* Snapshot THIS row's pair list + per-atom IE: primary_score is
@@ -4320,6 +4373,18 @@ AG_Conformer_Search::grow_win_init(VSGrowState & g, Master_Score & score,
                << " anchor orients retained (max " << num_anchor_poses << ")"
                << endl;
 
+    if (getenv("DOCK_GPU2_DEBUG")) {
+        fprintf(stderr, "[ANCHDBG] win anchor=%d retained=%d scores:",
+                current_anchor, (int)g.seeds.size());
+        for (int j = 0; j < (int)g.exp_seeds.size() && j < 20; j++)
+            if (!g.exp_seeds[j].used)
+                fprintf(stderr, " %.4f@(%.2f,%.2f,%.2f)", g.exp_seeds[j].score,
+                        g.exp_seeds[j].structure.x[0],
+                        g.exp_seeds[j].structure.y[0],
+                        g.exp_seeds[j].structure.z[0]);
+        fprintf(stderr, "\n");
+    }
+
     if (verbose) {
         for (int layer_count = 1; layer_count < num_layers; layer_count++)
             cout << "Lyr " << layer_count << "-"
@@ -4343,6 +4408,8 @@ AG_Conformer_Search::grow_win_prep(VSGrowState & g, ConformerPool & pool,
                                    Minimizer & simplex, Bump_Filter & bump)
 {
     if (g.done) return;
+
+    const long t_prep0 = us_clock();
 
     /* A single-layer ligand has no layers to grow (mirrors the sequential
        grow_periphery loop `for (i = 1; i < num_layers; i++)`, which never
@@ -4440,6 +4507,7 @@ AG_Conformer_Search::grow_win_prep(VSGrowState & g, ConformerPool & pool,
                  << endl;
         }
 
+        const long t_drive0 = us_clock();
         {
             /* Parallel drive: each seed is independent (segment_torsion_drive
                only reads the row's const layer tables + its own seed and
@@ -4477,6 +4545,7 @@ AG_Conformer_Search::grow_win_prep(VSGrowState & g, ConformerPool & pool,
                 }
             }
         }
+        g.dbg_drive_us += us_clock() - t_drive0;
         g.cb_ok.assign(g.exp_seeds.size(), 0);
         g.k_add = 0;
         g.drive_done = true;
@@ -4497,13 +4566,28 @@ AG_Conformer_Search::grow_win_prep(VSGrowState & g, ConformerPool & pool,
         for (int a = 0; a < na; a++)
             af[a] = g.exp_seeds[0].structure.atom_active_flags[a] ? 1 : 0;
         dock_gpu_vs_update_active_flags(g.lig_idx, af.data(), na);
+        /* The phase-2 pair registration was built from the phase-1
+           orientation replay, whose bond/neighbor state can differ from
+           this row's growth-prep molecule; push the CPU-exact table
+           snapshotted at grow_win_init so NM + pruning score the same
+           internal energy the classic path computes. */
+        if (!g.nb_flat.empty() && !g.ie_vdwA_snap.empty()) {
+            dock_gpu_vs_update_pairs(g.lig_idx, g.ie_vdwA_snap.data(),
+                                     g.nb_flat.data(),
+                                     (int)g.nb_flat.size() / 2, na);
+        }
     }
 
     /* first pass: b4min save + clash/bump + pool.add (resumable) */
+    const long t_add0 = us_clock();
     while (g.k_add < (int)g.exp_seeds.size()) {
         /* backpressure: stop adding when the shared pool is full; the
            scheduler steps the pool and we resume here */
-        if (pool.active_count() >= pool.capacity()) return;
+        if (pool.active_count() >= pool.capacity()) {
+            g.dbg_add_us += us_clock() - t_add0;
+            g.dbg_prep_us += us_clock() - t_prep0;
+            return;
+        }
 
         const int k = g.k_add;
         g.b4min_seeds.push_back(g.exp_seeds[k]);
@@ -4555,28 +4639,55 @@ AG_Conformer_Search::grow_win_prep(VSGrowState & g, ConformerPool & pool,
                     gB.rot_step_size   = simplex.flex_min_rot_step_size;
                     gB.tors_step_size  = simplex.flex_min_tors_step_size;
 
-                    int added = pool.add(
-                        &g.exp_seeds[k].structure, vertex, gA, gB,
-                        simplex.flex_min_cycle_converge,
-                        simplex.restrained_min,
-                        simplex.coefficient_restraint,
-                        nullptr,
-                        reinterpret_cast<void*>((intptr_t)
-                            (((size_t)g.route << 12) | (size_t)k)),
-                        g.lig_idx,
-                        g.exp_seeds[k].structure.num_atoms,
-                        seed_key((unsigned)dock_mol_serial,
-                                 (unsigned)current_anchor,
-                                 (unsigned)i, (unsigned)l,
-                                 (unsigned)k));
-                    if (added >= 0) g.inflight++;
-                }
+                    if (pool.gpu_active() || getenv("DOCK_POOL_CPU")) {
+                        if (getenv("DOCK_POOL_CPU"))
+                            g.cpu_min_round = true;
+                        int added = pool.add(
+                            &g.exp_seeds[k].structure, vertex, gA, gB,
+                            simplex.flex_min_cycle_converge,
+                            simplex.restrained_min,
+                            simplex.coefficient_restraint,
+                            nullptr,
+                            reinterpret_cast<void*>((intptr_t)
+                                (((size_t)g.route << 12) | (size_t)k)),
+                            g.lig_idx,
+                            g.exp_seeds[k].structure.num_atoms,
+                            seed_key((unsigned)dock_mol_serial,
+                                     (unsigned)current_anchor + 1,
+                                     (unsigned)i, (unsigned)l,
+                                     (unsigned)k));
+                        if (added >= 0) g.inflight++;
+                    } else {
+                        /* CPU-min mode: refine synchronously in place
+                           (mirrors grow_periphery's CPU fallback); the
+                           round completes without pool round-trips. */
+                        g.cpu_min_round = true;
+                        simplex.set_local_rng_seed(
+                            seed_key((unsigned)dock_mol_serial,
+                                     (unsigned)current_anchor + 1,
+                                     (unsigned)i, (unsigned)l,
+                                     (unsigned)k));
+                        if (!simplex.use_min_flex_growth_ramp) {
+                            simplex.minimize_flexible_growth(
+                                g.exp_seeds[k].structure, score,
+                                bond_tors_vectors);
+                        } else {
+                            simplex.minimize_flexible_ramp_growth(
+                                g.exp_seeds[k].structure, score,
+                                bond_tors_vectors, i, g.num_layers);
+                        }
+                    }
+                    }
             } else {
                 g.cb_ok[k] = 1;
             }
         }
         g.k_add++;
     }
+    g.dbg_add_us += us_clock() - t_add0;
+    g.dbg_prep_us += us_clock() - t_prep0;
+    g.dbg_nseeds = (int)g.seeds.size();
+    g.dbg_nexp = (int)g.exp_seeds.size();
     g.adding = false;
 }
 
@@ -4683,31 +4794,138 @@ AG_Conformer_Search::grow_win_prune(VSGrowState & g, Master_Score & score,
     const int i = g.i;
     const int l = g.l;
     const int j_last = (int)g.seeds.size() - 1;
+    const long t_prune0 = us_clock();
+    const long dbg_p0 = g.dbg_prep_us, dbg_d0 = g.dbg_drive_us,
+               dbg_a0 = g.dbg_add_us;
 
     /* second pass: score + prune (mirrors grow_periphery L1786-1876) */
+    /* The pool's NM refines the added samples' coordinates in place
+       (exp_seeds[k].structure), so the g2_* scores enqueued at
+       score_round time are stale for the added poses.  Re-score the
+       current (refined) coordinates so the layer's ranking matches the
+       minimized poses the classic path keeps. */
+    if (g.gpu2_ok && !g.cpu_min_round && !g.exp_seeds.empty()) {
+        const int n2 = (int)g.exp_seeds.size();
+        const int na2 = g.exp_seeds[0].structure.num_atoms;
+        if (na2 > 0) {
+            for (int kk = 0; kk < n2; kk++) {
+                DOCKMol & s2 = g.exp_seeds[kk].structure;
+                for (int a = 0; a < na2; a++) {
+                    g.g2_xyz[(size_t)kk * na2 * 3 + a * 3 + 0] = s2.x[a];
+                    g.g2_xyz[(size_t)kk * na2 * 3 + a * 3 + 1] = s2.y[a];
+                    g.g2_xyz[(size_t)kk * na2 * 3 + a * 3 + 2] = s2.z[a];
+                }
+            }
+            for (int off = 0; off < n2; off += GPU_MAX_BATCH_POSES) {
+                int cnt = n2 - off;
+                if (cnt > GPU_MAX_BATCH_POSES) cnt = GPU_MAX_BATCH_POSES;
+                dock_gpu_batch_score_vs_enqueue2(
+                    &g.g2_xyz[(size_t)off * na2 * 3], cnt, na2,
+                    &g.g2_pose_lig[off], &g.g2_grid[off], 1);
+                dock_gpu_batch_score_vs_enqueue2(
+                    &g.g2_xyz[(size_t)off * na2 * 3], cnt, na2,
+                    &g.g2_pose_lig[off], &g.g2_comb[off], 0);
+            }
+            dock_gpu_batch_score_sync2();
+            float gminx, gminy, gminz, gmaxx, gmaxy, gmaxz;
+            if (dock_gpu_grid_bounds(&gminx, &gminy, &gminz,
+                                     &gmaxx, &gmaxy, &gmaxz)) {
+                for (int kk = 0; kk < n2; kk++) {
+                    DOCKMol & s2 = g.exp_seeds[kk].structure;
+                    bool inb = true;
+                    for (int a = 0; a < na2 && inb; a++) {
+                        if (!s2.atom_active_flags[a]) continue;
+                        if (!(s2.x[a] > gminx && s2.x[a] < gmaxx &&
+                              s2.y[a] > gminy && s2.y[a] < gmaxy &&
+                              s2.z[a] > gminz && s2.z[a] < gmaxz))
+                            inb = false;
+                    }
+                    g.g2_valid[kk] = inb ? 1 : 0;
+                }
+            }
+        }
+    }
     bool valid_orient = false;
     for (int k = 0; k < (int)g.exp_seeds.size(); k++) {
         if (g.cb_ok[k] == 2) {
             if (score.use_primary_score) {
-                if (g.gpu2_ok) {
+                if (g.gpu2_ok && !g.cpu_min_round) {
                     valid_orient = (g.g2_valid[k] != 0);
                     g.exp_seeds[k].structure.current_score = g.g2_grid[k];
                     g.exp_seeds[k].structure.internal_energy =
                         g.g2_comb[k] - g.g2_grid[k];
-                    if (getenv("DOCK_GPU2_DEBUG") && k == 0) {
-                        DOCKMol ref = g.exp_seeds[k].structure;
+                    if (getenv("DOCK_GPU2_DEBUG")) {
+                        int bidx = 0;
+                        for (int bq = 1; bq < (int)g.exp_seeds.size(); bq++)
+                            if (g.g2_comb[bq] < g.g2_comb[bidx]) bidx = bq;
+                        DOCKMol ref = g.exp_seeds[bidx].structure;
                         bool cpu_ok = score.compute_primary_score(ref);
+                        static int np_gpu = -1;
+                        if (np_gpu < 0) {
+                            int pairs[8192];
+                            np_gpu = dock_gpu_vs_dump_pairs(
+                                g.lig_idx, pairs, 4096);
+                            int np_cpu = (int)g.nb_flat.size() / 2;
+                            std::vector<std::pair<int,int> > gp, cp;
+                            for (int pi = 0; pi < np_gpu; pi++)
+                                gp.push_back(std::make_pair(pairs[pi*2],
+                                                            pairs[pi*2+1]));
+                            for (int pi = 0; pi < np_cpu; pi++)
+                                cp.push_back(std::make_pair(g.nb_flat[pi*2],
+                                                            g.nb_flat[pi*2+1]));
+                            std::sort(gp.begin(), gp.end());
+                            std::sort(cp.begin(), cp.end());
+                            int i1 = 0, i2 = 0, nmiss = 0, nadd = 0;
+                            int miss[6], add[6];
+                            for (int m = 0; m < 6; m++) {
+                                miss[m] = -1; add[m] = -1;
+                            }
+                            while (i1 < np_cpu || i2 < np_gpu) {
+                                if (i2 >= np_gpu ||
+                                    (i1 < np_cpu && cp[i1] < gp[i2])) {
+                                    if (nmiss < 6) {
+                                        miss[nmiss*2] = cp[i1].first;
+                                        miss[nmiss*2+1] = cp[i1].second;
+                                    }
+                                    nmiss++; i1++;
+                                } else if (i1 >= np_cpu ||
+                                           gp[i2] < cp[i1]) {
+                                    if (nadd < 6) {
+                                        add[nadd*2] = gp[i2].first;
+                                        add[nadd*2+1] = gp[i2].second;
+                                    }
+                                    nadd++; i2++;
+                                } else { i1++; i2++; }
+                            }
+                            fprintf(stderr,
+                                "PAIRDBG set=%d np_cpu=%d np_gpu=%d "
+                                "nmiss=%d nadd=%d "
+                                "miss0=(%d,%d) miss1=(%d,%d) miss2=(%d,%d) "
+                                "add0=(%d,%d) add1=(%d,%d) "
+                                "seg0=%d seg7=%d seg10=%d\n",
+                                g.set_idx, np_cpu, np_gpu, nmiss, nadd,
+                                miss[0], miss[1], miss[2], miss[3],
+                                miss[4], miss[5],
+                                add[0], add[1], add[2], add[3],
+                                g.exp_seeds[bidx].structure.
+                                    atom_segment_ids[0],
+                                g.exp_seeds[bidx].structure.
+                                    atom_segment_ids[7],
+                                g.exp_seeds[bidx].structure.
+                                    atom_segment_ids[10]);
+                        }
                         fprintf(stderr,
                             "GPU2 r%d i=%d l=%d na=%d "
                             "gpu_grid=%f gpu_comb=%f "
                             "cpu_grid=%f cpu_ie=%f "
-                            "cpu_ok=%d cutoff=%f\n",
+                            "cpu_ok=%d cutoff=%f n=%d\n",
                             g.route, i, l,
-                            g.exp_seeds[k].structure.num_atoms,
-                            g.g2_grid[k], g.g2_comb[k],
+                            g.exp_seeds[bidx].structure.num_atoms,
+                            g.g2_grid[bidx], g.g2_comb[bidx],
                             ref.current_score, ref.internal_energy,
                             cpu_ok, growth_score_cutoff_begin /
-                                pow(growth_score_scaling_factor, i));
+                                pow(growth_score_scaling_factor, i),
+                            (int)g.exp_seeds.size());
                     }
                 } else {
                     valid_orient = score.compute_primary_score(g.exp_seeds[k].structure);
@@ -4830,6 +5048,17 @@ AG_Conformer_Search::grow_win_prune(VSGrowState & g, Master_Score & score,
     g.confs_pruned_clustered = 0;
 
     if (verbose) dock_gpu_monitor(i, l, (int)layers[i].segments.size());
+
+    g.dbg_prune_us += us_clock() - t_prune0;
+    if (getenv("DOCK_LBAL_DEBUG")) {
+        fprintf(stderr, "[LBALDBG] r=%d i=%d l=%d seeds=%d exp=%d "
+                "prep=%lldms drive=%lldms add=%lldms prune=%lldms\n",
+                g.route, i, l, g.dbg_nseeds, g.dbg_nexp,
+                (long long)((g.dbg_prep_us - dbg_p0) / 1000),
+                (long long)((g.dbg_drive_us - dbg_d0) / 1000),
+                (long long)((g.dbg_add_us - dbg_a0) / 1000),
+                (long long)((g.dbg_prune_us - t_prune0) / 1000));
+    }
 
     /* Round fully processed.  Signal prep() to advance the cursor and
        run the next round; prep()'s drain_done block also hosts the
