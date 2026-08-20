@@ -159,6 +159,21 @@ int dock_gpu_batch_score_sync2(void)
     return 0;
 }
 
+int dock_gpu_vs_update_pairs(int lig_idx, const float *ie_vdwA,
+                              const int *nb_int_pairs, int num_nb_pairs,
+                              int num_atoms)
+{
+    (void)lig_idx; (void)ie_vdwA; (void)nb_int_pairs;
+    (void)num_nb_pairs; (void)num_atoms;
+    return 0;
+}
+
+int dock_gpu_vs_dump_pairs(int lig_idx, int *out_pairs, int max_out)
+{
+    (void)lig_idx; (void)out_pairs; (void)max_out;
+    return 0;
+}
+
 int dock_gpu_npends2(void)
 {
     return 0;

@@ -22,21 +22,12 @@
 
 #include <hip/hip_runtime.h>
 
+#include <chrono>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
 #include <vector>
-#include <chrono>
-
-static void gpu_stat(const char *name, int poses, int atoms, long long start_ms)
-{
-    long long now = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-    fprintf(stderr, "[GPUSTAT] %s poses=%d atoms=%d t=%lldms\n",
-            name, poses, atoms, now - start_ms);
-}
-
 #define GPU_MAX_POSES       4096
 #define GPU_MAX_ATOMS       512
 #define GPU_MAX_NB_PAIRS    32768
@@ -52,6 +43,7 @@ static void gpu_stat(const char *name, int poses, int atoms, long long start_ms)
     hipError_t ce = (expr);                                                \
     if (ce != hipSuccess) {                                                \
         fprintf(stderr, "HIP: %s failed: %s\n", #expr, hipGetErrorString(ce)); \
+        abort();                                                           \
     }                                                                      \
 } while (0)
 
@@ -73,32 +65,10 @@ struct HipKernelParams {
 /*  Device kernels                                                     */
 /* ================================================================== */
 
-/* Trilinear interpolation via hardware 3D texture sampling, matching the
-   Vulkan backend exactly (score_dock_gpu_vulkan.cpp:100-113).
-   Coordinates are in grid units: rx=(x-origin)/spacing.  Normalized
-   [0,1] texel coordinates add a half-texel offset so texel centers fall
-   exactly on integer grid nodes, reproducing the CPU 8-neighbor trilinear
-   weights.  Clamp-to-edge addressing gives the same out-of-bounds
-   nearest-neighbor result as the CPU / former manual fallback. */
-__device__ __forceinline__ float hip_sample_grid(hipTextureObject_t tex,
-                                                 float x, float y, float z,
-                                                 const HipKernelParams &p)
-{
-    const float rx = (x - p.origin_x) / p.spacing;
-    const float ry = (y - p.origin_y) / p.spacing;
-    const float rz = (z - p.origin_z) / p.spacing;
-
-    const float u = (rx + 0.5f) / (float)p.span_x;
-    const float v = (ry + 0.5f) / (float)p.span_y;
-    const float w = (rz + 0.5f) / (float)p.span_z;
-
-    return tex3D<float>(tex, u, v, w);
-}
-
 __device__ __forceinline__ void hip_sample_grid_cpu(float x, float y, float z,
-                                                     const HipKernelParams &p,
-                                                     const float *avdw, const float *bvdw, const float *es,
-                                                     float &vdw_out, float &bwdv_out, float &es_out)
+                                                      const HipKernelParams &p,
+                                                      const float *avdw, const float *bvdw, const float *es,
+                                                      float &vdw_out, float &bwdv_out, float &es_out)
 {
     const float sx = (x - p.origin_x) / p.spacing;
     const float sy = (y - p.origin_y) / p.spacing;
@@ -112,12 +82,19 @@ __device__ __forceinline__ void hip_sample_grid_cpu(float x, float y, float z,
     const float fy = sy - (float)iy;
     const float fz = sz - (float)iz;
 
-    const int sx0 = fmaxf(0, fminf(p.span_x - 1, ix));
-    const int sx1 = fmaxf(0, fminf(p.span_x - 1, ix + 1));
-    const int sy0 = fmaxf(0, fminf(p.span_y - 1, iy));
-    const int sy1 = fmaxf(0, fminf(p.span_y - 1, iy + 1));
-    const int sz0 = fmaxf(0, fminf(p.span_z - 1, iz));
-    const int sz1 = fmaxf(0, fminf(p.span_z - 1, iz + 1));
+    /* CPU does NOT clamp neighbor indices. 
+       x_below = ix, x_above = ix + 1 (can be -1 or span)
+       nearest_neighbor uses NINT clamped to valid range */
+    const int x_nearest = (int)rintf(sx);
+    const int y_nearest = (int)rintf(sy);
+    const int z_nearest = (int)rintf(sz);
+    
+    const int nearest_x = (int)fmaxf(0, fminf((float)p.span_x - 1, (float)x_nearest));
+    const int nearest_y = (int)fmaxf(0, fminf((float)p.span_y - 1, (float)y_nearest));
+    const int nearest_z = (int)fmaxf(0, fminf((float)p.span_z - 1, (float)z_nearest));
+    const int stride_xy = p.span_x * p.span_y;
+    const size_t grid_size = (size_t)p.span_x * p.span_y * p.span_z;
+    const int nearest_idx = nearest_z * stride_xy + nearest_y * p.span_x + nearest_x;
 
     /* CPU neighbor ordering (matching Base_Grid::find_grid_neighbors):
        neighbors[0] = (x_above, y_above, z_above)
@@ -128,17 +105,29 @@ __device__ __forceinline__ void hip_sample_grid_cpu(float x, float y, float z,
        neighbors[5] = (x_below, y_above, z_below)
        neighbors[6] = (x_below, y_below, z_above)
        neighbors[7] = (x_below, y_below, z_below) */
-    const int stride_xy = p.span_x * p.span_y;
-    const int n0 = sz1 * stride_xy + sy1 * p.span_x + sx1;  // x_above, y_above, z_above
-    const int n1 = sz0 * stride_xy + sy1 * p.span_x + sx1;  // x_above, y_above, z_below
-    const int n2 = sz1 * stride_xy + sy0 * p.span_x + sx1;  // x_above, y_below, z_above
-    const int n3 = sz1 * stride_xy + sy1 * p.span_x + sx0;  // x_below, y_above, z_above
-    const int n4 = sz0 * stride_xy + sy0 * p.span_x + sx1;  // x_above, y_below, z_below
-    const int n5 = sz0 * stride_xy + sy1 * p.span_x + sx0;  // x_below, y_above, z_below
-    const int n6 = sz1 * stride_xy + sy0 * p.span_x + sx0;  // x_below, y_below, z_above
-    const int n7 = sz0 * stride_xy + sy0 * p.span_x + sx0;  // x_below, y_below, z_below
+    const int n0 = (iz + 1) * stride_xy + (iy + 1) * p.span_x + (ix + 1);  // x_above, y_above, z_above
+    const int n1 = (iz + 0) * stride_xy + (iy + 1) * p.span_x + (ix + 1);  // x_above, y_above, z_below
+    const int n2 = (iz + 1) * stride_xy + (iy + 0) * p.span_x + (ix + 1);  // x_above, y_below, z_above
+    const int n3 = (iz + 1) * stride_xy + (iy + 1) * p.span_x + (ix + 0);  // x_below, y_above, z_above
+    const int n4 = (iz + 0) * stride_xy + (iy + 0) * p.span_x + (ix + 1);  // x_above, y_below, z_below
+    const int n5 = (iz + 0) * stride_xy + (iy + 1) * p.span_x + (ix + 0);  // x_below, y_above, z_below
+    const int n6 = (iz + 1) * stride_xy + (iy + 0) * p.span_x + (ix + 0);  // x_below, y_below, z_above
+    const int n7 = (iz + 0) * stride_xy + (iy + 0) * p.span_x + (ix + 0);  // x_below, y_below, z_below
+
+    /* Check if any neighbor is OOB (matching CPU interpolate logic) */
+    bool oob = (n0 < 0 || n0 >= (int)grid_size ||
+                n1 < 0 || n1 >= (int)grid_size ||
+                n2 < 0 || n2 >= (int)grid_size ||
+                n3 < 0 || n3 >= (int)grid_size ||
+                n4 < 0 || n4 >= (int)grid_size ||
+                n5 < 0 || n5 >= (int)grid_size ||
+                n6 < 0 || n6 >= (int)grid_size ||
+                n7 < 0 || n7 >= (int)grid_size);
 
     auto interp = [&](const float *g) {
+        if (oob) {
+            return g[nearest_idx];
+        }
         float a8 = g[n7];
         float a7 = g[n6] - a8;
         float a6 = g[n5] - a8;
@@ -172,8 +161,7 @@ __device__ __forceinline__ bool hip_pose_oob(float x, float y, float z, const Hi
 __global__ void hip_grid_kernel(const float *xyz,
                                 const float *vdwA, const float *vdwB,
                                 const float *charges,
-                                hipTextureObject_t avdw, hipTextureObject_t bvdw,
-                                hipTextureObject_t es,
+                                const float *avdw_lin, const float *bvdw_lin, const float *es_lin,
                                 const int *active_flags,
                                 float *out_scores,
                                 HipKernelParams p)
@@ -188,9 +176,8 @@ __global__ void hip_grid_kernel(const float *xyz,
         const float x = xyz[stride + a*3];
         const float y = xyz[stride + a*3 + 1];
         const float z = xyz[stride + a*3 + 2];
-        const float vdw  = hip_sample_grid(avdw, x, y, z, p);
-        const float bwdv = hip_sample_grid(bvdw, x, y, z, p);
-        const float esv  = hip_sample_grid(es,   x, y, z, p);
+        float vdw, bwdv, esv;
+        hip_sample_grid_cpu(x, y, z, p, avdw_lin, bvdw_lin, es_lin, vdw, bwdv, esv);
         score += vdwA[a]*vdw*p.vdw_scale - vdwB[a]*bwdv*p.vdw_scale + charges[a]*esv*p.es_scale;
     }
     out_scores[tid] = score;
@@ -202,8 +189,7 @@ __global__ void hip_grid_kernel(const float *xyz,
 __global__ void hip_ie_kernel(const float *xyz,
                               const float *vdwA, const float *vdwB,
                               const float *charges,
-                              hipTextureObject_t avdw, hipTextureObject_t bvdw,
-                              hipTextureObject_t es,
+                              const float *avdw_lin, const float *bvdw_lin, const float *es_lin,
                               const int *active_flags,
                               const float *ie_vdwA,
                               const int *pair_starts, const int *pair_indices,
@@ -231,9 +217,8 @@ __global__ void hip_ie_kernel(const float *xyz,
             const float x = xyz[stride + a*3];
             const float y = xyz[stride + a*3 + 1];
             const float z = xyz[stride + a*3 + 2];
-            const float vdw  = hip_sample_grid(avdw, x, y, z, p);
-            const float bwdv = hip_sample_grid(bvdw, x, y, z, p);
-            const float esv  = hip_sample_grid(es,   x, y, z, p);
+            float vdw, bwdv, esv;
+            hip_sample_grid_cpu(x, y, z, p, avdw_lin, bvdw_lin, es_lin, vdw, bwdv, esv);
             total += vdwA[a]*vdw*p.vdw_scale - vdwB[a]*bwdv*p.vdw_scale + charges[a]*esv*p.es_scale;
 
             const int start = pair_starts[a];
@@ -274,8 +259,7 @@ __global__ void hip_ie_kernel(const float *xyz,
 __global__ void hip_ie_vs_kernel(const float *xyz,
                                  const float *lut_vdwA, const float *lut_vdwB,
                                  const float *lut_charges,
-                                 hipTextureObject_t avdw, hipTextureObject_t bvdw,
-                                 hipTextureObject_t es,
+                                 const float *avdw_lin, const float *bvdw_lin, const float *es_lin,
                                  const int *lut_active_flags,
                                  const float *lut_ie_vdwA,
                                  const int *lut_pair_starts,
@@ -307,9 +291,8 @@ __global__ void hip_ie_vs_kernel(const float *xyz,
             const float x = xyz[stride + a*3];
             const float y = xyz[stride + a*3 + 1];
             const float z = xyz[stride + a*3 + 2];
-            const float vdw  = hip_sample_grid(avdw, x, y, z, p);
-            const float bwdv = hip_sample_grid(bvdw, x, y, z, p);
-            const float esv  = hip_sample_grid(es,   x, y, z, p);
+            float vdw, bwdv, esv;
+            hip_sample_grid_cpu(x, y, z, p, avdw_lin, bvdw_lin, es_lin, vdw, bwdv, esv);
             total += lut_vdwA[lstride + a]*vdw*p.vdw_scale
                    - lut_vdwB[lstride + a]*bwdv*p.vdw_scale
                    + lut_charges[lstride + a]*esv*p.es_scale;
@@ -353,8 +336,7 @@ __global__ void hip_ie_vs_kernel(const float *xyz,
 __global__ void hip_grid_vs_kernel(const float *xyz,
                                    const float *lut_vdwA, const float *lut_vdwB,
                                    const float *lut_charges,
-                                   hipTextureObject_t avdw, hipTextureObject_t bvdw,
-                                   hipTextureObject_t es,
+                                   const float *avdw_lin, const float *bvdw_lin, const float *es_lin,
                                    const int *lut_active_flags,
                                    const int *pose_lig,
                                    unsigned int *pose_counter,
@@ -383,13 +365,12 @@ __global__ void hip_grid_vs_kernel(const float *xyz,
             const float x = xyz[stride + a*3];
             const float y = xyz[stride + a*3 + 1];
             const float z = xyz[stride + a*3 + 2];
-            const float vdw  = hip_sample_grid(avdw, x, y, z, p);
-            const float bwdv = hip_sample_grid(bvdw, x, y, z, p);
-            const float esv  = hip_sample_grid(es,   x, y, z, p);
+            float vdw, bwdv, esv;
+            hip_sample_grid_cpu(x, y, z, p, avdw_lin, bvdw_lin, es_lin, vdw, bwdv, esv);
             total += lut_vdwA[lstride + a]*vdw*p.vdw_scale
                    - lut_vdwB[lstride + a]*bwdv*p.vdw_scale
                    + lut_charges[lstride + a]*esv*p.es_scale;
-       }
+        }
 
         s_partial[tid] = total;
         __syncthreads();
@@ -431,14 +412,7 @@ static int   *d_lut_active_flags = NULL;
 static int   *d_lut_pair_starts = NULL, *d_lut_pair_indices = NULL;
 static int   *d_pose_lig[2] = {NULL, NULL};
 
-/* Grid as hardware 3D textures (trilinear filtered), matching the Vulkan
-   and Metal backends. */
-static hipArray *d_avdw = NULL, *d_bvdw = NULL, *d_es = NULL;
-static hipTextureObject_t h_avdw = 0, h_bvdw = 0, h_es = 0;
-
-/* Linear grid arrays for manual trilinear sampling (CPU bit-exact parity).
-   Lazily populated on first VS kernel launch to avoid interfering with
-   texture upload in dock_gpu_init. */
+/* Linear grid arrays for manual trilinear sampling (CPU bit-exact parity). */
 static float *d_avdw_lin = NULL, *d_bvdw_lin = NULL, *d_es_lin = NULL;
 static int g_grids_copied_to_linear = 0;
 
@@ -460,7 +434,7 @@ static HipKernelParams g_params;
    iGPU to a large discrete GPU or a CUDA backend (same API in
    score_dock_gpu.h). */
 #define LBAL_STREAMS  2
-#define LBAL_RING_MIN 4
+#define LBAL_RING_MIN 1
 #define LBAL_RING_MAX 32
 
 static hipStream_t g_stream[LBAL_STREAMS] = {0, 0};
@@ -524,56 +498,8 @@ static int hip_init_device(void)
     return 1;
 }
 
-/* Upload a grid into a 3D texture with hardware trilinear filtering and
-   clamp-to-edge (matching Vulkan/Metal backend semantics). */
-static int hip_upload_grid_texture(hipArray **arr_out, hipTextureObject_t *tex_out,
-                                   const float *host, int sx, int sy, int sz)
-{
-    hipChannelFormatDesc cd = hipCreateChannelDesc<float>();
-    hipArray *a = NULL;
-    hipExtent ext = make_hipExtent((size_t)sx, (size_t)sy, (size_t)sz);
-    if (hipMalloc3DArray(&a, &cd, ext, 0) != hipSuccess) {
-        fprintf(stderr, "HIP: hipMalloc3DArray(%dx%dx%d) failed\n", sx, sy, sz);
-        return 0;
-    }
-    hipMemcpy3DParms mp;
-    memset(&mp, 0, sizeof(mp));
-    mp.srcPtr = make_hipPitchedPtr((void*)host, (size_t)sx * sizeof(float), (size_t)sx, (size_t)sy);
-    mp.dstArray = a;
-    mp.extent = ext;
-    mp.kind = hipMemcpyHostToDevice;
-    if (hipMemcpy3D(&mp) != hipSuccess) {
-        fprintf(stderr, "HIP: hipMemcpy3D failed\n");
-        hipFree(a);
-        return 0;
-    }
-
-    hipResourceDesc res;
-    memset(&res, 0, sizeof(res));
-    res.resType = hipResourceTypeArray;
-    res.res.array.array = a;
-
-    hipTextureDesc td;
-    memset(&td, 0, sizeof(td));
-    td.normalizedCoords = 1;
-    td.filterMode = hipFilterModeLinear;
-    td.addressMode[0] = hipAddressModeClamp;
-    td.addressMode[1] = hipAddressModeClamp;
-    td.addressMode[2] = hipAddressModeClamp;
-
-    hipTextureObject_t to = 0;
-    if (hipCreateTextureObject(&to, &res, &td, NULL) != hipSuccess) {
-        fprintf(stderr, "HIP: hipCreateTextureObject failed\n");
-        hipFree((hipArray*)a);
-        return 0;
-    }
-    *arr_out = (hipArray*)a;
-    *tex_out = to;
-    return 1;
-}
-
 /* Lazy copy of grid data from host to linear device arrays for manual sampling.
-   Called once on first VS kernel launch to avoid interfering with texture upload. */
+   Called once on first VS kernel launch. */
 static void hip_ensure_grids_copied_to_linear(const float *avdw, const float *bvdw, const float *es,
                                                int span_x, int span_y, int span_z) {
     if (g_grids_copied_to_linear) return;
@@ -615,25 +541,18 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     kp.num_nb_pairs = 0;
     g_params = kp;
 
-    if (!hip_upload_grid_texture(&d_avdw, &h_avdw, avdw, span_x, span_y, span_z) ||
-        !hip_upload_grid_texture(&d_bvdw, &h_bvdw, bvdw, span_x, span_y, span_z) ||
-        !hip_upload_grid_texture(&d_es,   &h_es,   es,   span_x, span_y, span_z)) {
-        fprintf(stderr, "HIP: grid texture upload failed — CPU fallback\n");
-        return 0;
-    }
-
     /* Store host pointers for lazy linear array population. */
     g_avdw_host = avdw;
     g_bvdw_host = bvdw;
     g_es_host = es;
 
     /* Allocate linear grid arrays for manual trilinear sampling (CPU bit-exact parity).
-       Data is lazily copied on first VS kernel launch. */
+       Use hipMallocManaged for APU unified memory to avoid page faults on large allocations. */
     size_t grid_elems = (size_t)span_x * (size_t)span_y * (size_t)span_z;
     size_t grid_bytes = grid_elems * sizeof(float);
-    CHECK_HIP(hipMalloc(&d_avdw_lin, grid_bytes));
-    CHECK_HIP(hipMalloc(&d_bvdw_lin, grid_bytes));
-    CHECK_HIP(hipMalloc(&d_es_lin, grid_bytes));
+    CHECK_HIP(hipMallocManaged(&d_avdw_lin, grid_bytes));
+    CHECK_HIP(hipMallocManaged(&d_bvdw_lin, grid_bytes));
+    CHECK_HIP(hipMallocManaged(&d_es_lin, grid_bytes));
     g_grids_copied_to_linear = 0;
 
     CHECK_HIP(hipMalloc(&d_vdwA,     sizeof(float) * GPU_MAX_ATOMS));
@@ -801,14 +720,15 @@ int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
     const int blocks = (num_poses + threads - 1) / threads;
     const long long t0b = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
+    hip_ensure_grids_copied_to_linear(g_avdw_host, g_bvdw_host, g_es_host,
+                                       kp.span_x, kp.span_y, kp.span_z);
     hipLaunchKernelGGL(hip_grid_kernel, dim3(blocks), dim3(threads), 0, 0,
                        d_xyz[0], d_vdwA, d_vdwB, d_charges,
-                       h_avdw, h_bvdw, h_es, d_active_flags,
+                       d_avdw_lin, d_bvdw_lin, d_es_lin, d_active_flags,
                        d_scores[0], kp);
     CHECK_HIP(hipGetLastError());
     CHECK_HIP(hipDeviceSynchronize());
     CHECK_HIP(hipMemcpy(out_scores, d_scores[0], sizeof(float) * (size_t)num_poses, hipMemcpyDeviceToHost));
-    gpu_stat("grid", num_poses, num_atoms, t0b);
     return 1;
 }
 
@@ -858,14 +778,13 @@ int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses, int
 
     hipLaunchKernelGGL(hip_ie_kernel, dim3(blocks), dim3(threads), 0, 0,
                        d_xyz[0], d_vdwA, d_vdwB, d_charges,
-                       h_avdw, h_bvdw, h_es,
+                       d_avdw_lin, d_bvdw_lin, d_es_lin,
                        d_active_flags, d_ie_vdwA,
                        d_pair_starts, d_pair_indices,
                        d_pose_counter[0], d_scores[0], kp);
     CHECK_HIP(hipGetLastError());
     CHECK_HIP(hipDeviceSynchronize());
     CHECK_HIP(hipMemcpy(out_scores, d_scores[0], sizeof(float) * (size_t)num_poses, hipMemcpyDeviceToHost));
-    gpu_stat("ie", num_poses, num_atoms, t0b);
     return 1;
 }
 
@@ -1011,16 +930,17 @@ int dock_gpu_batch_score_vs(const float *xyz, int num_poses, int num_atoms,
     int blocks = dock_gpu_recommended_batch_size();
     if (blocks < 1) blocks = 1;
 
+    hip_ensure_grids_copied_to_linear(g_avdw_host, g_bvdw_host, g_es_host,
+                                       kp.span_x, kp.span_y, kp.span_z);
     hipLaunchKernelGGL(hip_ie_vs_kernel, dim3(blocks), dim3(HIP_SCORE_THREADS), 0, 0,
                        d_xyz[0], d_lut_vdwA, d_lut_vdwB, d_lut_charges,
-                       h_avdw, h_bvdw, h_es,
+                       d_avdw_lin, d_bvdw_lin, d_es_lin,
                        d_lut_active_flags, d_lut_ie_vdwA,
                        d_lut_pair_starts, d_lut_pair_indices,
                        d_pose_lig[0], d_pose_counter[0], d_scores[0], kp);
     CHECK_HIP(hipGetLastError());
     CHECK_HIP(hipDeviceSynchronize());
     CHECK_HIP(hipMemcpy(out_scores, d_scores[0], sizeof(float) * (size_t)num_poses, hipMemcpyDeviceToHost));
-    gpu_stat("ie_vs", num_poses, num_atoms, t0);
     return 1;
 }
 
@@ -1051,15 +971,16 @@ int dock_gpu_batch_score_vs_grid(const float *xyz, int num_poses,
     int blocks = dock_gpu_recommended_batch_size();
     if (blocks < 1) blocks = 1;
 
+    hip_ensure_grids_copied_to_linear(g_avdw_host, g_bvdw_host, g_es_host,
+                                       kp.span_x, kp.span_y, kp.span_z);
     hipLaunchKernelGGL(hip_grid_vs_kernel, dim3(blocks), dim3(HIP_SCORE_THREADS), 0, 0,
                        d_xyz[0], d_lut_vdwA, d_lut_vdwB, d_lut_charges,
-                       h_avdw, h_bvdw, h_es,
+                       d_avdw_lin, d_bvdw_lin, d_es_lin,
                        d_lut_active_flags,
                        d_pose_lig[0], d_pose_counter[0], d_scores[0], kp);
     CHECK_HIP(hipGetLastError());
     CHECK_HIP(hipDeviceSynchronize());
     CHECK_HIP(hipMemcpy(out_scores, d_scores[0], sizeof(float) * (size_t)num_poses, hipMemcpyDeviceToHost));
-    gpu_stat("grid_vs", num_poses, num_atoms, t0);
     return 1;
 }
 
@@ -1140,17 +1061,21 @@ static int vs_enqueue_internal(const float *xyz, int num_poses,
     if (blocks < 1) blocks = 1;
 
     if (grid_only) {
+        hip_ensure_grids_copied_to_linear(g_avdw_host, g_bvdw_host, g_es_host,
+                                           kp.span_x, kp.span_y, kp.span_z);
         hipLaunchKernelGGL(hip_grid_vs_kernel, dim3(blocks), dim3(HIP_SCORE_THREADS),
                            0, st,
                            d_xyz[sid], d_lut_vdwA, d_lut_vdwB, d_lut_charges,
-                           h_avdw, h_bvdw, h_es,
+                           d_avdw_lin, d_bvdw_lin, d_es_lin,
                            d_lut_active_flags,
                            d_pose_lig[sid], d_pose_counter[sid], d_scores[sid], kp);
     } else {
+        hip_ensure_grids_copied_to_linear(g_avdw_host, g_bvdw_host, g_es_host,
+                                           kp.span_x, kp.span_y, kp.span_z);
         hipLaunchKernelGGL(hip_ie_vs_kernel, dim3(blocks), dim3(HIP_SCORE_THREADS),
                            0, st,
                            d_xyz[sid], d_lut_vdwA, d_lut_vdwB, d_lut_charges,
-                           h_avdw, h_bvdw, h_es,
+                           d_avdw_lin, d_bvdw_lin, d_es_lin,
                            d_lut_active_flags, d_lut_ie_vdwA,
                            d_lut_pair_starts, d_lut_pair_indices,
                            d_pose_lig[sid], d_pose_counter[sid], d_scores[sid], kp);
@@ -1207,7 +1132,6 @@ static int vs_sync_internal(int sid)
         PendingBatch &pb = g_pending[sid][i];
         memcpy(pb.out, g_pin_score[pb.ring],
                sizeof(float) * (size_t)pb.poses);
-        gpu_stat(pb.grid_only ? "grid_vs" : "ie_vs", pb.poses, pb.atoms, pb.t0);
         double dur = (double)(lbal_now_ms() - pb.t0);
         if (dur < 0.1) dur = 0.1;
         g_gpu_ms_ema = 0.85 * g_gpu_ms_ema + 0.15 * dur;
@@ -1338,12 +1262,6 @@ int dock_gpu_vs_dump_pairs(int lig_idx, int *out_pairs, int max_out)
 
 void dock_gpu_cleanup(void)
 {
-    if (h_avdw)          { hipDestroyTextureObject(h_avdw); h_avdw = 0; }
-    if (h_bvdw)          { hipDestroyTextureObject(h_bvdw); h_bvdw = 0; }
-    if (h_es)            { hipDestroyTextureObject(h_es);   h_es = 0; }
-    if (d_avdw)          { hipFree(d_avdw);         d_avdw = NULL; }
-    if (d_bvdw)          { hipFree(d_bvdw);         d_bvdw = NULL; }
-    if (d_es)            { hipFree(d_es);           d_es = NULL; }
     if (d_vdwA)         { hipFree(d_vdwA);         d_vdwA = NULL; }
     if (d_vdwB)         { hipFree(d_vdwB);         d_vdwB = NULL; }
     if (d_charges)      { hipFree(d_charges);      d_charges = NULL; }
@@ -1362,7 +1280,7 @@ void dock_gpu_cleanup(void)
     if (d_lut_charges)     { hipFree(d_lut_charges);     d_lut_charges = NULL; }
     if (d_lut_ie_vdwA)     { hipFree(d_lut_ie_vdwA);     d_lut_ie_vdwA = NULL; }
     if (d_lut_active_flags){ hipFree(d_lut_active_flags);d_lut_active_flags = NULL; }
-if (d_lut_pair_starts) { hipFree(d_lut_pair_starts); d_lut_pair_starts = NULL; }
+    if (d_lut_pair_starts) { hipFree(d_lut_pair_starts); d_lut_pair_starts = NULL; }
     if (d_lut_pair_indices){ hipFree(d_lut_pair_indices);d_lut_pair_indices = NULL; }
     if (d_pose_lig[0])        { hipFree(d_pose_lig[0]);        d_pose_lig[0] = NULL; }
     if (d_pose_lig[1])        { hipFree(d_pose_lig[1]);        d_pose_lig[1] = NULL; }

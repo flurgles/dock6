@@ -212,7 +212,7 @@ float
 Base_Grid::interpolate(float *grid)
 {
     float           a1, a2, a3, a4, a5, a6, a7, a8;
-//    float           g1, g2, g3, g4, g5, g6, g7, g8;
+    //    float           g1, g2, g3, g4, g5, g6, g7, g8;
     float           value;
     int             out_of_bounds,
                     i;
@@ -221,10 +221,6 @@ Base_Grid::interpolate(float *grid)
     for (i = 0; i < 8; i++)
         if ((neighbors[i] > size) || (neighbors[i] < 0))
             out_of_bounds = 1;
-
-//    float toobig = 100000.0;
-//    move check to when reading in grid (chemgrid vdw). 
-
 
     if (out_of_bounds == 0) {
         a8 = grid[neighbors[7]];
