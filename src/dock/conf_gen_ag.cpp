@@ -4657,6 +4657,10 @@ AG_Conformer_Search::grow_win_prep(VSGrowState & g, ConformerPool & pool,
                                      (unsigned)i, (unsigned)l,
                                      (unsigned)k));
                         if (added >= 0) g.inflight++;
+                        else fprintf(stderr, "POOLADDFAIL route=%d k=%d na=%d "
+                                     "pool add failed, conformer left raw\n",
+                                     g.route, k,
+                                     g.exp_seeds[k].structure.num_atoms);
                     } else {
                         /* CPU-min mode: refine synchronously in place
                            (mirrors grow_periphery's CPU fallback); the
@@ -4855,6 +4859,16 @@ AG_Conformer_Search::grow_win_prune(VSGrowState & g, Master_Score & score,
                     g.exp_seeds[k].structure.internal_energy =
                         g.g2_comb[k] - g.g2_grid[k];
                     if (getenv("DOCK_GPU2_DEBUG")) {
+                        if (getenv("DOCK_GPU2_ALL")) {
+                            for (int bq = 0; bq < (int)g.exp_seeds.size(); bq++) {
+                                DOCKMol refa = g.exp_seeds[bq].structure;
+                                bool coka = score.compute_primary_score(refa);
+                                fprintf(stderr, "GPU2ALL r%d i=%d l=%d k=%d gpu_grid=%f gpu_comb=%f cpu_grid=%f cpu_ok=%d\n",
+                                        g.route, i, l, bq, g.g2_grid[bq],
+                                        g.g2_comb[bq], refa.current_score,
+                                        (int)coka);
+                            }
+                        }
                         int bidx = 0;
                         for (int bq = 1; bq < (int)g.exp_seeds.size(); bq++)
                             if (g.g2_comb[bq] < g.g2_comb[bidx]) bidx = bq;

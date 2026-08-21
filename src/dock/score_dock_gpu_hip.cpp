@@ -1015,7 +1015,12 @@ static int vs_enqueue_internal(const float *xyz, int num_poses,
 {
     if (!g_initialized || g_num_lut_ligands == 0) return 0;
     if (num_poses > GPU_MAX_POSES || num_atoms > GPU_MAX_ATOMS) return 0;
-    if (g_npending[sid] >= LBAL_MAX_PENDING) return 0;
+    if (g_npending[sid] >= LBAL_MAX_PENDING) {
+        /* Queue full: drain this stream inline instead of failing.
+           Callers (ConformerPool) treat a 0 return as fatal and would
+           force-converge slots with unminimized coordinates. */
+        vs_sync_internal(sid);
+    }
 
     long long t0 = lbal_now_ms();
 

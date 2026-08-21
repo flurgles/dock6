@@ -620,7 +620,14 @@ ConformerPool::step_finish()
             if (slot.converged || slot.phase == SlotPhase::CONVERGED) continue;
             slot.converged = true;
             slot.phase = SlotPhase::CONVERGED;
-            fill_slot_from_mol(slot, slot.id);
+            if (slot.has_best) {
+                fill_slot_from_mol(slot, slot.id);
+            } else {
+                /* Never scored a vertex: p[ilo] holds an arbitrary
+                   initial-simplex vertex.  Restore the pre-min pose
+                   instead (matches the sentinel/out-of-grid path). */
+                copy_crds(*slot.m_mol, *slot.m_refMol);
+            }
             m_converged.push_back(&slot);
             newly++;
         }
@@ -773,15 +780,29 @@ ConformerPool::step_legacy()
         /* GPU scoring failed (e.g. IE data not uploaded).
            Mark all active slots converged with their current best
            pose so the drain loop terminates instead of spinning. */
+        static long pool_gpu_fail_count = 0;
         int newly = 0;
+        int n_raw = 0;
         for (auto& slot : m_slots) {
             if (slot.converged || slot.phase == SlotPhase::CONVERGED) continue;
+            if (!slot.has_best) n_raw++;
             slot.converged = true;
             slot.phase = SlotPhase::CONVERGED;
-            fill_slot_from_mol(slot, slot.id);
+            if (slot.has_best) {
+                fill_slot_from_mol(slot, slot.id);
+            } else {
+                /* Never scored a vertex: restore pre-min pose rather
+                   than an arbitrary initial-simplex vertex. */
+                copy_crds(*slot.m_mol, *slot.m_refMol);
+            }
             m_converged.push_back(&slot);
             newly++;
         }
+        pool_gpu_fail_count++;
+        if (getenv("DOCK_POOL_DEBUG") || pool_gpu_fail_count <= 5)
+            fprintf(stderr, "POOLFAIL #%ld step_finish GPU batch score failed: "
+                    "poisoned %d slots (%d with NO best pose -> raw coords)\n",
+                    pool_gpu_fail_count, newly, n_raw);
         return newly;
     }
 
