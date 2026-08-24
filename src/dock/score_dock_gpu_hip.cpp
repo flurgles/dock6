@@ -396,6 +396,7 @@ static int   g_num_lut_ligands = 0;
 static float g_ie_soft_delta = 0.0f;
 static float g_ie_cutoff_sq  = 1e10f;
 static int   g_compute_units = 0;
+static int   g_device_integrated = -1;  /* -1 unknown: prefer managed */
 static char  g_device_name[128];
 
 static float *d_vdwA = NULL, *d_vdwB = NULL, *d_charges = NULL;
@@ -482,12 +483,16 @@ static int hip_init_device(void)
         fprintf(stderr, "HIP: no HIP-capable device found — CPU fallback\n");
         return 0;
     }
-    if (hipSetDevice(0) != hipSuccess) return 0;
+    if (hipSetDevice(0) != hipSuccess) {
+        fprintf(stderr, "HIP: hipSetDevice(0) failed — CPU fallback\n");
+        return 0;
+    }
 
     hipDeviceProp_t props;
     if (hipGetDeviceProperties(&props, 0) == hipSuccess) {
         snprintf(g_device_name, sizeof(g_device_name), "%s", props.name);
         g_compute_units = props.multiProcessorCount;
+        g_device_integrated = props.integrated ? 1 : 0;
     } else {
         snprintf(g_device_name, sizeof(g_device_name), "hip-device-0");
         g_compute_units = 8;
@@ -523,11 +528,14 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
                   float spacing)
 {
     if (g_initialized) return 1;
+    if (getenv("DOCK_GPU_INIT_DEBUG"))
+        fprintf(stderr, "GPU-INIT: attempt begin\n");
 
     /* gfx1033 (Steam Deck / Van Gogh) intermittently deadlocks the SDMA
-       engine on host->device copies. route copies through the compute engine
-       unless the user explicitly opted into the SDMA-batch path. */
-    if (!getenv("HSA_ENABLE_SDMA"))
+       engine on host->device copies.  Opt-in workaround for affected
+       APUs (DOCK_HIP_NO_SDMA=1); discrete GPUs keep their default copy
+       engines and NVIDIA ignores the variable entirely. */
+    if (getenv("DOCK_HIP_NO_SDMA") && !getenv("HSA_ENABLE_SDMA"))
         setenv("HSA_ENABLE_SDMA", "0", 1);
 
     if (!hip_init_device()) return 0;
@@ -546,13 +554,23 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     g_bvdw_host = bvdw;
     g_es_host = es;
 
-    /* Allocate linear grid arrays for manual trilinear sampling (CPU bit-exact parity).
-       Use hipMallocManaged for APU unified memory to avoid page faults on large allocations. */
+    /* Allocate linear grid arrays for manual trilinear sampling (CPU
+       bit-exact parity).  Integrated APUs (unified memory): managed
+       allocations avoid page faults on large allocations.  Discrete
+       GPUs: explicit device memory avoids PCIe page-migration overhead;
+       the grid upload in hip_ensure_grids_copied_to_linear is an
+       explicit hipMemcpy either way. */
     size_t grid_elems = (size_t)span_x * (size_t)span_y * (size_t)span_z;
     size_t grid_bytes = grid_elems * sizeof(float);
-    CHECK_HIP(hipMallocManaged(&d_avdw_lin, grid_bytes));
-    CHECK_HIP(hipMallocManaged(&d_bvdw_lin, grid_bytes));
-    CHECK_HIP(hipMallocManaged(&d_es_lin, grid_bytes));
+    if (g_device_integrated != 0) {
+        CHECK_HIP(hipMallocManaged(&d_avdw_lin, grid_bytes));
+        CHECK_HIP(hipMallocManaged(&d_bvdw_lin, grid_bytes));
+        CHECK_HIP(hipMallocManaged(&d_es_lin, grid_bytes));
+    } else {
+        CHECK_HIP(hipMalloc(&d_avdw_lin, grid_bytes));
+        CHECK_HIP(hipMalloc(&d_bvdw_lin, grid_bytes));
+        CHECK_HIP(hipMalloc(&d_es_lin, grid_bytes));
+    }
     g_grids_copied_to_linear = 0;
 
     CHECK_HIP(hipMalloc(&d_vdwA,     sizeof(float) * GPU_MAX_ATOMS));
@@ -1027,6 +1045,12 @@ static int vs_enqueue_internal(const float *xyz, int num_poses,
             /* Queue full: drain this stream inline instead of failing.
                Callers (ConformerPool) treat a 0 return as fatal and would
                force-converge slots with unminimized coordinates. */
+            static long qfull_drains = 0;
+            qfull_drains++;
+            if (getenv("DOCK_LBAL_DEBUG") || qfull_drains <= 5)
+                fprintf(stderr, "LBALQFULL #%ld sid=%d npend=%d: inline "
+                        "drain before enqueue\n",
+                        qfull_drains, sid, g_npending[sid]);
             vs_sync_internal(sid);
         }
     }

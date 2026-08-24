@@ -200,12 +200,26 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
 {
     int window = dock_gpu_recommended_batch_size();
     if (window < 1) window = 1;
-    /* Host-RAM budget: this 11 GiB Steam Deck runs earlyoom (kills when
-       free memory drops below ~3.4%); the collection footprint is roughly
-       0.14 GB per in-flight ligand (~2 K orientation snapshots each), so
-       the window is capped well below the 128-slot LUT limit.  Make it a
-       runtime/compile-time parameter if the host budget differs. */
-    const int vs_window_max = 6;
+    /* Host-RAM budget: the collection footprint is roughly 0.14 GB per
+       in-flight ligand (~2 K orientation snapshots each), so derive the
+       window from actually-available memory instead of a hardcoded cap.
+       Keeps low-RAM hosts (e.g. an 11 GiB Steam Deck running earlyoom)
+       safe while letting bigger machines batch wider. */
+    long avail_kb = 8L * 1024 * 1024; /* fallback: assume 8 GiB free */
+    FILE *mi = fopen("/proc/meminfo", "r");
+    if (mi) {
+        char line[128];
+        while (fgets(line, sizeof line, mi)) {
+            long v;
+            if (sscanf(line, "MemAvailable: %ld", &v) == 1) {
+                avail_kb = v;
+                break;
+            }
+        }
+        fclose(mi);
+    }
+    int vs_window_max = (int)((avail_kb / 1024) / 250); /* ~0.25 GB/ligand */
+    if (vs_window_max < 2) vs_window_max = 2;
     const int PREP_BATCH = 1;
     if (window > vs_window_max) window = vs_window_max;
     int maxl = dock_gpu_vs_max_ligands();
