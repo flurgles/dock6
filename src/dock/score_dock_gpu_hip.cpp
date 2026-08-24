@@ -27,6 +27,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
+#include <glob.h>
 #include <vector>
 #define GPU_MAX_POSES       4096
 #define GPU_MAX_ATOMS       512
@@ -531,12 +532,30 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     if (getenv("DOCK_GPU_INIT_DEBUG"))
         fprintf(stderr, "GPU-INIT: attempt begin\n");
 
-    /* gfx1033 (Steam Deck / Van Gogh) intermittently deadlocks the SDMA
-       engine on host->device copies.  Opt-in workaround for affected
-       APUs (DOCK_HIP_NO_SDMA=1); discrete GPUs keep their default copy
-       engines and NVIDIA ignores the variable entirely. */
-    if (getenv("DOCK_HIP_NO_SDMA") && !getenv("HSA_ENABLE_SDMA"))
-        setenv("HSA_ENABLE_SDMA", "0", 1);
+    /* gfx1033 (Van Gogh / Steam Deck; PCI device 0x163f) intermittently
+       deadlocks the SDMA engine on host->device copies.  Auto-apply the
+       copy-engine workaround on affected silicon before ROCm starts;
+       other hardware (incl. NVIDIA, which ignores this variable) is left
+       untouched unless DOCK_HIP_NO_SDMA=1 forces the workaround. */
+    if (!getenv("HSA_ENABLE_SDMA")) {
+        bool van_gogh = false;
+        glob_t pg;
+        if (glob("/sys/bus/pci/devices/*/device", 0, NULL, &pg) == 0) {
+            FILE *df;
+            char buf[16];
+            for (size_t gi = 0; gi < pg.gl_pathc && !van_gogh; gi++) {
+                if ((df = fopen(pg.gl_pathv[gi], "r")) != NULL) {
+                    if (fgets(buf, sizeof buf, df) &&
+                        strncmp(buf, "0x163f", 6) == 0)
+                        van_gogh = true;
+                    fclose(df);
+                }
+            }
+            globfree(&pg);
+        }
+        if (van_gogh || getenv("DOCK_HIP_NO_SDMA"))
+            setenv("HSA_ENABLE_SDMA", "0", 1);
+    }
 
     if (!hip_init_device()) return 0;
 
