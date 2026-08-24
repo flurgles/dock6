@@ -50,6 +50,7 @@
 // +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 #include <time.h>
+#include <sys/resource.h>
 #include <iostream>
 #include <iomanip>
 #include <stdio.h>
@@ -219,6 +220,8 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
         fclose(mi);
     }
     int vs_window_max = (int)((avail_kb / 1024) / 250); /* ~0.25 GB/ligand */
+    if (getenv("DOCK_VS_WINDOW_MAX"))
+        vs_window_max = atoi(getenv("DOCK_VS_WINDOW_MAX"));
     if (vs_window_max < 2) vs_window_max = 2;
     const int PREP_BATCH = 1;
     if (window > vs_window_max) window = vs_window_max;
@@ -987,6 +990,12 @@ main(int argc, char **argv)
        resident, so RSS peaks at the live set. */
     mallopt(M_TRIM_THRESHOLD, 0);
 #endif
+
+    /* Batch throughput politeness: dock6 instances are typically run in
+       parallel across a machine and are long-lived; yield CPU priority
+       to interactive work.  Opt out with DOCK_NO_SELFNICE=1. */
+    if (getenv("DOCK_NO_SELFNICE") == NULL)
+        setpriority(PRIO_PROCESS, 0, 19);
 
 #ifndef __APPLE__
     // set up memory info

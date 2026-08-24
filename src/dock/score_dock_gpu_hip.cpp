@@ -40,6 +40,23 @@
 #define GPU_MAX_LUT_LIGANDS 128
 #define GPU_LUT_MAX_PAIRS   16384
 
+/* Runtime capacities, set once in dock_gpu_init from the memory the GPU
+   can actually allocate (dedicated VRAM on discrete cards, GTT/GTT-backed
+   pool on APUs).  Compile-time defines remain upper bounds so kernels and
+   worst-case host staging never overflow; small-VRAM GPUs get smaller
+   tables instead of aborting in hipMalloc.  ATOMS is chemistry-bound
+   (per-ligand atom count) and is not scaled down. */
+static int g_gpu_cap_poses      = GPU_MAX_POSES;
+static int g_gpu_cap_atoms      = GPU_MAX_ATOMS;
+static int g_gpu_cap_nb_pairs   = GPU_MAX_NB_PAIRS;
+static int g_gpu_cap_lut_ligands= GPU_MAX_LUT_LIGANDS;
+static int g_gpu_lut_max_pairs  = GPU_LUT_MAX_PAIRS;
+
+static int clampi(int v, int lo, int hi)
+{
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
 #define CHECK_HIP(expr) do {                                               \
     hipError_t ce = (expr);                                                \
     if (ce != hipSuccess) {                                                \
@@ -60,6 +77,10 @@ struct HipKernelParams {
     int    num_poses;
     float  vdw_scale;
     float  es_scale;
+    /* Runtime LUT strides (dynamic capacity sizing): per-ligand atom row
+       length and pair-table row length chosen at GPU init. */
+    int    lut_atom_stride;
+    int    lut_pair_stride;
 };
 
 /* ================================================================== */
@@ -284,7 +305,7 @@ __global__ void hip_ie_vs_kernel(const float *xyz,
         const int pose = (int)s_candidate;
         const int lig  = pose_lig[pose];
         const int stride = pose * p.num_atoms * 3;
-        const int lstride = lig * GPU_MAX_ATOMS;
+        const int lstride = lig * p.lut_atom_stride;
         float total = 0.0f;
 
         for (int a = tid; a < p.num_atoms; a += tg_size) {
@@ -300,9 +321,9 @@ __global__ void hip_ie_vs_kernel(const float *xyz,
 
             const int start = lut_pair_starts[lstride + a];
             const int end   = lut_pair_starts[lstride + a + 1];
-            const int cap_end = end < GPU_LUT_MAX_PAIRS ? end : GPU_LUT_MAX_PAIRS;
+            const int cap_end = end < p.lut_pair_stride ? end : p.lut_pair_stride;
             for (int i = start; i < cap_end; i++) {
-                const int a2 = lut_pair_indices[lig * GPU_LUT_MAX_PAIRS + i];
+                const int a2 = lut_pair_indices[lig * p.lut_pair_stride + i];
                 if (a2 < 0 || a2 >= p.num_atoms) continue;
                 if (lut_active_flags[lstride + a2] == 0) continue;
                 const float dx = xyz[stride + a*3]     - xyz[stride + a2*3];
@@ -358,7 +379,7 @@ __global__ void hip_grid_vs_kernel(const float *xyz,
         const int pose = (int)s_candidate;
         const int lig  = pose_lig[pose];
         const int stride = pose * p.num_atoms * 3;
-        const int lstride = lig * GPU_MAX_ATOMS;
+        const int lstride = lig * p.lut_atom_stride;
         float total = 0.0f;
 
         for (int a = tid; a < p.num_atoms; a += tg_size) {
@@ -531,7 +552,6 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     if (g_initialized) return 1;
     if (getenv("DOCK_GPU_INIT_DEBUG"))
         fprintf(stderr, "GPU-INIT: attempt begin\n");
-
     /* gfx1033 (Van Gogh / Steam Deck; PCI device 0x163f) intermittently
        deadlocks the SDMA engine on host->device copies.  Auto-apply the
        copy-engine workaround on affected silicon before ROCm starts;
@@ -559,6 +579,78 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
 
     if (!hip_init_device()) return 0;
 
+    /* Dynamic capacity sizing from allocatable GPU memory (dedicated
+       VRAM, or the GTT/GTT-backed pool on APUs).  Pose buffers get ~40%
+       of a conservative budget, LUT tables ~50%; everything clamps to
+       the compile-time maxima and floors that keep tiny GPUs usable. */
+    {
+        size_t freeb = 0, totalb = 0;
+        size_t pool = 0;
+        if (hipMemGetInfo(&freeb, &totalb) == hipSuccess && totalb > 0)
+            pool = freeb ? freeb : totalb;
+        else {
+            /* Fall back to sysfs totals (APU reporting quirks). */
+            FILE *mf = fopen(
+                "/sys/class/drm/card0/device/mem_info_gtt_total", "r");
+            long gtt = 0;
+            if (mf) { if (fscanf(mf, "%ld", &gtt) != 1) gtt = 0;
+                      fclose(mf); }
+            pool = (size_t)(gtt > 0 ? gtt : ((size_t)2 << 30));
+        }
+        size_t budget = pool / 2;               /* leave headroom */
+        const size_t min_budget = (size_t)192 << 20;
+        if (budget < min_budget) budget = min_budget;
+
+        const size_t pose_row =
+            sizeof(float) * GPU_MAX_ATOMS * 3 + 2 * sizeof(int);
+        g_gpu_cap_poses = clampi((int)((budget * 2 / 5) / pose_row),
+                                 64, GPU_MAX_POSES);
+
+        const size_t lut_row =
+            (size_t)GPU_MAX_ATOMS * (4 * sizeof(float) + 2 * sizeof(int))
+            + (size_t)(GPU_MAX_ATOMS + 1) * sizeof(int)
+            + (size_t)GPU_LUT_MAX_PAIRS * sizeof(int);
+        int ligs = (int)((budget / 2) / lut_row);
+        if (ligs < GPU_MAX_LUT_LIGANDS) {
+            /* Prefer shrinking pair-table depth before ligand count. */
+            int min_ligs = 8;
+            size_t row_fixed = lut_row
+                - (size_t)GPU_LUT_MAX_PAIRS * sizeof(int);
+            size_t avail = budget / 2 - (size_t)min_ligs * row_fixed;
+            int pair_depth =
+                clampi((int)(avail / (sizeof(int) * (size_t)min_ligs)),
+                       2048, GPU_LUT_MAX_PAIRS);
+            if (pair_depth < GPU_LUT_MAX_PAIRS) {
+                g_gpu_lut_max_pairs = pair_depth & ~1023;
+                ligs = (int)((budget / 2)
+                    / (row_fixed
+                       + (size_t)g_gpu_lut_max_pairs * sizeof(int)));
+            }
+        }
+        g_gpu_cap_lut_ligands = clampi(ligs, 8, GPU_MAX_LUT_LIGANDS);
+
+        const size_t atom_arrays =
+            (size_t)GPU_MAX_NB_PAIRS * sizeof(int)
+            + (size_t)GPU_MAX_ATOMS * (4 * sizeof(float) + sizeof(int))
+            + (size_t)(GPU_MAX_ATOMS + 1) * sizeof(int);
+        g_gpu_cap_nb_pairs = GPU_MAX_NB_PAIRS;
+        if (atom_arrays > budget / 10) {
+            g_gpu_cap_nb_pairs = clampi(
+                (int)(((budget / 10 - (size_t)64 << 10)
+                       / sizeof(int))),
+                4096, GPU_MAX_NB_PAIRS);
+        }
+        g_gpu_cap_atoms = GPU_MAX_ATOMS;
+
+        if (getenv("DOCK_GPU_INIT_DEBUG"))
+            fprintf(stderr,
+                    "GPU-INIT: caps poses=%d atoms=%d nb_pairs=%d "
+                    "lut_ligands=%d lut_pairs=%d (pool=%.1fGB)\n",
+                    g_gpu_cap_poses, g_gpu_cap_atoms, g_gpu_cap_nb_pairs,
+                    g_gpu_cap_lut_ligands, g_gpu_lut_max_pairs,
+                    (double)pool / 1073741824.0);
+    }
+
     HipKernelParams kp;
     kp.origin_x = origin_x; kp.origin_y = origin_y; kp.origin_z = origin_z;
     kp.span_x = span_x; kp.span_y = span_y; kp.span_z = span_z;
@@ -566,6 +658,8 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     kp.num_atoms = 0; kp.num_poses = 0;
     kp.ie_soft_delta = 0.0f; kp.ie_cutoff_sq = 1e10f;
     kp.num_nb_pairs = 0;
+    kp.lut_atom_stride = g_gpu_cap_atoms;
+    kp.lut_pair_stride = g_gpu_lut_max_pairs;
     g_params = kp;
 
     /* Store host pointers for lazy linear array population. */
@@ -581,6 +675,43 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
        explicit hipMemcpy either way. */
     size_t grid_elems = (size_t)span_x * (size_t)span_y * (size_t)span_z;
     size_t grid_bytes = grid_elems * sizeof(float);
+    if (getenv("DOCK_GPU_INIT_DEBUG")) {
+        fprintf(stderr, "GPU-INIT: integrated=%d alloc=%s grid_bytes=%zu\n",
+                g_device_integrated,
+                g_device_integrated != 0 ? "managed" : "device",
+                grid_bytes);
+        fprintf(stderr, "GPU-INIT: HSA_ENABLE_SDMA=%s\n",
+                getenv("HSA_ENABLE_SDMA") ? getenv("HSA_ENABLE_SDMA")
+                                          : "(unset)");
+        {
+            long vram_gb = -1, gtt_gb = -1;
+            FILE *mf = fopen(
+                "/sys/class/drm/card0/device/mem_info_vram_total", "r");
+            if (mf) {
+                long v;
+                if (fscanf(mf, "%ld", &v) == 1) vram_gb = v >> 30;
+                fclose(mf);
+            }
+            mf = fopen("/sys/class/drm/card0/device/mem_info_gtt_total", "r");
+            if (mf) {
+                long v;
+                if (fscanf(mf, "%ld", &v) == 1) gtt_gb = v >> 30;
+                fclose(mf);
+            }
+            fprintf(stderr, "GPU-INIT: vram=%ldG gtt=%ldG\n", vram_gb,
+                    gtt_gb);
+            /* Small BIOS carve-outs (<2 GiB) rely on GTT-backed device
+               allocations whose ROCm support is recent; older userspace
+               misplaces kernarg/pinned structures and silently returns
+               garbage kernel results on APUs. */
+            if (vram_gb >= 0 && vram_gb < 2)
+                fprintf(stderr,
+                        "GPU-INIT: WARNING small VRAM carve-out (%ldG); "
+                        "if GPU results look corrupt raise UMA Frame "
+                        "Buffer to >=4G in BIOS\n",
+                        vram_gb);
+        }
+    }
     if (g_device_integrated != 0) {
         CHECK_HIP(hipMallocManaged(&d_avdw_lin, grid_bytes));
         CHECK_HIP(hipMallocManaged(&d_bvdw_lin, grid_bytes));
@@ -592,27 +723,27 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     }
     g_grids_copied_to_linear = 0;
 
-    CHECK_HIP(hipMalloc(&d_vdwA,     sizeof(float) * GPU_MAX_ATOMS));
-    CHECK_HIP(hipMalloc(&d_vdwB,     sizeof(float) * GPU_MAX_ATOMS));
-    CHECK_HIP(hipMalloc(&d_charges,  sizeof(float) * GPU_MAX_ATOMS));
-    CHECK_HIP(hipMalloc(&d_ie_vdwA,  sizeof(float) * GPU_MAX_ATOMS));
-    CHECK_HIP(hipMalloc(&d_active_flags, sizeof(int) * GPU_MAX_ATOMS));
-    CHECK_HIP(hipMalloc(&d_pair_starts,  sizeof(int) * (GPU_MAX_ATOMS + 1)));
-    CHECK_HIP(hipMalloc(&d_pair_indices, sizeof(int) * GPU_MAX_NB_PAIRS));
-    for (int s = 0; s < 2; s++) CHECK_HIP(hipMalloc(&d_xyz[s],  sizeof(float) * (size_t)GPU_MAX_POSES * GPU_MAX_ATOMS * 3));
-    for (int s = 0; s < 2; s++) CHECK_HIP(hipMalloc(&d_scores[s], sizeof(float) * GPU_MAX_POSES));
+    CHECK_HIP(hipMalloc(&d_vdwA,     sizeof(float) * g_gpu_cap_atoms));
+    CHECK_HIP(hipMalloc(&d_vdwB,     sizeof(float) * g_gpu_cap_atoms));
+    CHECK_HIP(hipMalloc(&d_charges,  sizeof(float) * g_gpu_cap_atoms));
+    CHECK_HIP(hipMalloc(&d_ie_vdwA,  sizeof(float) * g_gpu_cap_atoms));
+    CHECK_HIP(hipMalloc(&d_active_flags, sizeof(int) * g_gpu_cap_atoms));
+    CHECK_HIP(hipMalloc(&d_pair_starts,  sizeof(int) * (g_gpu_cap_atoms + 1)));
+    CHECK_HIP(hipMalloc(&d_pair_indices, sizeof(int) * g_gpu_cap_nb_pairs));
+    for (int s = 0; s < 2; s++) CHECK_HIP(hipMalloc(&d_xyz[s],  sizeof(float) * (size_t)g_gpu_cap_poses * g_gpu_cap_atoms * 3));
+    for (int s = 0; s < 2; s++) CHECK_HIP(hipMalloc(&d_scores[s], sizeof(float) * g_gpu_cap_poses));
     for (int s = 0; s < 2; s++) CHECK_HIP(hipMalloc(&d_pose_counter[s], sizeof(unsigned int)));
 
     /* Multi-ligand VS LUT: per-ligand param tables + per-ligand pair tables */
-    const size_t vs_lig_bytes = sizeof(float) * (size_t)GPU_MAX_LUT_LIGANDS * GPU_MAX_ATOMS;
+    const size_t vs_lig_bytes = sizeof(float) * (size_t)g_gpu_cap_lut_ligands * g_gpu_cap_atoms;
     CHECK_HIP(hipMalloc(&d_lut_vdwA,        vs_lig_bytes));
     CHECK_HIP(hipMalloc(&d_lut_vdwB,        vs_lig_bytes));
     CHECK_HIP(hipMalloc(&d_lut_charges,     vs_lig_bytes));
     CHECK_HIP(hipMalloc(&d_lut_ie_vdwA,     vs_lig_bytes));
-    CHECK_HIP(hipMalloc(&d_lut_active_flags, sizeof(int) * (size_t)GPU_MAX_LUT_LIGANDS * GPU_MAX_ATOMS));
-CHECK_HIP(hipMalloc(&d_lut_pair_starts,  sizeof(int) * (size_t)GPU_MAX_LUT_LIGANDS * (GPU_MAX_ATOMS + 1)));
-    CHECK_HIP(hipMalloc(&d_lut_pair_indices, sizeof(int) * (size_t)GPU_MAX_LUT_LIGANDS * GPU_LUT_MAX_PAIRS));
-    for (int s = 0; s < 2; s++) CHECK_HIP(hipMalloc(&d_pose_lig[s],        sizeof(int) * GPU_MAX_POSES));
+    CHECK_HIP(hipMalloc(&d_lut_active_flags, sizeof(int) * (size_t)g_gpu_cap_lut_ligands * g_gpu_cap_atoms));
+CHECK_HIP(hipMalloc(&d_lut_pair_starts,  sizeof(int) * (size_t)g_gpu_cap_lut_ligands * (g_gpu_cap_atoms + 1)));
+    CHECK_HIP(hipMalloc(&d_lut_pair_indices, sizeof(int) * (size_t)g_gpu_cap_lut_ligands * g_gpu_lut_max_pairs));
+    for (int s = 0; s < 2; s++) CHECK_HIP(hipMalloc(&d_pose_lig[s],        sizeof(int) * g_gpu_cap_poses));
 
     /* Async pipeline: per-stream background streams + pinned staging
        ring.  Ring depth scales with the device (4 CUs -> 4 slots, a
@@ -630,13 +761,13 @@ CHECK_HIP(hipMalloc(&d_lut_pair_starts,  sizeof(int) * (size_t)GPU_MAX_LUT_LIGAN
     }
     for (int i = 0; i < g_ring_count; i++) {
         CHECK_HIP(hipHostMalloc(&g_pin_xyz[i],
-                                sizeof(float) * (size_t)GPU_MAX_POSES * GPU_MAX_ATOMS * 3,
+                                sizeof(float) * (size_t)g_gpu_cap_poses * g_gpu_cap_atoms * 3,
                                 hipHostMallocDefault));
         CHECK_HIP(hipHostMalloc(&g_pin_lig[i],
-                                sizeof(int) * (size_t)GPU_MAX_POSES,
+                                sizeof(int) * (size_t)g_gpu_cap_poses,
                                 hipHostMallocDefault));
         CHECK_HIP(hipHostMalloc(&g_pin_score[i],
-                                sizeof(float) * (size_t)GPU_MAX_POSES,
+                                sizeof(float) * (size_t)g_gpu_cap_poses,
                                 hipHostMallocDefault));
         g_pin_busy[i] = 0;
     }
@@ -653,8 +784,8 @@ int dock_gpu_set_ligand(const float *vdwA, const float *vdwB,
                         const float *charges, int num_atoms)
 {
     if (!g_initialized) return 0;
-    if (num_atoms <= 0 || num_atoms > GPU_MAX_ATOMS) {
-        fprintf(stderr, "HIP: invalid num_atoms %d (max %d)\n", num_atoms, GPU_MAX_ATOMS);
+    if (num_atoms <= 0 || num_atoms > g_gpu_cap_atoms) {
+        fprintf(stderr, "HIP: invalid num_atoms %d (max %d)\n", num_atoms, g_gpu_cap_atoms);
         return 0;
     }
     const size_t bytes = sizeof(float) * (size_t)num_atoms;
@@ -675,8 +806,8 @@ int dock_gpu_set_ligand_ie(const float *ie_vdwA, const float *ie_vdwB,
 {
     (void)ie_vdwB;
     if (!g_initialized) return 0;
-    if (num_nb_pairs > GPU_MAX_NB_PAIRS) {
-        fprintf(stderr, "HIP: num_nb_pairs %d exceeds max %d\n", num_nb_pairs, GPU_MAX_NB_PAIRS);
+    if (num_nb_pairs > g_gpu_cap_nb_pairs) {
+        fprintf(stderr, "HIP: num_nb_pairs %d exceeds max %d\n", num_nb_pairs, g_gpu_cap_nb_pairs);
         return 0;
     }
 
@@ -730,7 +861,7 @@ int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
                          const int *active_flags, float *out_scores)
 {
     if (!g_initialized) return 0;
-    if (num_poses > GPU_MAX_POSES || num_atoms > GPU_MAX_ATOMS) return 0;
+    if (num_poses > g_gpu_cap_poses || num_atoms > g_gpu_cap_atoms) return 0;
 
     const size_t xyz_bytes = sizeof(float) * (size_t)num_poses * (size_t)num_atoms * 3;
     CHECK_HIP(hipMemcpy(d_xyz[0], xyz, xyz_bytes, hipMemcpyHostToDevice));
@@ -779,7 +910,7 @@ int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses, int
                                             const int *active_flags, float *out_scores)
 {
     if (!g_initialized || g_num_nb_pairs == 0) return 0;
-    if (num_poses > GPU_MAX_POSES || num_atoms > GPU_MAX_ATOMS) return 0;
+    if (num_poses > g_gpu_cap_poses || num_atoms > g_gpu_cap_atoms) return 0;
 
     const size_t xyz_bytes = sizeof(float) * (size_t)num_poses * (size_t)num_atoms * 3;
     CHECK_HIP(hipMemcpy(d_xyz[0], xyz, xyz_bytes, hipMemcpyHostToDevice));
@@ -834,17 +965,17 @@ int dock_gpu_vs_register_ligand(int lig_idx,
                                 float ie_soft_delta, float ie_cutoff_sq)
 {
     if (!g_initialized) return 0;
-    if (lig_idx < 0 || lig_idx >= GPU_MAX_LUT_LIGANDS) return 0;
-    if (num_atoms <= 0 || num_atoms > GPU_MAX_ATOMS) return 0;
-    if (num_nb_pairs > GPU_LUT_MAX_PAIRS) return 0;
+    if (lig_idx < 0 || lig_idx >= g_gpu_cap_lut_ligands) return 0;
+    if (num_atoms <= 0 || num_atoms > g_gpu_cap_atoms) return 0;
+    if (num_nb_pairs > g_gpu_lut_max_pairs) return 0;
 
     /* The LUT is shared by both streams: drain any in-flight stream-2
        (GPU2 screen) batches before rewriting the ligand row. */
     dock_gpu_batch_score_sync2();
 
     const size_t row_bytes = sizeof(float) * (size_t)num_atoms;
-    const size_t row_off = (size_t)lig_idx * GPU_MAX_ATOMS;
-    const int    lig_off = lig_idx * GPU_MAX_ATOMS;
+    const size_t row_off = (size_t)lig_idx * g_gpu_cap_atoms;
+    const int    lig_off = lig_idx * g_gpu_cap_atoms;
     CHECK_HIP(hipMemcpy(d_lut_vdwA + row_off, vdwA, row_bytes, hipMemcpyHostToDevice));
     CHECK_HIP(hipMemcpy(d_lut_vdwB + row_off, vdwB, row_bytes, hipMemcpyHostToDevice));
     CHECK_HIP(hipMemcpy(d_lut_charges + row_off, charges, row_bytes, hipMemcpyHostToDevice));
@@ -863,7 +994,7 @@ int dock_gpu_vs_register_ligand(int lig_idx,
        atom count across the window, so shorter ligands would otherwise
        score stale (previous row owner / first-use garbage) flags and
        per-atom parameters in every pose's unused tail. */
-    const size_t tail_cnt = (size_t)(GPU_MAX_ATOMS - num_atoms);
+    const size_t tail_cnt = (size_t)(g_gpu_cap_atoms - num_atoms);
     if (tail_cnt > 0) {
         CHECK_HIP(hipMemset(d_lut_active_flags + lig_off + num_atoms, 0,
                             sizeof(int) * tail_cnt));
@@ -875,7 +1006,7 @@ int dock_gpu_vs_register_ligand(int lig_idx,
             CHECK_HIP(hipMemset(d_lut_ie_vdwA + row_off + num_atoms, 0, tail_bytes));
         }
         CHECK_HIP(hipMemset(d_lut_pair_starts + lig_off + num_atoms + 1, 0,
-                            sizeof(int) * (size_t)(GPU_MAX_ATOMS + 1 - num_atoms)));
+                            sizeof(int) * (size_t)(g_gpu_cap_atoms + 1 - num_atoms)));
     }
 
     /* CS-per-atom pair index so the kernel can iterate pairs with
@@ -895,8 +1026,8 @@ int dock_gpu_vs_register_ligand(int lig_idx,
     }
     starts[num_atoms] = total;
 
-    std::vector<int> indices(GPU_LUT_MAX_PAIRS, -1);
-    int cap = total < GPU_LUT_MAX_PAIRS ? total : GPU_LUT_MAX_PAIRS;
+    std::vector<int> indices(g_gpu_lut_max_pairs, -1);
+    int cap = total < g_gpu_lut_max_pairs ? total : g_gpu_lut_max_pairs;
     for (int p = 0; p < num_nb_pairs && cap > 0; p++) {
         int a1 = nb_int_pairs[p*2];
         int a2 = nb_int_pairs[p*2+1];
@@ -905,9 +1036,9 @@ int dock_gpu_vs_register_ligand(int lig_idx,
 
     CHECK_HIP(hipMemcpy(d_lut_pair_starts + lig_off, starts.data(),
                         sizeof(int) * (size_t)(num_atoms + 1), hipMemcpyHostToDevice));
-    size_t pair_off = (size_t)lig_idx * GPU_LUT_MAX_PAIRS;
+    size_t pair_off = (size_t)lig_idx * g_gpu_lut_max_pairs;
     CHECK_HIP(hipMemcpy(d_lut_pair_indices + pair_off, indices.data(),
-                        sizeof(int) * (size_t)GPU_LUT_MAX_PAIRS, hipMemcpyHostToDevice));
+                        sizeof(int) * (size_t)g_gpu_lut_max_pairs, hipMemcpyHostToDevice));
 
     if (lig_idx + 1 > g_num_lut_ligands) g_num_lut_ligands = lig_idx + 1;
     return 1;
@@ -917,18 +1048,18 @@ int dock_gpu_vs_update_active_flags(int lig_idx, const int *active_flags,
                                     int num_atoms)
 {
     if (!g_initialized) return 0;
-    if (lig_idx < 0 || lig_idx >= GPU_MAX_LUT_LIGANDS) return 0;
-    if (num_atoms <= 0 || num_atoms > GPU_MAX_ATOMS) return 0;
+    if (lig_idx < 0 || lig_idx >= g_gpu_cap_lut_ligands) return 0;
+    if (num_atoms <= 0 || num_atoms > g_gpu_cap_atoms) return 0;
 
     /* The LUT is shared by both streams: drain any in-flight stream-2
        (GPU2 screen) batches before rewriting the ligand row. */
     dock_gpu_batch_score_sync2();
 
-    const int lig_off = lig_idx * GPU_MAX_ATOMS;
+    const int lig_off = lig_idx * g_gpu_cap_atoms;
     CHECK_HIP(hipMemcpy(d_lut_active_flags + lig_off, active_flags,
                         sizeof(int) * (size_t)num_atoms,
                         hipMemcpyHostToDevice));
-    const size_t tail_cnt = (size_t)(GPU_MAX_ATOMS - num_atoms);
+    const size_t tail_cnt = (size_t)(g_gpu_cap_atoms - num_atoms);
     if (tail_cnt > 0) {
         CHECK_HIP(hipMemset(d_lut_active_flags + lig_off + num_atoms, 0,
                             sizeof(int) * tail_cnt));
@@ -938,14 +1069,14 @@ int dock_gpu_vs_update_active_flags(int lig_idx, const int *active_flags,
 
 int dock_gpu_vs_max_ligands(void)
 {
-    return GPU_MAX_LUT_LIGANDS;
+    return g_gpu_cap_lut_ligands;
 }
 
 int dock_gpu_batch_score_vs(const float *xyz, int num_poses, int num_atoms,
                             const int *pose_lig, float *out_scores)
 {
     if (!g_initialized || g_num_lut_ligands == 0) return 0;
-    if (num_poses > GPU_MAX_POSES || num_atoms > GPU_MAX_ATOMS) return 0;
+    if (num_poses > g_gpu_cap_poses || num_atoms > g_gpu_cap_atoms) return 0;
 
     long long t0 = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -986,7 +1117,7 @@ int dock_gpu_batch_score_vs_grid(const float *xyz, int num_poses,
                                   float *out_scores)
 {
     if (!g_initialized || g_num_lut_ligands == 0) return 0;
-    if (num_poses > GPU_MAX_POSES || num_atoms > GPU_MAX_ATOMS) return 0;
+    if (num_poses > g_gpu_cap_poses || num_atoms > g_gpu_cap_atoms) return 0;
 
     long long t0 = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -1051,7 +1182,7 @@ static int vs_enqueue_internal(const float *xyz, int num_poses,
                                float *out_scores, int grid_only, int sid)
 {
     if (!g_initialized || g_num_lut_ligands == 0) return 0;
-    if (num_poses > GPU_MAX_POSES || num_atoms > GPU_MAX_ATOMS) return 0;
+    if (num_poses > g_gpu_cap_poses || num_atoms > g_gpu_cap_atoms) return 0;
     {
         /* Test hook: shrink the queue to force the drain-on-full path
            (DOCK_LBAL_MAX_PENDING=1 exercises it on every other call). */
@@ -1229,20 +1360,20 @@ int dock_gpu_vs_update_pairs(int lig_idx, const float *ie_vdwA,
                              int num_atoms)
 {
     if (!g_initialized) return 0;
-    if (lig_idx < 0 || lig_idx >= GPU_MAX_LUT_LIGANDS) return 0;
-    if (num_atoms <= 0 || num_atoms > GPU_MAX_ATOMS) return 0;
-    if (num_nb_pairs > GPU_LUT_MAX_PAIRS) return 0;
+    if (lig_idx < 0 || lig_idx >= g_gpu_cap_lut_ligands) return 0;
+    if (num_atoms <= 0 || num_atoms > g_gpu_cap_atoms) return 0;
+    if (num_nb_pairs > g_gpu_lut_max_pairs) return 0;
 
     /* The LUT is shared by both streams: drain any in-flight stream-2
        (GPU2 screen) batches before rewriting the ligand row. */
     dock_gpu_batch_score_sync2();
 
     /* Upload new IE parameters */
-    const size_t row_off = (size_t)lig_idx * GPU_MAX_ATOMS;
+    const size_t row_off = (size_t)lig_idx * g_gpu_cap_atoms;
     CHECK_HIP(hipMemcpy(d_lut_ie_vdwA + row_off, ie_vdwA,
                         sizeof(float) * (size_t)num_atoms,
                         hipMemcpyHostToDevice));
-    const size_t tail_bytes = sizeof(float) * (size_t)(GPU_MAX_ATOMS - num_atoms);
+    const size_t tail_bytes = sizeof(float) * (size_t)(g_gpu_cap_atoms - num_atoms);
     if (tail_bytes > 0) {
         CHECK_HIP(hipMemset(d_lut_ie_vdwA + row_off + num_atoms, 0, tail_bytes));
     }
@@ -1263,20 +1394,20 @@ int dock_gpu_vs_update_pairs(int lig_idx, const float *ie_vdwA,
     }
     starts[num_atoms] = total;
 
-    std::vector<int> indices(GPU_LUT_MAX_PAIRS, -1);
-    int cap = total < GPU_LUT_MAX_PAIRS ? total : GPU_LUT_MAX_PAIRS;
+    std::vector<int> indices(g_gpu_lut_max_pairs, -1);
+    int cap = total < g_gpu_lut_max_pairs ? total : g_gpu_lut_max_pairs;
     for (int p = 0; p < num_nb_pairs && cap > 0; p++) {
         int a1 = nb_int_pairs[p*2];
         int a2 = nb_int_pairs[p*2+1];
         if (a1 >= 0 && a1 < num_atoms && offsets[a1] < cap) indices[offsets[a1]++] = a2;
     }
 
-    const int lig_off = lig_idx * GPU_MAX_ATOMS;
+    const int lig_off = lig_idx * g_gpu_cap_atoms;
     CHECK_HIP(hipMemcpy(d_lut_pair_starts + lig_off, starts.data(),
                         sizeof(int) * (size_t)(num_atoms + 1), hipMemcpyHostToDevice));
-    size_t pair_off = (size_t)lig_idx * GPU_LUT_MAX_PAIRS;
+    size_t pair_off = (size_t)lig_idx * g_gpu_lut_max_pairs;
     CHECK_HIP(hipMemcpy(d_lut_pair_indices + pair_off, indices.data(),
-                        sizeof(int) * (size_t)GPU_LUT_MAX_PAIRS, hipMemcpyHostToDevice));
+                        sizeof(int) * (size_t)g_gpu_lut_max_pairs, hipMemcpyHostToDevice));
 
     return 1;
 }
@@ -1284,25 +1415,25 @@ int dock_gpu_vs_update_pairs(int lig_idx, const float *ie_vdwA,
 int dock_gpu_vs_dump_pairs(int lig_idx, int *out_pairs, int max_out)
 {
     if (!g_initialized) return -1;
-    if (lig_idx < 0 || lig_idx >= GPU_MAX_LUT_LIGANDS) return -1;
+    if (lig_idx < 0 || lig_idx >= g_gpu_cap_lut_ligands) return -1;
 
     /* Drain streams before reading to ensure we see the latest pair table. */
     dock_gpu_batch_score_sync();
     dock_gpu_batch_score_sync2();
 
-    std::vector<int> pair_starts(GPU_MAX_ATOMS + 1);
-    std::vector<int> pair_indices(GPU_LUT_MAX_PAIRS);
+    std::vector<int> pair_starts(g_gpu_cap_atoms + 1);
+    std::vector<int> pair_indices(g_gpu_lut_max_pairs);
 
-    int lig_off = lig_idx * GPU_MAX_ATOMS;
+    int lig_off = lig_idx * g_gpu_cap_atoms;
     CHECK_HIP(hipMemcpy(pair_starts.data(), d_lut_pair_starts + lig_off,
-                        sizeof(int) * (GPU_MAX_ATOMS + 1), hipMemcpyDeviceToHost));
+                        sizeof(int) * (g_gpu_cap_atoms + 1), hipMemcpyDeviceToHost));
 
-    size_t pair_off = (size_t)lig_idx * GPU_LUT_MAX_PAIRS;
+    size_t pair_off = (size_t)lig_idx * g_gpu_lut_max_pairs;
     CHECK_HIP(hipMemcpy(pair_indices.data(), d_lut_pair_indices + pair_off,
-                        sizeof(int) * GPU_LUT_MAX_PAIRS, hipMemcpyDeviceToHost));
+                        sizeof(int) * g_gpu_lut_max_pairs, hipMemcpyDeviceToHost));
 
     int total = 0;
-    for (int a = 0; a < GPU_MAX_ATOMS; a++) {
+    for (int a = 0; a < g_gpu_cap_atoms; a++) {
         int start = pair_starts[a];
         int end = pair_starts[a + 1];
         for (int p = start; p < end; p++) {
@@ -1377,7 +1508,7 @@ int dock_gpu_recommended_batch_size(void)
 {
     if (!g_initialized) return 128;
     int size = g_compute_units * 16;
-    int cap = GPU_MAX_POSES / 2;
+    int cap = g_gpu_cap_poses / 2;
     if (size > cap) size = cap;
     if (size < 32) size = 32;
     return size;
