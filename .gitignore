@@ -40,3 +40,8 @@ project.log
 benchmarks/
 src/dock/dock6.hip
 src/dock/dock6.cpu
+src/dock/dock6
+src/dock/dock6.cpu
+src/dock/dock6.hip
+src/dock/*.log
+src/dock/*.out
