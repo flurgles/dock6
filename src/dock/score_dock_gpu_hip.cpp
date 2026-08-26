@@ -27,6 +27,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
+#include <malloc.h>
 #include <glob.h>
 #include <vector>
 #define GPU_MAX_POSES       4096
@@ -55,6 +56,41 @@ static int g_gpu_lut_max_pairs  = GPU_LUT_MAX_PAIRS;
 static int clampi(int v, int lo, int hi)
 {
     return v < lo ? lo : (v > hi ? hi : v);
+}
+
+/* Early environment setup that MUST run before the HSA/ROCr runtime is
+   loaded.  Doing this from a __attribute__((constructor)) (executed at load
+   time, before libhsa is first touched) is the documented, supported pattern:
+   the GCC GCN/OpenMP runtime does exactly this (sourceware.org, Andrew Stubbs)
+   and notes the variable "must be set before the HSA runtime is even loaded".
+   On ROCm/HMM a GPU touch of a non-resident unified page hard-faults
+   ("Page not present") unless retry-capable page migration is enabled, which
+   is what HSA_XNACK=1 provides.  We never override a value the user already
+   set; DOCK_NO_XNACK=1 opts out entirely. */
+__attribute__((constructor))
+static void dock_hip_early_env(void)
+{
+    const char *cur = getenv("HSA_XNACK");
+    if (cur == NULL && getenv("DOCK_NO_XNACK") == NULL) {
+        setenv("HSA_XNACK", "1", 0);
+    } else if (cur != NULL && cur[0] == '0' && cur[1] == '\0'
+               && getenv("DOCK_NO_XNACK") == NULL) {
+        fprintf(stderr, "GPU-INIT: WARNING HSA_XNACK=0 on a ROCm/HMM system; "
+                        "managed-memory GPU access may hard-fault\n");
+    }
+    /* Cap glibc malloc arenas at 1.  With the default policy (up to
+       8*ncores arenas) every thread that ever allocates — main, the
+       ConformerPool pack workers and ROCm's internal helper threads —
+       gets its own heap segment whose high-water mark is never returned
+       to the OS.  During VS growth rounds (many small alloc/free bursts
+       spread across threads) the summed per-arena retention looked like
+       a ~35MB/s RSS runaway on Steam Deck and OOM-killed long VS runs;
+       system GTT stayed flat throughout, proving it was host-side.
+       A single shared arena bounds retention with no semantic change.
+       DOCK_KEEP_MALLOC_ARENAS=1 restores the default policy. */
+    if (getenv("DOCK_KEEP_MALLOC_ARENAS") == NULL) {
+        mallopt(M_ARENA_MAX, 1);
+    }
 }
 
 #define CHECK_HIP(expr) do {                                               \
@@ -532,9 +568,26 @@ static void hip_ensure_grids_copied_to_linear(const float *avdw, const float *bv
     if (g_grids_copied_to_linear) return;
     size_t grid_elems = (size_t)span_x * (size_t)span_y * (size_t)span_z;
     size_t grid_bytes = grid_elems * sizeof(float);
+    /* Serial upload: blocking copies, then a full device sync so every
+       page of the grids is resident and all copy work is retired before
+       the first scoring kernel runs. */
     CHECK_HIP(hipMemcpy(d_avdw_lin, avdw, grid_bytes, hipMemcpyHostToDevice));
     CHECK_HIP(hipMemcpy(d_bvdw_lin, bvdw, grid_bytes, hipMemcpyHostToDevice));
     CHECK_HIP(hipMemcpy(d_es_lin, es, grid_bytes, hipMemcpyHostToDevice));
+    CHECK_HIP(hipDeviceSynchronize());
+    /* Warm the managed grids into device-local memory so the first scoring
+       kernels don't pay the cold-start page-fault penalty.  AMD HIP unified
+       memory guidance: prefetch during init (hipMemPrefetchAsync) rather than
+       faulting on demand.  Only meaningful for managed (integrated) grids;
+       device-local allocations need no migration. */
+    if (g_device_integrated != 0) {
+        int dev = 0;
+        (void)hipGetDevice(&dev);
+        CHECK_HIP(hipMemPrefetchAsync(d_avdw_lin, grid_bytes, dev, 0));
+        CHECK_HIP(hipMemPrefetchAsync(d_bvdw_lin, grid_bytes, dev, 0));
+        CHECK_HIP(hipMemPrefetchAsync(d_es_lin,   grid_bytes, dev, 0));
+        CHECK_HIP(hipDeviceSynchronize());
+    }
     g_grids_copied_to_linear = 1;
 }
 
@@ -552,6 +605,8 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     if (g_initialized) return 1;
     if (getenv("DOCK_GPU_INIT_DEBUG"))
         fprintf(stderr, "GPU-INIT: attempt begin\n");
+    /* HSA_XNACK (if needed) is set by dock_hip_early_env(), a constructor
+       that runs before ROCr loads — setting it here would be too late. */
     /* gfx1033 (Van Gogh / Steam Deck; PCI device 0x163f) intermittently
        deadlocks the SDMA engine on host->device copies.  Auto-apply the
        copy-engine workaround on affected silicon before ROCm starts;
@@ -683,6 +738,9 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
         fprintf(stderr, "GPU-INIT: HSA_ENABLE_SDMA=%s\n",
                 getenv("HSA_ENABLE_SDMA") ? getenv("HSA_ENABLE_SDMA")
                                           : "(unset)");
+        fprintf(stderr, "GPU-INIT: HSA_XNACK=%s (set early by constructor if '(unset)')\n",
+                getenv("HSA_XNACK") ? getenv("HSA_XNACK")
+                                   : "(unset)");
         {
             long vram_gb = -1, gtt_gb = -1;
             FILE *mf = fopen(
@@ -712,6 +770,11 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
                         vram_gb);
         }
     }
+    /* Grids in unified memory on APUs (no dedicated VRAM to exploit,
+       and the local-pool path is fragile under small BIOS carve-outs);
+       explicit device memory on discrete GPUs.  All other buffers stay
+       in the device-local pool: moving them to managed memory regressed
+       1HPS back to hard GPU page faults on this ROCm. */
     if (g_device_integrated != 0) {
         CHECK_HIP(hipMallocManaged(&d_avdw_lin, grid_bytes));
         CHECK_HIP(hipMallocManaged(&d_bvdw_lin, grid_bytes));
@@ -770,6 +833,47 @@ CHECK_HIP(hipMalloc(&d_lut_pair_starts,  sizeof(int) * (size_t)g_gpu_cap_lut_lig
                                 sizeof(float) * (size_t)g_gpu_cap_poses,
                                 hipHostMallocDefault));
         g_pin_busy[i] = 0;
+    }
+    if (getenv("DOCK_GPU_OOB_DEBUG")) {
+        size_t freeB = 0, totalB = 0;
+        hipMemGetInfo(&freeB, &totalB);
+        fprintf(stderr, "GPU-OOB: mem free=%zu total=%zu cap_poses=%d cap_atoms=%d "
+                "cap_nb_pairs=%d lut_ligands=%d lut_max_pairs=%d grid_bytes=%zu\n",
+                freeB, totalB, g_gpu_cap_poses, g_gpu_cap_atoms, g_gpu_cap_nb_pairs,
+                g_gpu_cap_lut_ligands, g_gpu_lut_max_pairs, grid_bytes);
+        fprintf(stderr, "GPU-OOB: d_avdw_lin=%p d_bvdw_lin=%p d_es_lin=%p (each %zu)\n",
+                (void*)d_avdw_lin, (void*)d_bvdw_lin, (void*)d_es_lin, grid_bytes);
+        fprintf(stderr, "GPU-OOB: d_xyz[0]=%p d_xyz[1]=%p size=%zu\n",
+                (void*)d_xyz[0], (void*)d_xyz[1],
+                (size_t)g_gpu_cap_poses*g_gpu_cap_atoms*3*sizeof(float));
+        fprintf(stderr, "GPU-OOB: d_scores[0]=%p d_scores[1]=%p size=%zu\n",
+                (void*)d_scores[0], (void*)d_scores[1],
+                (size_t)g_gpu_cap_poses*sizeof(float));
+        fprintf(stderr, "GPU-OOB: d_pair_indices=%p size=%zu  d_pair_starts=%p size=%zu\n",
+                (void*)d_pair_indices, (size_t)g_gpu_cap_nb_pairs*sizeof(int),
+                (void*)d_pair_starts, (size_t)(g_gpu_cap_atoms+1)*sizeof(int));
+        fprintf(stderr, "GPU-OOB: d_lut_pair_indices=%p size=%zu  d_lut_pair_starts=%p size=%zu\n",
+                (void*)d_lut_pair_indices,
+                (size_t)g_gpu_cap_lut_ligands*g_gpu_lut_max_pairs*sizeof(int),
+                (void*)d_lut_pair_starts,
+                (size_t)g_gpu_cap_lut_ligands*(g_gpu_cap_atoms+1)*sizeof(int));
+        fprintf(stderr, "GPU-OOB: d_lut_vdwA=%p d_lut_active_flags=%p sizeA=%zu\n",
+                (void*)d_lut_vdwA, (void*)d_lut_active_flags,
+                (size_t)g_gpu_cap_lut_ligands*g_gpu_cap_atoms*sizeof(float));
+        fprintf(stderr, "GPU-OOB: d_lut_vdwB=%p d_lut_charges=%p d_lut_ie_vdwA=%p\n",
+                (void*)d_lut_vdwB, (void*)d_lut_charges, (void*)d_lut_ie_vdwA);
+        fprintf(stderr, "GPU-OOB: d_vdwA=%p d_vdwB=%p d_charges=%p d_ie_vdwA=%p d_active_flags=%p sizeA=%zu\n",
+                (void*)d_vdwA, (void*)d_vdwB, (void*)d_charges,
+                (void*)d_ie_vdwA, (void*)d_active_flags,
+                (size_t)g_gpu_cap_atoms*sizeof(float));
+        fprintf(stderr, "GPU-OOB: d_pose_lig[0]=%p d_pose_lig[1]=%p size=%zu\n",
+                (void*)d_pose_lig[0], (void*)d_pose_lig[1],
+                (size_t)g_gpu_cap_poses*sizeof(int));
+        fprintf(stderr, "GPU-OOB: d_pose_counter[0]=%p d_pose_counter[1]=%p\n",
+                (void*)d_pose_counter[0], (void*)d_pose_counter[1]);
+        fprintf(stderr, "GPU-OOB: g_pin_xyz[0]=%p g_pin_lig[0]=%p g_pin_score[0]=%p size_xyz=%zu\n",
+                (void*)g_pin_xyz[0], (void*)g_pin_lig[0], (void*)g_pin_score[0],
+                (size_t)g_gpu_cap_poses*g_gpu_cap_atoms*3*sizeof(float));
     }
     g_host_ms_ema = 1.0;
     g_gpu_ms_ema = 1.0;
@@ -1118,6 +1222,15 @@ int dock_gpu_batch_score_vs_grid(const float *xyz, int num_poses,
 {
     if (!g_initialized || g_num_lut_ligands == 0) return 0;
     if (num_poses > g_gpu_cap_poses || num_atoms > g_gpu_cap_atoms) return 0;
+    if (getenv("DOCK_GPU_OOB_DEBUG")) {
+        for (int _oob_i = 0; _oob_i < num_poses; _oob_i++) {
+            if (pose_lig[_oob_i] < 0 || pose_lig[_oob_i] >= g_num_lut_ligands) {
+                fprintf(stderr, "GPU-OOB: pose_lig[%d]=%d (g_num_lut_ligands=%d) num_poses=%d\n",
+                        _oob_i, pose_lig[_oob_i], g_num_lut_ligands, num_poses);
+                break;
+            }
+        }
+    }
 
     long long t0 = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();

@@ -1469,6 +1469,45 @@ copy_molecule(DOCKMol & target, const DOCKMol & original)
 //
 //}
 /**********************************************************************/
+/*  copy_molecule_coords_only — refresh only the fields that vary
+    between torsion variants of the same seed molecule: coordinates,
+    atom/bond active flags, active counts and the per-variant scalars.
+    All typing/topology arrays (atom types, names, charges, bonds,
+    amber torsion tables, neighbor lists, ...) are assumed IDENTICAL by
+    construction; when they are not (dimension mismatch or unallocated
+    target) this falls back to a full copy_molecule.  This avoids the
+    per-variant vector< vector > reassignments and string copies whose
+    heap churn fragments the arena in the VS growth loop.            */
+void
+copy_molecule_coords_only(DOCKMol & target, const DOCKMol & original)
+{
+    int             i;
+
+    if (!target.arrays_allocated ||
+        target.num_atoms != original.num_atoms ||
+        target.num_bonds != original.num_bonds ||
+        target.num_residues != original.num_residues) {
+        copy_molecule(target, original);
+        return;
+    }
+
+    for (i = 0; i < original.num_atoms; i++) {
+        target.x[i] = original.x[i];
+        target.y[i] = original.y[i];
+        target.z[i] = original.z[i];
+        target.atom_active_flags[i] = original.atom_active_flags[i];
+    }
+    for (i = 0; i < original.num_bonds; i++)
+        target.bond_active_flags[i] = original.bond_active_flags[i];
+
+    target.num_active_atoms  = original.num_active_atoms;
+    target.num_active_bonds  = original.num_active_bonds;
+    target.grid_num          = original.grid_num;
+    target.energy            = original.energy;
+    target.internal_energy   = original.internal_energy;
+}
+
+/**********************************************************************/
 void
 copy_molecule_shallow(DOCKMol & target, const DOCKMol & original)
 {

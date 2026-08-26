@@ -24,6 +24,8 @@ implements the score_dock_gpu.h API.
 #define CONFORMER_POOL_H
 
 #include <vector>
+#include <thread>
+#include <atomic>
 #include "minimizer.h"
 #include "score_dock_gpu.h"
 
@@ -292,6 +294,23 @@ private:
     int                     m_slot_base[4096]; // per-slot score offset (set by enqueue, used by finish)
     bool                    m_lbal_fail = false;  // async enqueue failed this step
     long long               m_lbal_t0 = 0;        // step start marker (host-phase timing)
+
+    // Persistent packing workers (VS mode).  Spawning/joining up to 8
+    // std::threads per step churned thread stacks through glibc every
+    // simplex round and grew RSS ~10MB/s under long VS runs.  Workers are
+    // spawned once on the first parallel step, park on a spin barrier
+    // between rounds and are joined in the destructor.
+    std::vector<std::thread> m_pack_workers;
+    std::atomic<int>         m_pw_next{0};      // next PackItem index to grab
+    std::atomic<int>         m_pw_todo{0};      // items remaining this round
+    std::atomic<int>         m_pw_done{0};      // workers finished this round
+    std::atomic<int>         m_pw_gen{0};       // round id (-1 = shutdown)
+    int                      m_pw_seen_gen = 0; // worker-local last observed round
+    bool                     m_pw_active = false;
+    void pack_worker_loop();
+    void pack_parallel(int nitems);
+    struct PackItem { int si; int off; int end; };
+    std::vector<PackItem> m_pack_items;
 
     // Internal helpers
     int  step_legacy();  // non-VS whole-cycle dispatch (synchronous)

@@ -18,6 +18,7 @@ All GPU calls go through the score_dock_gpu.h C API.
 #include "dockmol.h"
 #include "master_score.h"
 #include <cstring>
+#include <malloc.h>
 #include <chrono>
 #include <thread>
 #include <atomic>
@@ -107,11 +108,21 @@ ConformerPool::ConformerPool(int batch_max, Minimizer* minimizer, bool use_gpu,
 {
     for (int i = 0; i < 4096; i++) m_slot_base[i] = -1;
     m_slots.reserve(batch_max);
+    m_pw_active = false;
+    m_pw_seen_gen = 0;
 }
 
 
 ConformerPool::~ConformerPool()
 {
+    /* Shut down persistent packing workers (gen < 0 is the exit flag). */
+    if (m_pw_active) {
+        m_pw_gen.store(-1, std::memory_order_release);
+        for (auto& th : m_pack_workers)
+            if (th.joinable()) th.join();
+        m_pack_workers.clear();
+        m_pw_active = false;
+    }
     for (auto& slot : m_slots) {
         if (slot.p) {
             for (int i = 0; i < slot.size + 1; i++) {
@@ -443,6 +454,82 @@ ConformerPool::step()
     return step_finish();
 }
 
+/*  Persistent packing workers                                        */
+/* ------------------------------------------------------------------ */
+/*  pack_worker_loop — worker body: spins waiting for a new round id
+    (m_pw_gen), grabs PackItem indices from m_pw_next and packs them.
+    gen == -1 shuts the worker down.                                   */
+
+void
+ConformerPool::pack_worker_loop()
+{
+    int seen = 0;
+    for (;;) {
+        int g = m_pw_gen.load(std::memory_order_acquire);
+        if (g < 0) return;
+        if (g == seen) { std::this_thread::yield(); continue; }
+        seen = g;
+        int idx;
+        while ((idx = m_pw_next.fetch_add(1)) < m_pw_todo.load()) {
+            PackItem& it = m_pack_items[(size_t)idx];
+            pack_slot(m_slots[it.si], it.off, it.end);
+        }
+        m_pw_done.fetch_add(1);
+    }
+}
+
+/*  pack_parallel — run one packing round over m_pack_items using the
+    persistent worker pool (spawned once, reused every round).  The main
+    thread packs too; workers park on generation changes between rounds. */
+
+void
+ConformerPool::pack_parallel(int nitems)
+{
+    if (nitems <= 0) return;
+
+    if (!m_pw_active) {
+        int nw = (int)std::thread::hardware_concurrency();
+        if (nw < 1) nw = 1;
+        if (nw > 8) nw = 8;
+        if (nitems <= 8) nw = 1;   /* tiny rounds don't need workers */
+        if (nw > 1) {
+            m_pack_workers.reserve((size_t)nw);
+            for (int t = 0; t < nw; t++)
+                m_pack_workers.emplace_back(&ConformerPool::pack_worker_loop, this);
+            m_pw_active = true;
+        } else {
+            m_pw_active = false;
+        }
+    }
+
+    if (!m_pw_active) {
+        /* Inline fallback: single-threaded pack. */
+        for (int idx = 0; idx < nitems; idx++) {
+            PackItem& it = m_pack_items[(size_t)idx];
+            pack_slot(m_slots[it.si], it.off, it.end);
+        }
+        return;
+    }
+
+    m_pw_todo.store(nitems);
+    m_pw_next.store(0);
+    m_pw_done.store(0);
+    m_pw_gen.fetch_add(1, std::memory_order_release);
+
+    /* Main thread packs as well. */
+    int idx;
+    while ((idx = m_pw_next.fetch_add(1)) < nitems) {
+        PackItem& it = m_pack_items[(size_t)idx];
+        pack_slot(m_slots[it.si], it.off, it.end);
+    }
+
+    /* Barrier: wait until every worker finished this round's items. */
+    while (m_pw_done.load() < (int)m_pack_workers.size())
+        std::this_thread::yield();
+}
+
+
+
 void
 ConformerPool::adapt_split_k()
 {
@@ -507,11 +594,14 @@ ConformerPool::step_enqueue()
        full capacity would overflow the buffers when k > 1. */
     int cap = m_dispatch_capacity / groups;
     if (cap < 1) cap = 1;
+    int incl[4096];
+    for (int si = 0; si < nact; si++) incl[si] = 0;
     for (int si = 0; si < nact; si++) {
         int g = si % groups;
         if (gtot[g] + need_of[si] > cap) continue;   /* deferred */
         gtot[g] += need_of[si];
         gcnt[g]++;
+        incl[si] = 1;
     }
     int off = 0;
     for (int g = 0; g < groups; g++) {
@@ -530,40 +620,25 @@ ConformerPool::step_enqueue()
     /* Fix per-slot offsets up front: candidate regions are disjoint, so
        the pack itself can run in parallel — each slot owns its tmpMol
        and its slice of the xyz/pose_lig buffers. */
-    struct PackItem { int si; int off; int end; };
-    vector<PackItem> items;
-    items.reserve((size_t)nact);
+    m_pack_items.clear();
+    m_pack_items.reserve((size_t)nact);
     for (int g = 0; g < groups; g++) {
         int o = base[g];
         int end = base[g] + gtot[g];
         for (int si = 0; si < nact; si++) {
             if ((si % groups) != g) continue;
+            if (!incl[si]) continue;                 /* deferred this round */
             m_slot_base[act_list[si]] = o;
-            items.push_back(PackItem{act_list[si], o, end});
+            m_pack_items.push_back(PackItem{act_list[si], o, end});
             o += need_of[si];
         }
     }
 
-    int nw = (int)std::thread::hardware_concurrency();
-    if (nw < 1) nw = 1;
-    if (nw > 8) nw = 8;
-    if ((int)items.size() <= 8) nw = 1;
-    atomic<int> next_pack(0);
-    auto pack_worker = [&]() {
-        int idx;
-        while ((idx = next_pack.fetch_add(1)) < (int)items.size()) {
-            SimplexSlot& slot = m_slots[items[idx].si];
-            pack_slot(slot, items[idx].off, items[idx].end);
-        }
-    };
-    if (nw > 1) {
-        vector<std::thread> ths;
-        ths.reserve((size_t)nw);
-        for (int t = 0; t < nw; t++) ths.emplace_back(pack_worker);
-        for (auto& th : ths) th.join();
-    } else {
-        pack_worker();
-    }
+    /* Persistent packing workers: spawning/joining up to 8 std::threads
+       every simplex step churned thread stacks through glibc and grew RSS
+       ~10MB/s on long VS runs.  pack_parallel() spawns workers once and
+       reuses them across rounds. */
+    pack_parallel((int)m_pack_items.size());
 
     long long t_enq0 = lbal_now_ms();
     for (int g = 0; g < groups && !fail; g++) {
@@ -639,6 +714,12 @@ ConformerPool::step_finish()
         dock_gpu_lbal_stats(&m_lbal_host, &m_lbal_gpu);
         adapt_split_k();
         m_npends = 0;
+        /* Return freed small-block arena space to the OS each GPU round.
+           The VS growth loop churns ~200MB/s of sub-4KB blocks (torsion
+           variant copies); without trimming, glibc's arena high-water
+           made RSS balloon to OOM on integrated-GPU machines.  Purely
+           an allocator-level call — no semantic effect. */
+        malloc_trim(0);
     } else {
         int newly = 0;
         for (auto& slot : m_slots) {

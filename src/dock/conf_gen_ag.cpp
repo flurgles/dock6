@@ -2115,6 +2115,13 @@ AG_Conformer_Search::segment_torsion_drive(CONFORMER & conf, int current_bond, v
 
     num_torsions = conf.structure.amber_bt_torsion_total[bond_list[bond].bond_num];
 
+    /* Pre-size the return list: vector growth would relocate existing
+       CONFORMERs and every relocation deep-copies its DOCKMol via the
+       copy constructor (-> copy_molecule), multiplying heap churn in
+       the VS growth loop by the element count on each realloc. */
+    return_list.reserve(return_list.size() +
+                        (size_t)num_torsions * (size_t)num_rec);
+
     // sudipto & trent Dec 09, 2008
     // print num of torsions sampled
     //if (verbose) cout << num_torsions << " torsions sampled for bond_num=" << bond_list[bond].bond_num 
@@ -2227,7 +2234,13 @@ AG_Conformer_Search::segment_torsion_drive(CONFORMER & conf, int current_bond, v
 
     for (int i = 0; i < num_torsions; i++) {
 
-        copy_molecule(new_conf.structure, conf.structure);
+        /* First angle carries a full topology copy; subsequent angles
+           only refresh coords/flags — typing is identical by
+           construction and re-copying it churns the heap. */
+        if (i == 0)
+            copy_molecule(new_conf.structure, conf.structure);
+        else
+            copy_molecule_coords_only(new_conf.structure, conf.structure);
         new_conf.layer_num = conf.layer_num;
         new_conf.score = conf.score;
         new_conf.used = conf.used;
@@ -2283,7 +2296,11 @@ AG_Conformer_Search::segment_torsion_drive(CONFORMER & conf, int current_bond, v
       // Generate a copy for each grid
       // Generate copies of each segment_torsion_drive seed for each individual receptor grid_num
       for (int mg_num=0; mg_num < num_rec; mg_num++) {
-              return_list.push_back(tmp_conf);        // ///////////////////////////////////////////////////////////////
+              /* emplace an empty CONFORMER and fill it directly — the
+                 old push_back(tmp_conf) deep-copied tmp_conf (incl. its
+                 whole DOCKMol) only for every field to be overwritten
+                 below, doubling the per-variant heap churn. */
+              return_list.emplace_back();
               return_list[return_list.size() - 1].layer_num = new_conf.layer_num;
               return_list[return_list.size() - 1].score = new_conf.score;
               return_list[return_list.size() - 1].used = new_conf.used;
@@ -4531,6 +4548,13 @@ AG_Conformer_Search::grow_win_prep(VSGrowState & g, ConformerPool & pool,
                     }));
                 for (int t = 0; t < nworkers; t++)
                     workers[t].join();
+                {   /* Reserve before merging: insert() into a vector that
+                       reallocs would deep-copy every existing seed. */
+                    size_t _ps_total = 0;
+                    for (int j = 0; j < num_seeds; j++)
+                        _ps_total += per_seed[j].size();
+                    g.exp_seeds.reserve(g.exp_seeds.size() + _ps_total);
+                }
                 for (int j = 0; j < num_seeds; j++)
                     g.exp_seeds.insert(g.exp_seeds.end(),
                                        per_seed[j].begin(),
