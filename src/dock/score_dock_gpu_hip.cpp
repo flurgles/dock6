@@ -1617,6 +1617,23 @@ int dock_gpu_is_active(void)
     return g_initialized;
 }
 
+int dock_gpu_is_integrated(void)
+{
+    return g_device_integrated;
+}
+
+int dock_gpu_mem_info(size_t *free_bytes, size_t *total_bytes)
+{
+    if (!g_initialized) return 0;
+    if (!free_bytes || !total_bytes) return 0;
+    size_t freeB = 0, totalB = 0;
+    if (hipMemGetInfo(&freeB, &totalB) != hipSuccess) return 0;
+    if (totalB == 0) return 0;
+    *free_bytes = freeB;
+    *total_bytes = totalB;
+    return 1;
+}
+
 int dock_gpu_recommended_batch_size(void)
 {
     if (!g_initialized) return 128;

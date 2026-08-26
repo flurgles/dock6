@@ -27,6 +27,8 @@ Usage in dock scoring code (e.g., conf_gen_ag.cpp):
 #ifndef SCORE_DOCK_GPU_H
 #define SCORE_DOCK_GPU_H
 
+#include <stddef.h>
+
 /* ------------------------------------------------------------------ */
 /*  GPU pool sizing constants                                          */
 /* ------------------------------------------------------------------ */
@@ -121,6 +123,16 @@ int dock_gpu_set_scales(float vdw_scale, float es_scale);
 
 /* Returns 1 if GPU is active and ready for batch scoring. */
 int dock_gpu_is_active(void);
+
+/* Returns 1 if the active GPU uses unified host memory (integrated/APU),
+   0 for discrete (dedicated VRAM), -1 if unknown / GPU inactive. */
+int dock_gpu_is_integrated(void);
+
+/* Query current device memory.  On success writes *free_bytes and
+   *total_bytes (bytes, hipMemGetInfo) and returns 1.  Returns 0 if the
+   GPU is inactive or the query failed (caller should fall back to host
+   accounting). */
+int dock_gpu_mem_info(size_t *free_bytes, size_t *total_bytes);
 
 /* Recommended batch size for the conformer pool.
    Queries the GPU's compute-unit count via IOKit and returns

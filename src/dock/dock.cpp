@@ -51,6 +51,8 @@
 
 #include <time.h>
 #include <sys/resource.h>
+#include <chrono>
+#include <thread>
 #include <iostream>
 #include <iomanip>
 #include <stdio.h>
@@ -72,6 +74,7 @@
 #include "trace.h"
 #include "conformer_pool.h"
 #include "score_dock_gpu.h"
+#include "mem_info.h"
 #include "utils.h"
 #include "version.h"
 #include "filter.h"
@@ -192,6 +195,52 @@ struct VSWindowJob {
     VSWindowJob& operator=(const VSWindowJob&) = delete;
 };
 
+/* VS memory-pressure throttle: pause new growth dispatches when host
+   or discrete-VRAM is critically low, avoiding paging/swap and OOM.
+   Hysteresis (700 MB -> pause, resume at 1100 MB; VRAM 300/500 MB)
+   plus 32-iteration caching keeps /proc/meminfo + hipMemGetInfo cheap.
+   DOCK_NO_THROTTLE=1 disables. */
+static bool
+vs_should_throttle(long long iter)
+{
+    if (getenv("DOCK_NO_THROTTLE")) return false;
+    static long long last_iter = -10000;
+    static bool cached = false;
+    static bool throttled = false;
+    if (iter - last_iter < 32) return cached;
+    last_iter = iter;
+    long avail_kb = getMemAvailableKB();
+    long avail_mb = avail_kb > 0 ? avail_kb / 1024 : 8192;
+    size_t gpu_free_mb = 999999;
+    bool gpu_low = false;
+    if (dock_gpu_is_active() && dock_gpu_is_integrated() == 0) {
+        size_t freeB = 0, totalB = 0;
+        if (dock_gpu_mem_info(&freeB, &totalB) == 1 && totalB > 0) {
+            gpu_free_mb = freeB / (1024 * 1024);
+            int thresh = throttled ? 500 : 300;
+            if ((long)gpu_free_mb < thresh) gpu_low = true;
+        }
+    }
+    int host_thresh = throttled ? 1100 : 700;
+    bool host_low = avail_mb < host_thresh;
+    bool now = host_low || gpu_low;
+    if (now != throttled) {
+        if (now) {
+            fprintf(stderr,
+                "[VS][THROTTLE] pausing new dispatches: avail=%ldMB gpu_free=%zuMB host_thresh=%d gpu_low=%d\n",
+                avail_mb, gpu_free_mb, host_thresh, (int)gpu_low);
+        } else {
+            fprintf(stderr,
+                "[VS][THROTTLE] resuming: avail=%ldMB gpu_free=%zuMB\n",
+                avail_mb, gpu_free_mb);
+        }
+        fflush(stderr);
+    }
+    throttled = now;
+    cached = now;
+    return now;
+}
+
 static int
 gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_conf,
                    Orient & c_orient, Bump_Filter & c_bmp_score,
@@ -201,32 +250,56 @@ gpu_vs_batch_drive(Library_File & c_library, Master_Conformer_Search & c_master_
 {
     int window = dock_gpu_recommended_batch_size();
     if (window < 1) window = 1;
-    /* Host-RAM budget: the collection footprint is roughly 0.14 GB per
-       in-flight ligand (~2 K orientation snapshots each), so derive the
-       window from actually-available memory instead of a hardcoded cap.
-       Keeps low-RAM hosts (e.g. an 11 GiB Steam Deck running earlyoom)
-       safe while letting bigger machines batch wider. */
-    long avail_kb = 8L * 1024 * 1024; /* fallback: assume 8 GiB free */
-    FILE *mi = fopen("/proc/meminfo", "r");
-    if (mi) {
-        char line[128];
-        while (fgets(line, sizeof line, mi)) {
-            long v;
-            if (sscanf(line, "MemAvailable: %ld", &v) == 1) {
-                avail_kb = v;
-                break;
+    /* Host-RAM budget: per-ligand growth state (VSGrowState: seeds/
+       anchor_confs/orig/pruned_confs) plus the shared 4096-slot
+       ConformerPool dominates at ~0.6 GB/row (t20: 4 rows -> 2.5 GB).
+       Derive the window from actually-available host memory and, on
+       discrete GPUs, from free VRAM, keeping low-RAM hosts safe while
+       letting bigger machines batch wider. */
+    long avail_kb = getMemAvailableKB();
+    if (avail_kb < 0) avail_kb = 8L * 1024 * 1024; /* fallback: 8 GiB */
+    long avail_mb = avail_kb / 1024;
+    int per_row_mb = 650;
+    if (getenv("DOCK_VS_PER_ROW_MB"))
+        per_row_mb = atoi(getenv("DOCK_VS_PER_ROW_MB"));
+    if (per_row_mb < 100) per_row_mb = 100;
+    int reserve_mb = 1024;
+    if (getenv("DOCK_VS_RESERVE_MB"))
+        reserve_mb = atoi(getenv("DOCK_VS_RESERVE_MB"));
+    if (reserve_mb < 256) reserve_mb = 256;
+    long usable_mb = avail_mb - reserve_mb;
+    if (usable_mb < per_row_mb) usable_mb = per_row_mb;
+    int vs_window_max;
+    if (getenv("DOCK_VS_WINDOW_MAX")) {
+        vs_window_max = atoi(getenv("DOCK_VS_WINDOW_MAX"));
+    } else {
+        vs_window_max = (int)(usable_mb / per_row_mb);
+        /* Discrete-GPU cap: dedicated VRAM can be tighter than host. */
+        if (dock_gpu_is_active() && dock_gpu_is_integrated() == 0) {
+            size_t freeB = 0, totalB = 0;
+            if (dock_gpu_mem_info(&freeB, &totalB) == 1 && totalB > 0) {
+                long gpu_free_mb = (long)(freeB / (1024 * 1024));
+                int gpu_per_row_mb = 20;
+                if (getenv("DOCK_VS_GPU_PER_ROW_MB"))
+                    gpu_per_row_mb = atoi(getenv("DOCK_VS_GPU_PER_ROW_MB"));
+                if (gpu_per_row_mb < 5) gpu_per_row_mb = 5;
+                long gpu_usable = (long)(gpu_free_mb * 0.7);
+                int gpu_window = gpu_per_row_mb > 0 ? (int)(gpu_usable / gpu_per_row_mb) : vs_window_max;
+                if (gpu_window < vs_window_max) vs_window_max = gpu_window;
             }
         }
-        fclose(mi);
+        if (vs_window_max < 1) vs_window_max = 1;
     }
-    int vs_window_max = (int)((avail_kb / 1024) / 250); /* ~0.25 GB/ligand */
-    if (getenv("DOCK_VS_WINDOW_MAX"))
-        vs_window_max = atoi(getenv("DOCK_VS_WINDOW_MAX"));
-    if (vs_window_max < 2) vs_window_max = 2;
+    if (vs_window_max < 1) vs_window_max = 1;
     const int PREP_BATCH = 1;
     if (window > vs_window_max) window = vs_window_max;
     int maxl = dock_gpu_vs_max_ligands();
     if (window > maxl) window = maxl;
+    if (window < 1) window = 1;
+    fprintf(stderr, "[VS] window=%d (vs_window_max=%d per_row=%dMB avail=%ldMB %s gpu=%s)\n",
+            window, vs_window_max, per_row_mb, avail_mb,
+            getenv("DOCK_VS_WINDOW_MAX") ? "override" : "auto",
+            dock_gpu_is_active() ? (dock_gpu_is_integrated()==1 ? "integrated" : dock_gpu_is_integrated()==0 ? "discrete" : "unknown") : "inactive");
     const float ie_soft = c_master_score.primary_score->ie_soft_delta;
     const float ie_cut  = c_master_score.primary_score->ie_vdw_cutoff_sq;
     const bool can_batch_orient =
@@ -806,6 +879,7 @@ time (the same pair list the sequential path would have fed to
                         (int)rows[r].seeds.size());
             }
             bool any_active = !grow_pool.idle();
+            bool throttled = vs_should_throttle(dbg_iter);
             bool any_gpu2 = false;
             if (getenv("DOCK_LBAL_DEBUG") && (dbg_iter % 250) == 0) {
                 fprintf(stderr, "[SCHED2] pool_active=%d\n",
@@ -836,6 +910,7 @@ time (the same pair list the sequential path would have fed to
                     bool needs_state = rows[r].adding ||
                         (rows[r].inflight == 0 && !rows[r].drain_done);
                     if (!needs_state) continue;   /* pure drain: GPU-only */
+                    if (throttled && rows[r].adding) continue; /* pause expansion under pressure */
                     k = r;
                     break;
                 }
@@ -849,25 +924,35 @@ time (the same pair list the sequential path would have fed to
                         cur_swapped = (int)r;
                     }
                     if (rows[r].adding) {
-                        lazy_prep(rows[r]);
-                        c_master_conf.c_ag_conf.grow_win_prep(rows[r], grow_pool,
-                                                              c_master_score,
-                                                              active_min,
-                                                              c_bmp_score);
+                        if (throttled) {
+                            /* throttled: skip expansion, let pool drain */
+                        } else {
+                            lazy_prep(rows[r]);
+                            c_master_conf.c_ag_conf.grow_win_prep(rows[r], grow_pool,
+                                                                  c_master_score,
+                                                                  active_min,
+                                                                  c_bmp_score);
+                        }
                     }
                     if (!rows[r].adding && rows[r].inflight == 0 &&
                         !rows[r].drain_done)
                         c_master_conf.c_ag_conf.grow_win_finish(rows[r],
-                                                                c_master_score,
-                                                                active_min,
-                                                                c_bmp_score);
+                                                                 c_master_score,
+                                                                 active_min,
+                                                                 c_bmp_score);
+                } else if (throttled && any_round_open) {
+                    /* All remaining rows want to expand but we are throttled;
+                       yield briefly so the GPU can drain and free memory. */
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 }
             }
             if (any_active) {
                 /* Batch more rows into the pool this round: the extra
                    slots make each GPU dispatch larger, so the GPU stays
-                   busier while the host keeps doing row bookkeeping. */
-                for (int pb = 1; pb < PREP_BATCH && any_round_open; pb++) {
+                   busier while the host keeps doing row bookkeeping.
+                   Throttled: skip extra batching (it would only add more
+                   expansion memory). */
+                for (int pb = 1; pb < PREP_BATCH && any_round_open && !throttled; pb++) {
                     size_t k = rows.size();
                     for (size_t s = 0; s < rows.size(); s++) {
                         size_t r = (rr + s) % rows.size();
@@ -875,6 +960,7 @@ time (the same pair list the sequential path would have fed to
                         bool needs_state = rows[r].adding ||
                             (rows[r].inflight == 0 && !rows[r].drain_done);
                         if (!needs_state) continue;
+                        if (throttled && rows[r].adding) continue;
                         k = r;
                         break;
                     }
@@ -897,9 +983,9 @@ time (the same pair list the sequential path would have fed to
                     if (!rows[r].adding && rows[r].inflight == 0 &&
                         !rows[r].drain_done)
                         c_master_conf.c_ag_conf.grow_win_finish(rows[r],
-                                                                c_master_score,
-                                                                active_min,
-                                                                c_bmp_score);
+                                                                 c_master_score,
+                                                                 active_min,
+                                                                 c_bmp_score);
                 }
             }
             if (any_active) {
