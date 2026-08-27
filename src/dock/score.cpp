@@ -83,12 +83,6 @@ Bump_Filter::initialize()
 bool
 Bump_Filter::check_anchor_bumps(DOCKMol & mol, bool more_orients)
 {
-    if (bump_filter && dock_gpu_is_active()) {
-        fprintf(stderr, "DOCK: bump checking (bump_filter yes) is not "
-                        "supported with GPU scoring; run on CPU or disable "
-                        "bump_filter\n");
-        exit(1);
-    }
     if(!more_orients)
         return true;
 
@@ -106,12 +100,6 @@ Bump_Filter::check_anchor_bumps(DOCKMol & mol, bool more_orients)
 bool
 Bump_Filter::check_growth_bumps(DOCKMol & mol)
 {
-    if (bump_filter && dock_gpu_is_active()) {
-        fprintf(stderr, "DOCK: bump checking (bump_filter yes) is not "
-                        "supported with GPU scoring; run on CPU or disable "
-                        "bump_filter\n");
-        exit(1);
-    }
     if (bump_filter) {
         int num_bumps = get_bump_score(mol);
         return (num_bumps <= growth_bump_max) && (num_bumps != -1);
@@ -244,7 +232,6 @@ Energy_Score::initialize(AMBER_TYPER & typer)
                           g.span[0], g.span[1], g.span[2],
                           g.origin[0], g.origin[1], g.origin[2],
                           g.spacing);
-            dock_gpu_set_scales(vdw_scale, es_scale);
         }
     } 
 }

@@ -55,7 +55,7 @@ class           Master_Conformer_Search {
     void            prepare_molecule(DOCKMol &);
     bool            next_anchor(DOCKMol &);
     bool            submit_anchor_orientation(DOCKMol &, bool);
-    void            grow_periphery(Master_Score &, Minimizer &, Bump_Filter &, bool anchors_preminimized = false);
+    void            grow_periphery(Master_Score &, Minimizer &, Bump_Filter &);
     bool            next_conformer(DOCKMol &);
 
 };

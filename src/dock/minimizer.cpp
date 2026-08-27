@@ -6,43 +6,7 @@
 #include <float.h>
 #include "master_score.h"
 #include "minimizer.h"
-#include "dockmol.h"
 using namespace std;
-
-/* ------------------------------------------------------------------ */
-/*  Per-pose deterministic RNG                                         */
-/* ------------------------------------------------------------------ */
-
-void
-Minimizer::set_local_rng_seed(unsigned int seed)
-{
-    m_lcg_state = seed ? seed : 1u;
-    m_lcg_active = true;
-}
-
-void
-Minimizer::set_local_rng_state(unsigned int state)
-{
-    m_lcg_state = state ? state : 1u;
-    m_lcg_active = true;
-}
-
-unsigned int
-Minimizer::local_rng_state() const
-{
-    return m_lcg_state;
-}
-
-float
-Minimizer::next_rand_01()
-{
-    if (m_lcg_active) {
-        /* Numerical Recipes LCG — deterministic, no global state */
-        m_lcg_state = 1664525u * m_lcg_state + 1013904223u;
-        return (float)((m_lcg_state >> 8) & 0xFFFFFF) * (1.0f / 16777216.0f);
-    }
-    return (float)rand() / (float)RAND_MAX;
-}
 
 void
 Minimizer::id_torsions(DOCKMol & mol, FLOATVec & vertex)
@@ -147,36 +111,17 @@ Minimizer::minimize(Base_Score & score, DOCKMol & mol,
 
         int             i;
         float           distance;
-
+ 
         // initialize the minimization structures
         current_cycle = 0;
         distance = 0.0;
-
-        // Best-across-cycles tracking (mirrors the GPU ConformerPool
-        // behaviour).  The CPU simplex keeps only the LAST cycle's pose,
-        // but a prior cycle may have found a better-scoring conformation.
-        // Save the best-scoring cycle's pose here and restore it at the end
-        // so the caller's molecule reflects the best result, not just the
-        // final cycle's.
-        float           best_cycle_score = 1e30f;
-        float           last_cycle_score = 1e30f;
-        bool            has_best_cycle   = false;
-        DOCKMol         best_cycle_mol;
-
         // loop over simplex cycles
         while ((current_cycle < max_cycles)
                && ((distance > cycle_converge) || (current_cycle == 0))) {
-            // call simplex minimizer (updates mol to this cycle's best pose)
-            last_cycle_score = do_minimize(score, mol, vertex, max_iterations,
-                                            score_converge, trans_step_size,
-                                            rot_step_size, tors_step_size);
-
-            if (!has_best_cycle || (last_cycle_score < best_cycle_score)) {
-                best_cycle_score = last_cycle_score;
-                copy_molecule(best_cycle_mol, mol);
-                has_best_cycle = true;
-            }
-
+            // call simplex minimizer
+            do_minimize(score, mol, vertex, max_iterations, score_converge,
+                             trans_step_size, rot_step_size, tors_step_size);
+ 
             // compute the distance moved, and re-zero the vertex vector
             distance = 0;
             for (i = 0; i < vertex.size(); i++) {
@@ -184,13 +129,8 @@ Minimizer::minimize(Base_Score & score, DOCKMol & mol,
                 vertex[i] = 0.0;
             }
             distance = sqrt(distance) / (float) (current_cycle + 1);
-
+ 
             current_cycle++;
-        }
-
-        // Restore the best-scoring cycle's pose if it was not the last cycle.
-        if (has_best_cycle && (best_cycle_score < last_cycle_score)) {
-            copy_molecule(mol, best_cycle_mol);
         }
     }
 

@@ -24,8 +24,6 @@ implements the score_dock_gpu.h API.
 #define CONFORMER_POOL_H
 
 #include <vector>
-#include <thread>
-#include <atomic>
 #include "minimizer.h"
 #include "score_dock_gpu.h"
 
@@ -61,24 +59,6 @@ enum class SlotPhase {
 
 
 /* ------------------------------------------------------------------ */
-/*  SimplexStage — one minimization stage's parameters                 */
-/* ------------------------------------------------------------------ */
-
-/* Mirrors one Minimizer::minimize() call.  The CPU growth path runs a
-   torsion-only pre-minimization followed by the full minimization
-   (two stages); the pool replicates that with stage A then stage B.
-   Stage B is skipped when max_cycles_B == 0. */
-struct SimplexStage {
-    int    max_iterations;
-    int    max_cycles;
-    float  score_converge;
-    float  trans_step_size;
-    float  rot_step_size;
-    float  tors_step_size;
-};
-
-
-/* ------------------------------------------------------------------ */
 /*  SimplexSlot — per-conformer state                                 */
 /* ------------------------------------------------------------------ */
 
@@ -97,9 +77,6 @@ struct SimplexSlot {
     int            ihi;                // index of highest (worst)  score
     int            inhi;               // index of 2nd-highest (2nd-worst) score
     int            ilo;                // index of lowest  (best)  score
-    int            shrink_skips;       // consecutive rejected shrinks (force after 1)
-    float*         p_saved;            // flat (N+1)*N copy of p[] taken at REFLECT
-                                        // failure, for reverting a rejected shrink
 
     // Working buffers (pre-allocated per slot)
     FLOATVec       centroid;           // pbar — dimension = size
@@ -111,37 +88,6 @@ struct SimplexSlot {
     float          tors_step_size;
     float          score_converge;
     int            max_iterations;
-
-    // Cycle support (matches Minimizer::minimize() cycle loop)
-    int            current_cycle;
-    int            max_cycles;
-    float          cycle_converge;
-
-    // Two-stage support (mirrors minimize_flexible_growth's torsion
-    // pre-min followed by the full minimization).  Skipped when
-    // max_cycles_B == 0.  Stage A = stage 0, stage B = stage 1.
-    int            stage;
-    int            max_iterations_B;
-    int            max_cycles_B;
-    float          score_converge_B;
-    float          trans_step_size_B;
-    float          rot_step_size_B;
-    float          tors_step_size_B;
-
-    // Per-pose deterministic RNG: LCG state continues across cycles and
-    // stages so the initial-simplex draws match the sequential path.
-    unsigned int   rng_state;
-
-    // Best-across-cycles tracking: save best result so final convergence
-    // returns the best cycle's result, not just the last cycle's.
-    bool           has_best;
-    float          best_score;
-    FLOATVec       best_vertex;
-
-    // Nelder-Mead coefficients (computed from simplex_mode + DOF count)
-    float          nm_gamma;    // expansion
-    float          nm_beta;     // contraction (rho)
-    float          nm_sigma;    // shrink
 
 
     // Molecule state for dof→xyz
@@ -161,25 +107,6 @@ struct SimplexSlot {
 
     // Caller data (e.g. index into exp_seeds)
     void*          user_data;
-
-    // Virtual-screen (multi-ligand) support.  When lig_idx >= 0 the slot
-    // belongs to a ligand registered in the GPU LUT and candidates are
-    // scored via dock_gpu_batch_score_vs() (per-pose ligand params).
-    // All slots sharing the pool must agree on lig_idx < 0 (single-ligand
-    // legacy path) or >= 0 (VS path).
-    int            lig_idx;   // GPU LUT ligand slot, -1 = legacy single-ligand
-
-    // Atom count of this slot's molecule (VS path pads all poses to the
-    // pool-wide stride = max num_atoms across slots).
-    int            lig_num_atoms;
-
-    // Per-slot DOF→xyz mapping, snapshotted at add() time from the
-    // minimizer's (shared) members.  Enables one pool to serve slots of
-    // different ligands whose torsions/bond_vectors/torsion_scale_factors
-    // differ.
-    std::vector<TORSION> torsions;
-    INTVec               bond_vectors;
-    INTVec               torsion_scale_factors;
 };
 
 
@@ -193,31 +120,23 @@ public:
        batch_max: max concurrent slots (from dock_gpu_recommended_batch_size()).
        minimizer: shared Minimizer for vector_to_dockmol / scale_vector / copy_crds.
        use_gpu:   true → pool dispatches GPU work; false → step() is a no-op. */
-    ConformerPool(int batch_max, Minimizer* minimizer, bool use_gpu,
-                  int simplex_mode = 0, int simplex_crossover = 17,
-                  Base_Score* score = nullptr);
+    ConformerPool(int batch_max, Minimizer* minimizer, bool use_gpu);
 
     ~ConformerPool();
 
     /* Add a new conformer to the pool.
        Returns slot id on success, -1 if pool is full.
        The pool stores a pointer to the caller's DOCKMol (mol) and updates
-       it in-place on convergence.  mol must remain alive until poll().
-       stageB is skipped when stageB.max_cycles == 0.
-       rng_seed seeds the pose's deterministic simplex stream (per-pose
-       LCG), matching the sequential path's draws for that pose. */
+       it in-place on convergence.  mol must remain alive until poll(). */
     int add(DOCKMol* mol,
             const FLOATVec& initial_vertex,
-            const SimplexStage& stageA,
-            const SimplexStage& stageB = SimplexStage{0, 0, 0.0f, 0.0f, 0.0f, 0.0f},
-            float cycle_converge = 1.0f,
+            float trans_step_size, float rot_step_size,
+            float tors_step_size, float score_converge,
+            int max_iterations,
             bool restrained = false,
             float coefficient_restraint = 0.0f,
             DOCKMol* rmsd_ref = nullptr,
-            void* user_data = nullptr,
-            int lig_idx = -1,
-            int lig_num_atoms = 0,
-            unsigned int rng_seed = 0);
+            void* user_data = nullptr);
 
     /* Run one pool cycle:
        1. Pack ready candidates from all active slots into m_xyz_buffer.
@@ -226,21 +145,6 @@ public:
        4. Check convergence.
        Returns the number of newly converged conformers (call poll() for them). */
     int step();
-
-    /* Split-cycle variant for the VS scheduler: step_enqueue() packs and
-       enqueues this round's candidates on the GPU's background stream and
-       returns immediately (host work may proceed while the GPU runs);
-       step_finish() waits for the results, distributes scores and runs the
-       decision trees.  The active slots are split into m_split_k groups so
-       one group's packing overlaps the previous group's kernel (adaptive
-       host/GPU load balancing, VS mode).  Step requires enqueue once per
-       finish; step() is enqueue+finish. */
-    int step_enqueue();
-    int step_finish();
-
-    /* Current adaptive split factor (governor state, for diagnostics). */
-int npending() const { return m_npends; }
-    int split_k() const  { return m_split_k; }
 
     /* Collect converged conformers since last call.
        The caller's DOCKMol has been updated to the minimized pose. */
@@ -262,9 +166,6 @@ private:
     int                     m_batch_max;
     Minimizer*              m_minimizer;        // shared for dof→xyz
     bool                    m_use_gpu;
-    Base_Score*             m_score = nullptr;  // scoring function for CPU whole-seed path
-    int                     m_simplex_mode;        // 0=classical, 1=adaptive, 2=dim-aware
-    int                     m_simplex_crossover;   // crossover DOF for dim-aware mode
     int                     m_num_atoms;   // ligand atom count, set on first add()
 
     std::vector<SimplexSlot>  m_slots;
@@ -277,49 +178,15 @@ private:
     //   scores: max_candidates * sizeof(float)
     float*                  m_xyz_buffer;
     float*                  m_score_buffer;
-    int*            m_pose_lig = nullptr;  // VS path: ligand LUT slot per candidate
     int*                    m_active_flags;  // cached ligand active-atom flags
     int                     m_dispatch_capacity;  // max candidates per dispatch
-    bool                    m_vs_mode = false;  // true once any slot carries a lig_idx >= 0
-
-    // Per-slot ligand info for the VS path (pose_lig array per candidate).
-    int                     m_stride_atoms;  // max num_atoms across slots (padded)
-
-    // Adaptive host/GPU load-balancing governor (VS mode only).
-    int                     m_split_k = 1;   // active slot groups per step
-    long long               m_lbal_host = 0;  // EMA host ms per batch (from backend)
-    long long               m_lbal_gpu = 0;   // EMA GPU busy ms per batch
-    int                     m_steps_since_lbal = 0;
-    int                     m_npends = 0;      // async batches enqueued, pending sync
-    int                     m_slot_base[4096]; // per-slot score offset (set by enqueue, used by finish)
-    bool                    m_lbal_fail = false;  // async enqueue failed this step
-    long long               m_lbal_t0 = 0;        // step start marker (host-phase timing)
-
-    // Persistent packing workers (VS mode).  Spawning/joining up to 8
-    // std::threads per step churned thread stacks through glibc every
-    // simplex round and grew RSS ~10MB/s under long VS runs.  Workers are
-    // spawned once on the first parallel step, park on a spin barrier
-    // between rounds and are joined in the destructor.
-    std::vector<std::thread> m_pack_workers;
-    std::atomic<int>         m_pw_next{0};      // next PackItem index to grab
-    std::atomic<int>         m_pw_todo{0};      // items remaining this round
-    std::atomic<int>         m_pw_done{0};      // workers finished this round
-    std::atomic<int>         m_pw_gen{0};       // round id (-1 = shutdown)
-    int                      m_pw_seen_gen = 0; // worker-local last observed round
-    bool                     m_pw_active = false;
-    void pack_worker_loop();
-    void pack_parallel(int nitems);
-    struct PackItem { int si; int off; int end; };
-    std::vector<PackItem> m_pack_items;
 
     // Internal helpers
-    int  step_legacy();  // non-VS whole-cycle dispatch (synchronous)
     int  pack_slot(SimplexSlot& slot, int offset, int capacity);
     void pack_vertex(SimplexSlot& slot, const float* vertex, int idx);
     void evaluate_slot(SimplexSlot& slot, const float* scores);
     bool fill_slot_from_mol(SimplexSlot& slot, int slot_idx);
     bool check_convergence(SimplexSlot& slot);
-    void adapt_split_k();
 };
 
 #endif  // CONFORMER_POOL_H

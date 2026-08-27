@@ -419,10 +419,6 @@ bool            Read_Mol2_retain(DOCKMol &, std::istream &, bool, bool, bool);
 bool            Write_Mol2(DOCKMol &, std::ostream &);
 void            copy_molecule(DOCKMol &, const DOCKMol &);
 void            copy_molecule_shallow(DOCKMol & , const DOCKMol & );
-/* Refresh only torsion-variant fields (coords, active flags, counts,
-   grid/energy scalars).  Requires identical topology in target; falls
-   back to full copy_molecule when dimensions differ. */
-void            copy_molecule_coords_only(DOCKMol &, const DOCKMol &);
 void            copy_crds(DOCKMol &, DOCKMol &);
 void            transform(DOCKMol &, float rmat[3][3], DOCKVector, DOCKVector);
 

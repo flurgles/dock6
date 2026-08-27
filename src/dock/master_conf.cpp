@@ -358,8 +358,7 @@ Master_Conformer_Search::submit_anchor_orientation(DOCKMol & mol,
 // +++++++++++++++++++++++++++++++++++++++++
 void
 Master_Conformer_Search::grow_periphery(Master_Score & score,
-                                        Minimizer & simplex, Bump_Filter & bump,
-                                        bool anchors_preminimized)
+                                        Minimizer & simplex, Bump_Filter & bump)
 {
 
     // sudipto & trent: this command prevents segfault when no scoring function is specified
@@ -398,7 +397,7 @@ Master_Conformer_Search::grow_periphery(Master_Score & score,
 
     case 1: // if flex call anchor and grow
         // initialize of internal energy is performed in grow_periphery
-        c_ag_conf.grow_periphery(score, simplex, bump, anchors_preminimized);
+        c_ag_conf.grow_periphery(score, simplex, bump);
         break;
 
     case 3: //covalent

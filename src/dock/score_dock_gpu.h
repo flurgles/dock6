@@ -26,23 +26,7 @@ Usage in dock scoring code (e.g., conf_gen_ag.cpp):
 
 #ifndef SCORE_DOCK_GPU_H
 #define SCORE_DOCK_GPU_H
-
 #include <stddef.h>
-
-/* ------------------------------------------------------------------ */
-/*  GPU pool sizing constants                                          */
-/* ------------------------------------------------------------------ */
-
-/* Safe per-dispatch pose cap.  The device xyz buffer is sized
-   GPU_MAX_POSES (4096) x GPU_MAX_ATOMS (512) x 3 floats; keeping
-   dispatches under this cap guarantees they are never rejected, no
-   matter how large the packed pool batch is. */
-#define GPU_MAX_BATCH_POSES 3968
-
-/* ConformerPool slot budget for the anchor and growth pools.  With 512
-   slots and worst-case 7 (anchor) / ~20 (growth) candidates per slot,
-   one step packs up to ~3-4 chunks of GPU_MAX_BATCH_POSES poses. */
-#define GPU_POOL_BATCH_MAX 512
 
 /* ------------------------------------------------------------------ */
 /*  GPU abstraction API                                               */
@@ -68,13 +52,10 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
         pose[1].atom[0].x, .y, .z, ...
    num_poses: number of poses to score (≥ 1)
    num_atoms: number of atoms per pose
-   active_flags: per-atom mask (array of num_atoms ints; nonzero = active).
-        Inactive atoms are skipped, matching the CPU grid scoring.
-        May be NULL, in which case all atoms are treated as active.
    out_scores: output array of num_poses floats (caller-allocated)
    Returns 1 on success, 0 on error. */
 int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
-                         const int *active_flags, float *out_scores);
+                         float *out_scores);
 
 /* Upload per-atom internal energy parameters (constant per ligand).
    Called after dock_gpu_set_ligand() and dock_gpu_init().
@@ -115,24 +96,10 @@ int dock_gpu_set_ligand(const float *vdwA, const float *vdwB,
 /* Release all GPU resources. */
 void dock_gpu_cleanup(void);
 
-/* Set vdw and electrostatic scaling factors for GPU scoring.
-   Must be called after dock_gpu_init() and before any batch_score call.
-   Mirrors the CPU grid_score_vdw_scale and grid_score_es_scale parameters.
-   Returns 1 on success, 0 on error. */
-int dock_gpu_set_scales(float vdw_scale, float es_scale);
-
 /* Returns 1 if GPU is active and ready for batch scoring. */
 int dock_gpu_is_active(void);
-
-/* Returns 1 if the active GPU uses unified host memory (integrated/APU),
-   0 for discrete (dedicated VRAM), -1 if unknown / GPU inactive. */
 int dock_gpu_is_integrated(void);
-
-/* Query current device memory.  On success writes *free_bytes and
-   *total_bytes (bytes, hipMemGetInfo) and returns 1.  Returns 0 if the
-   GPU is inactive or the query failed (caller should fall back to host
-   accounting). */
-int dock_gpu_mem_info(size_t *free_bytes, size_t *total_bytes);
+int dock_gpu_mem_info(size_t *freeB, size_t *totalB);
 
 /* Recommended batch size for the conformer pool.
    Queries the GPU's compute-unit count via IOKit and returns
@@ -149,113 +116,6 @@ int dock_gpu_recommended_batch_size(void);
 /* Report thermal state and GPU dispatch time rolling average to stdout.
    Caller should guard with -v verbose flag.  Thread-safe (no state). */
 void dock_gpu_monitor(int layer, int segment, int total_segments);
-
-
-
-/* ------------------------------------------------------------------ */
-/*  Multi-ligand virtual-screen scoring                                 */
-/* ------------------------------------------------------------------ */
-
-/* Register a ligand's per-atom parameters in the VS ligand table.
-   lig_idx: 0 .. dock_gpu_vs_max_ligands()-1
-   vdwA, vdwB, charges, active_flags, ie_vdwA: length num_atoms
-   nb_int_pairs: flat array of num_nb_pairs*2 ints (a1, a2, ...)
-   ie_soft_delta / ie_cutoff_sq: internal-energy soft-core delta and
-   distance-squared cutoff for THIS ligand's pair scoring (mirrors
-   dock_gpu_set_ligand_ie).  Stored as the current IE parameters used
-   by dock_gpu_batch_score_vs().
-   The row tail beyond num_atoms is zeroed so poses of shorter ligands
-   are never scored against stale parameters left by a previous row owner.
-   Returns 1 on success, 0 on error. */
-int dock_gpu_vs_register_ligand(int lig_idx,
-                                const float *vdwA, const float *vdwB,
-                                const float *charges, const int *active_flags,
-                                const float *ie_vdwA,
-                                const int *nb_int_pairs, int num_nb_pairs,
-                                int num_atoms,
-                                float ie_soft_delta, float ie_cutoff_sq);
-
-/* Refresh only a registered ligand's per-atom active flags (called every
-   growth round; the coefficient rows, IE parameters and pair tables are
-   constant for the whole growth of one ligand, so this is the cheap
-   per-round LUT update).  Returns 1 on success, 0 on error. */
-int dock_gpu_vs_update_active_flags(int lig_idx, const int *active_flags,
-                                    int num_atoms);
-
-/* Replace a registered ligand's IE pair table + per-atom ie_vdwA.
-   Returns 1 on success, 0 on error. */
-int dock_gpu_vs_update_pairs(int lig_idx, const float *ie_vdwA,
-                             const int *nb_int_pairs, int num_nb_pairs,
-                             int num_atoms);
-
-/* Max ligand-table rows the backend accepts. */
-int dock_gpu_vs_max_ligands(void);
-
-/* Debug: dump a registered ligand's pair table as (a1,a2) pairs.
-   Returns the total pair count (may exceed max_out); -1 on error. */
-int dock_gpu_vs_dump_pairs(int lig_idx, int *out_pairs, int max_out);
-
-/* Score N poses against the shared grid, each pose belonging to one
-   registered ligand.  xyz is flat N * num_atoms * 3 (num_atoms = padded
-   max atom count; inactive atoms must have active_flags[a]==0 in their
-   ligand row).  pose_lig: length num_poses, values < table size.
-   Returns 1 on success, 0 on error. */
-int dock_gpu_batch_score_vs(const float *xyz, int num_poses, int num_atoms,
-                            const int *pose_lig, float *out_scores);
-
-/* Score N poses against the shared grid, grid component ONLY (no internal
-   energy), each pose belonging to one registered ligand.  Same layout as
-   dock_gpu_batch_score_vs.  Used by the growth prune pass, which needs the
-   grid score and internal energy separately.  Returns 1 on success, 0 on
-   error (caller falls back to CPU scoring). */
-int dock_gpu_batch_score_vs_grid(const float *xyz, int num_poses,
-                                 int num_atoms, const int *pose_lig,
-                                 float *out_scores);
-
-/* Report the grid box volume that poses must occupy to be scorable:
-   [minx,maxx]x[miny,maxy]x[minz,maxz] in Angstroms, mirroring
-   Base_Grid::is_inside_grid_box() (points within one voxel of the box
-   edge are excluded, since trilinear interpolation needs the full
-   neighborhood).  Callers use this to mark out-of-bounds poses the
-   kernel cannot reject (clamp-to-edge sampling).  Returns 1 on
-   success, 0 if the backend cannot provide the box. */
-int dock_gpu_grid_bounds(float *minx, float *miny, float *minz,
-                         float *maxx, float *maxy, float *maxz);
-
-/* Async pipelined VS scoring (host/GPU load balancing).
-   Enqueues the batch on an internal stream and returns immediately; the
-   caller may do host work (DBZ, packing the next group) while the GPU
-   runs.  Call dock_gpu_batch_score_sync() after enqueuing a set of
-   batches to wait for completion, then out_scores[] for every enqueued
-   batch is valid.  grid_only != 0 selects the grid-only kernel (growth
-   prune pass).  Enqueued batches are stream-ordered: DtoH results land
-   in internal pinned staging, copied to out_scores at sync time.
-   Returns 1 on success, 0 on error (caller falls back to CPU scoring). */
-int dock_gpu_batch_score_vs_enqueue(const float *xyz, int num_poses,
-                                    int num_atoms, const int *pose_lig,
-                                    float *out_scores, int grid_only);
-
-/* Second internal stream (e.g. the per-round growth screen), so the pool's
-   simplex batches and the screen batches can overlap on the device.
-   Same semantics as the primary enqueue; drain with
-   dock_gpu_batch_score_sync2(). */
-int dock_gpu_batch_score_vs_enqueue2(const float *xyz, int num_poses,
-                                     int num_atoms, const int *pose_lig,
-                                     float *out_scores, int grid_only);
-
-/* Wait for all enqueued async batches to complete (blocking).
-   Returns 1 on success, 0 if no batches were pending. */
-int dock_gpu_batch_score_sync(void);
-int dock_gpu_batch_score_sync2(void);
-
-/* Number of still-pending batches on the secondary stream (scheduler
-   needs to keep iterating until a screen's results can be consumed). */
-int dock_gpu_npends2(void);
-
-/* Report the adaptive governor's smoothed timings: host_ms = EMA of the
-   host time spent preparing one batch (pack+enqueue), gpu_ms = EMA of the
-   time the GPU/stream stays busy until the batch set completes. */
-void dock_gpu_lbal_stats(long long *host_ms, long long *gpu_ms);
 
 
 

@@ -1,12 +1,10 @@
 #include <algorithm>
-#include <chrono>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
 #include <iomanip>
 #include <limits.h>
 #include <sstream>
-#include <thread>
 #include <time.h>
 
 #include "amber_typer.h"
@@ -15,7 +13,6 @@
 #include "hungarian.h"
 #include "weisfeiler_leman.h"
 #include "master_score.h"
-#include "score_dock_gpu.h"
 #include "simplex.h"
 #include "conformer_pool.h"
 #include "trace.h"
@@ -23,13 +20,6 @@ class Bump_Filter;
 class Master_Score;
 
 using namespace std;
-
-static long us_clock(void)
-{
-    return (long)std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-
 
 
 // +++++++++++++++++++++++++++++++++++++++++
@@ -255,14 +245,6 @@ AG_Conformer_Search::prepare_molecule(DOCKMol & mol)
         // DTM - 11-12-08
         int        i;
 
-        if (getenv("DOCK_LBAL_DEBUG")) {
-            fprintf(stderr, "[PREP] mol na=%d nb=%d alloc=%d"
-                    " bond_types=%p atom_types=%p wfl=%d\n",
-                    mol.num_atoms, mol.num_bonds, (int)mol.arrays_allocated,
-                    (void*)mol.bond_types, (void*)mol.atom_types,
-                    (int)write_fragment_libraries);
-        }
-
         copy_molecule(orig, mol);
 
     bond_list.clear();
@@ -357,8 +339,6 @@ AG_Conformer_Search::identify_rigid_segments(DOCKMol & mol)
         a2 = orig.bonds_origin_atom[bond_list[i].bond_num];
         a3 = orig.bonds_target_atom[bond_list[i].bond_num];
 
-        a1 = a2;
-        a4 = a3;
         max_central = -1;
         nbrs = mol.get_atom_neighbors(a2);
 
@@ -652,7 +632,31 @@ AG_Conformer_Search::next_anchor(DOCKMol & mol)
 
         copy_molecule(tmp_mol, orig);
 
-        setup_growth_anchor(current_anchor);
+        // clear bond directionality during minization
+        bond_tors_vectors.clear();
+        bond_tors_vectors.resize(orig.num_bonds, -1);
+        //bond_tors_vectors.resize(mol.num_bonds, -1);
+
+        // reset the assigned atoms list
+        assigned_atoms.clear();
+        assigned_atoms.resize(orig.num_atoms, false);
+        //assigned_atoms.resize(mol.num_atoms, false);
+
+        // clear and resize the layer_segment list to be the same size as the
+        // orig_segments list
+        layer_segments.clear();
+        layer_segments.resize(orig_segments.size());
+
+        layers.clear();
+        extend_layers(anchors[current_anchor].second,
+                      anchors[current_anchor].second, 0);
+
+        // cout << "@@@\t" << orig_segments.size() << "\t" << layers.size() <<
+        // "\t" << layer_segments.size() << endl;
+
+        for (i = 0; i < layers[0].segments.size(); i++) {
+            activate_layer_segment(tmp_mol, 0, i);
+        }
 
         current_anchor++;
 
@@ -686,34 +690,6 @@ AG_Conformer_Search::next_anchor(DOCKMol & mol)
     return true;
 
 
-}
-
-// +++++++++++++++++++++++++++++++++++++++++
-// Rebuild the layer/layer_segment state for one anchor, exactly like the
-// build step inside next_anchor().  Used by the GPU virtual-screen batch
-// driver to replay growth for a previously collected (and already
-// minimized) anchor without re-running the whole next_anchor pipeline.
-void
-AG_Conformer_Search::setup_growth_anchor(int anchor_idx)
-{
-    // clear bond directionality during minization
-    bond_tors_vectors.clear();
-    bond_tors_vectors.resize(orig.num_bonds, -1);
-
-    // reset the assigned atoms list
-    assigned_atoms.clear();
-    assigned_atoms.resize(orig.num_atoms, false);
-
-    // clear and resize the layer_segment list to be the same size as the
-    // orig_segments list
-    layer_segments.clear();
-    layer_segments.resize(orig_segments.size());
-
-    layers.clear();
-    extend_layers(anchors[anchor_idx].second,
-                  anchors[anchor_idx].second, 0);
-
-    current_anchor = anchor_idx;
 }
 
 
@@ -1160,8 +1136,7 @@ AG_Conformer_Search::calc_layer_rmsd_weisfeiler(CONFORMER & a,
 // +++++++++++++++++++++++++++++++++++++++++
 void
 AG_Conformer_Search::grow_periphery(Master_Score & score,
-                                    Minimizer & simplex, Bump_Filter & bump,
-                                    bool anchors_preminimized)
+                                    Minimizer & simplex, Bump_Filter & bump)
 { Trace trace("AG_Conformer_Search::grow_periphery()");
     //cout << "AG_Conformer_Search::grow_periphery" << endl;
     int             i,
@@ -1183,14 +1158,6 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
     bool ie_prune = false; // prune conformers using internal_energy_cutoff
     int num_layers = layers.size();
     clock_t start = clock();
-
-    // GPU virtual-screen: per-ligand LUT slot index for the VS kernel
-    // (fixed-cycle over the LUT capacity; -1 = VS path inactive)
-    int gpu_lig_idx = -1;
-    if (dock_gpu_is_active()) {
-        static int gpu_next_lig = 0;
-        gpu_lig_idx = (gpu_next_lig++) % dock_gpu_vs_max_ligands();
-    }
 
     //reserve space in vectors
     anchor_positions_b4min.reserve(anchor_positions.size());
@@ -1218,63 +1185,45 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
            // it does not matter which atoms are labeled active
            score.primary_score->initialize_internal_energy(anchor_positions[0].second);
 
-/* Upload ligand parameters to GPU for combined grid+IE scoring */
+           /* Upload ligand parameters to GPU for combined grid+IE scoring */
            if (dock_gpu_is_active()) {
-                DOCKMol & amol = anchor_positions[0].second;
-                int na = amol.num_atoms;
-                float *vdwA_arr = new float[na];
-                float *vdwB_arr = new float[na];
-                float *chg_arr  = new float[na];
-                for (int ai = 0; ai < na; ai++) {
-                    int type = amol.amber_at_id[ai];
-                    vdwA_arr[ai] = score.primary_score->vdwA[type];
-                    vdwB_arr[ai] = score.primary_score->vdwB[type];
-                    chg_arr[ai]  = amol.charges[ai];
-                }
-                if (!dock_gpu_set_ligand(vdwA_arr, vdwB_arr, chg_arr, na)) {
-                    fprintf(stderr, "GPU-DOCK: set_ligand failed\n");
-                }
+               DOCKMol & amol = anchor_positions[0].second;
+               int na = amol.num_atoms;
+               float *vdwA_arr = new float[na];
+               float *vdwB_arr = new float[na];
+               float *chg_arr  = new float[na];
+               for (int ai = 0; ai < na; ai++) {
+                   int type = amol.amber_at_id[ai];
+                   vdwA_arr[ai] = score.primary_score->vdwA[type];
+                   vdwB_arr[ai] = score.primary_score->vdwB[type];
+                   chg_arr[ai]  = amol.charges[ai];
+               }
+               if (!dock_gpu_set_ligand(vdwA_arr, vdwB_arr, chg_arr, na)) {
+                   fprintf(stderr, "GPU-DOCK: set_ligand failed\n");
+               }
+               delete[] vdwA_arr;
+               delete[] vdwB_arr;
+               delete[] chg_arr;
 
-                /* IE params: nb_int pairs, per-atom ie_vdwA */
-                int np = (int)score.primary_score->nb_int.size();
-                int *nb_flat = NULL;
-                float *ie_vdwA_arr = NULL;
-                if (np > 0) {
-                    nb_flat = new int[np * 2];
-                    for (int pi = 0; pi < np; pi++) {
-                        nb_flat[pi * 2]     = score.primary_score->nb_int[pi].first;
-                        nb_flat[pi * 2 + 1] = score.primary_score->nb_int[pi].second;
-                    }
-                    ie_vdwA_arr = new float[na];
-                    for (int ai = 0; ai < na; ai++) {
-                        ie_vdwA_arr[ai] = score.primary_score->ie_vdwA[ai];
-                    }
-                    dock_gpu_set_ligand_ie(ie_vdwA_arr, NULL, nb_flat, np,
-                                            score.primary_score->ie_soft_delta,
-                                            score.primary_score->ie_vdw_cutoff_sq);
-                }
-
-                /* Virtual-screen LUT registration: same per-atom params plus
-                   the ligand's active flags, so later VS dispatches can score
-                   candidates of many ligands against the shared grid. */
-                if (gpu_lig_idx >= 0) {
-                    int *af = new int[na];
-                    for (int ai = 0; ai < na; ai++)
-                        af[ai] = amol.atom_active_flags[ai] ? 1 : 0;
-                    dock_gpu_vs_register_ligand(gpu_lig_idx,
-                                                 vdwA_arr, vdwB_arr, chg_arr, af,
-                                                 ie_vdwA_arr, nb_flat, np, na,
-                                                 score.primary_score->ie_soft_delta,
-                                                 score.primary_score->ie_vdw_cutoff_sq);
-                    delete[] af;
-                }
-
-                delete[] vdwA_arr;
-                delete[] vdwB_arr;
-                delete[] chg_arr;
-                if (nb_flat) delete[] nb_flat;
-                if (ie_vdwA_arr) delete[] ie_vdwA_arr;
-            }
+               /* IE params: nb_int pairs, per-atom ie_vdwA */
+               int np = (int)score.primary_score->nb_int.size();
+               if (np > 0) {
+                   int *nb_flat = new int[np * 2];
+                   for (int pi = 0; pi < np; pi++) {
+                       nb_flat[pi * 2]     = score.primary_score->nb_int[pi].first;
+                       nb_flat[pi * 2 + 1] = score.primary_score->nb_int[pi].second;
+                   }
+                   float *ie_vdwA_arr = new float[na];
+                   for (int ai = 0; ai < na; ai++) {
+                       ie_vdwA_arr[ai] = score.primary_score->ie_vdwA[ai];
+                   }
+                   dock_gpu_set_ligand_ie(ie_vdwA_arr, NULL, nb_flat, np,
+                                           score.primary_score->ie_soft_delta,
+                                           score.primary_score->ie_vdw_cutoff_sq);
+                   delete[] nb_flat;
+                   delete[] ie_vdwA_arr;
+               }
+           }
         }
     }// else do nothing to internal energy (because it is not used when scoring function is not
      // used
@@ -1288,91 +1237,9 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
 
     // moved from main dock loop for flexible docking only
     // sudipto & trent Jan-16-08
-    if (!anchors_preminimized && dock_gpu_is_active()
-        && simplex.use_min_rigid_anchor
-        && gpu_lig_idx >= 0
-        && (int)anchor_positions.size() > dock_gpu_recommended_batch_size()) {
-        // GPU anchor-pool: batch the rigid-body simplex minimization of ALL
-        // anchor orientations into one ConformerPool.  Every anchor shares
-        // the same DOF layout (6 rigid DOF, vertex of zeros) and the same
-        // atom count / active flags, so a single pool can pack candidates
-        // from all orientations into each GPU dispatch instead of issuing
-        // one tiny dispatch per orientation.  Only engages when the
-        // orientation count is large enough to amortize the pool machinery;
-        // small anchor counts keep the sequential path (measured: pool
-        // overhead exceeds its win for handfuls of orientations).
-        const int saved_anchor_cycle = simplex.current_cycle;
-        simplex.current_cycle = 0;
-        ConformerPool anchor_pool(dock_gpu_recommended_batch_size(),
-                                   &simplex, true,
-                                   simplex.simplex_mode,
-                                   simplex.simplex_crossover);
-        for (i = 0; i < anchor_positions.size(); i++){
-            anchor_positions_b4min.push_back(anchor_positions[i]);  // save unmin anchor in anchor_positions_b4min
-
-            // backpressure: drain pool before adding if full
-            while (anchor_pool.active_count() >= anchor_pool.capacity()) {
-                anchor_pool.step();
-                anchor_pool.poll();
-            }
-
-            // rigid DOF only — same layout as minimize_rigid_anchor()
-            FLOATVec vertex;
-            for (int iv = 0; iv < 6; iv++) vertex.push_back(0.0f);
-
-            SimplexStage astage;
-            astage.max_iterations = simplex.anchor_min_max_iterations;
-            astage.max_cycles     = simplex.anchor_min_max_cycles;
-            astage.score_converge = simplex.anchor_min_score_converge;
-            astage.trans_step_size = simplex.anchor_min_trans_step_size;
-            astage.rot_step_size  = simplex.anchor_min_rot_step_size;
-            astage.tors_step_size = simplex.anchor_min_tors_step_size;
-
-            anchor_pool.add(&anchor_positions[i].second, vertex,
-                            astage, SimplexStage{0, 0, 0.0f, 0.0f, 0.0f, 0.0f},
-                            simplex.anchor_min_cycle_converge,
-                            simplex.restrained_min,
-                            simplex.coefficient_restraint,
-                            nullptr, nullptr,
-                            gpu_lig_idx,
-                            anchor_positions[i].second.num_atoms,
-                            seed_key((unsigned)dock_mol_serial,
-                                     (unsigned)current_anchor, (unsigned)i,
-                                     0x51u, 0x52u));
-        }
-
-        // drain pool — all anchor mols updated in place by fill_slot_from_mol
-        while (!anchor_pool.idle()) {
-            anchor_pool.step();
-            anchor_pool.poll();
-        }
-
-// restore cycle counter so the growth-phase scaling below matches
-            // the sequential-anchor code path (minimize_rigid_anchor leaves
-            // current_cycle at whatever the last cycle count was)
-            simplex.current_cycle = saved_anchor_cycle;
-        } else if (anchors_preminimized) {
-            // Anchors were already minimized by the VS batch driver — keep
-            // the unminimized copies for b4min_seeds below.
-            // OPTIMIZATION parity: minimize_rigid_anchor() sizes bond_vectors
-            // for the anchor mol before each ligand's growth pool runs; the
-            // growth pool depends on that sizing, so reproduce it here.
-            if (simplex.use_min_rigid_anchor) {
-                simplex.bond_vectors.clear();
-                simplex.bond_vectors.resize(anchor_positions[0].second.num_bonds, -1);
-            }
-            for (i = 0; i < anchor_positions.size(); i++){
-                anchor_positions_b4min.push_back(anchor_positions[i]);
-            }
-        } else {
-        for (i = 0; i < anchor_positions.size(); i++){
-            anchor_positions_b4min.push_back(anchor_positions[i]);  // save unmin anchor in anchor_positions_b4min
-            simplex.set_local_rng_seed(
-                seed_key((unsigned)dock_mol_serial,
-                         (unsigned)current_anchor, (unsigned)i,
-                         0x51u, 0x52u));
-            simplex.minimize_rigid_anchor(anchor_positions[i].second, score); //minimize anchor
-        }
+    for (i = 0; i < anchor_positions.size(); i++){
+       anchor_positions_b4min.push_back(anchor_positions[i]);  // save unmin anchor in anchor_positions_b4min
+       simplex.minimize_rigid_anchor(anchor_positions[i].second, score); //minimize anchor
     }
 
     for (i = 0; i < anchor_positions.size(); i++) {
@@ -1528,18 +1395,6 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                << " anchor orients retained (max " << num_anchor_poses << ")" 
                << " t=" << ((double) (clock() - start)) / CLOCKS_PER_SEC << "s" << endl;
 
-    if (getenv("DOCK_GPU2_DEBUG")) {
-        fprintf(stderr, "[ANCHDBG] classic anchor=%d retained=%d scores:",
-                current_anchor, (int)seeds.size());
-        for (j = 0; j < (int)exp_seeds.size() && j < 20; j++)
-            if (!exp_seeds[j].used)
-                fprintf(stderr, " %.4f@(%.2f,%.2f,%.2f)", exp_seeds[j].score,
-                        exp_seeds[j].structure.x[0],
-                        exp_seeds[j].structure.y[0],
-                        exp_seeds[j].structure.z[0]);
-        fprintf(stderr, "\n");
-    }
-
     // /////////////////////////// GROWTH ///////////////////////////////
 
     // counters for printing pruning stats
@@ -1609,10 +1464,8 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                 // 0 = clash fail, 1 = bump fail, 2 = both passed
 
                 bool use_gpu = dock_gpu_is_active();
-                ConformerPool pool(GPU_POOL_BATCH_MAX,
-                                   &simplex, use_gpu,
-                                   simplex.simplex_mode,
-                                   simplex.simplex_crossover);
+                ConformerPool pool(dock_gpu_recommended_batch_size(),
+                                   &simplex, use_gpu);
                 bool last_seed_level = (j == seeds.size() - 1);
 
                 for (k = 0; ((k < exp_seeds.size())&&last_seed_level); k++) {
@@ -1635,87 +1488,25 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                                 simplex.id_torsions(exp_seeds[k].structure, vertex);
                                 simplex.torsion_scale_factors.resize(simplex.torsions.size(), 1);
 
-                                /* mirror Minimizer::minimize_flexible_growth:
-                                   with minimize_flexible_growth=no the
-                                   growth poses are left unminimized */
-                                if (simplex.use_min_flex_growth)
-                                {
-
-                                /* Match the CPU ramp path: score_converge ramps
-                                   from initial_score_converge down to
-                                   flex_min_score_converge across layers. */
-                                float pool_score_converge;
-                                if (simplex.use_min_flex_growth_ramp) {
-                                    float diff_interval =
-                                        simplex.initial_score_converge -
-                                        simplex.flex_min_score_converge;
-                                    float adj_unit =
-                                        diff_interval / (float)(num_layers - 1);
-                                    adj_unit *= (float)i;
-                                    pool_score_converge =
-                                        simplex.initial_score_converge - adj_unit;
-                                } else {
-                                    pool_score_converge =
-                                        simplex.flex_min_cycle_converge;
-                                }
-
                                 /* Backpressure: drain pool before adding if full */
                                 while (pool.active_count() >= pool.capacity()) {
                                     pool.step();
                                     pool.poll();
                                 }
 
-                                /* Two stages, mirroring
-                                   minimize_flexible_growth: a torsion
-                                   pre-min (rigid DOF locked) followed by
-                                   the full minimization.  The ramp path
-                                   uses the ramped converge for both. */
-                                float stageA_converge =
-                                    (simplex.use_min_flex_growth_ramp)
-                                        ? pool_score_converge
-                                        : simplex.flex_min_score_converge;
-                                SimplexStage gA;
-                                gA.max_iterations =
-                                    simplex.flex_min_torsion_iterations;
-                                gA.max_cycles     = simplex.flex_min_max_cycles;
-                                gA.score_converge = stageA_converge;
-                                gA.trans_step_size = 0.0f;
-                                gA.rot_step_size  = 0.0f;
-                                gA.tors_step_size =
-                                    simplex.flex_min_tors_step_size;
-                                SimplexStage gB;
-                                gB.max_iterations =
-                                    simplex.flex_min_max_iterations;
-                                gB.max_cycles     = simplex.flex_min_max_cycles;
-                                gB.score_converge = pool_score_converge;
-                                gB.trans_step_size =
-                                    simplex.flex_min_trans_step_size;
-                                gB.rot_step_size =
-                                    simplex.flex_min_rot_step_size;
-                                gB.tors_step_size =
-                                    simplex.flex_min_tors_step_size;
-
                                 pool.add(&exp_seeds[k].structure,
                                          vertex,
-                                         gA, gB,
+                                         simplex.flex_min_trans_step_size,
+                                         simplex.flex_min_rot_step_size,
+                                         simplex.flex_min_tors_step_size,
                                          simplex.flex_min_cycle_converge,
+                                         simplex.flex_min_max_iterations,
                                          simplex.restrained_min,
                                          simplex.coefficient_restraint,
                                          nullptr,
-                                         reinterpret_cast<void*>((intptr_t)k),
-                                         -1, 0,
-seed_key((unsigned)dock_mol_serial,
-                                         (unsigned)current_anchor,
-                                         (unsigned)i, (unsigned)l,
-                                         (unsigned)k));
-                                }
+                                         reinterpret_cast<void*>((intptr_t)k));
                             } else {
                                 /* CPU fallback: per-conformer minimization */
-                                simplex.set_local_rng_seed(
-                                    seed_key((unsigned)dock_mol_serial,
-                                             (unsigned)current_anchor,
-                                             (unsigned)i, (unsigned)l,
-                                             (unsigned)k));
                                 if (!simplex.use_min_flex_growth_ramp) {
                                     simplex.minimize_flexible_growth(
                                         exp_seeds[k].structure, score,
@@ -1742,77 +1533,6 @@ seed_key((unsigned)dock_mol_serial,
                 }
 
                 // Second pass: score and prune
-                // GPU-batched path: score every exp_seed of the last seed
-                // level in two dispatches (grid-only + grid+IE) instead of
-                // one CPU compute_primary_score per conformer.
-                bool gpu2 = false;
-                std::vector<float> g2_grid;
-                std::vector<float> g2_comb;
-                std::vector<char>  g2_valid;
-                if (use_gpu && score.use_primary_score &&
-                    j == (int)seeds.size() - 1 && !exp_seeds.empty()) {
-                    const int n2 = (int)exp_seeds.size();
-                    const int na2 = exp_seeds[0].structure.num_atoms;
-                    if (na2 > 0) {
-                        std::vector<float> xyz2((size_t)n2 * na2 * 3);
-                        for (int kk = 0; kk < n2; kk++) {
-                            DOCKMol & s2 = exp_seeds[kk].structure;
-                            for (int a = 0; a < na2; a++) {
-                                xyz2[(size_t)kk * na2 * 3 + a * 3 + 0] = s2.x[a];
-                                xyz2[(size_t)kk * na2 * 3 + a * 3 + 1] = s2.y[a];
-                                xyz2[(size_t)kk * na2 * 3 + a * 3 + 2] = s2.z[a];
-                            }
-                        }
-                        std::vector<int> flags2((size_t)na2);
-                        for (int a = 0; a < na2; a++)
-                            flags2[a] = exp_seeds[0].structure
-                                            .atom_active_flags[a] ? 1 : 0;
-                        g2_grid.resize((size_t)n2);
-                        g2_comb.resize((size_t)n2);
-                        g2_valid.resize((size_t)n2);
-                        bool ok = true;
-                        const char *dbg2 = getenv("DOCK_GPU2_DEBUG");
-                        if (dbg2) fprintf(stderr, "GPU2 gate i=%d l=%d j=%d/%d n2=%d na2=%d use_gpu=%d useprim=%d\n",
-                                          i, l, j, (int)seeds.size()-1, n2, na2, (int)use_gpu, (int)score.use_primary_score);
-                        for (int off = 0; off < n2; off += GPU_MAX_BATCH_POSES) {
-                            int cnt = n2 - off;
-                            if (cnt > GPU_MAX_BATCH_POSES)
-                                cnt = GPU_MAX_BATCH_POSES;
-                            if (!dock_gpu_batch_score(
-                                    &xyz2[(size_t)off * na2 * 3], cnt, na2,
-                                    flags2.data(), &g2_grid[off])) {
-                                if (dbg2) fprintf(stderr, "GPU2 batch_score FAILED off=%d cnt=%d na2=%d\n", off, cnt, na2);
-                                ok = false; break;
-                            }
-                            if (!dock_gpu_batch_score_with_ie_persistent(
-                                    &xyz2[(size_t)off * na2 * 3], cnt, na2,
-                                    flags2.data(), &g2_comb[off])) {
-                                if (dbg2) fprintf(stderr, "GPU2 with_ie FAILED off=%d cnt=%d na2=%d\n", off, cnt, na2);
-                                ok = false; break;
-                            }
-                        }
-                        float gminx, gminy, gminz, gmaxx, gmaxy, gmaxz;
-                        if (ok && dock_gpu_grid_bounds(&gminx, &gminy, &gminz,
-                                                       &gmaxx, &gmaxy, &gmaxz)) {
-                            /* kernel clamps out-of-bounds atoms; replicate
-                               the CPU out-of-grid rejection */
-                            for (int kk = 0; kk < n2; kk++) {
-                                DOCKMol & s2 = exp_seeds[kk].structure;
-                                bool inb = true;
-                                for (int a = 0; a < na2 && inb; a++) {
-                                    if (!s2.atom_active_flags[a]) continue;
-                                    if (!(s2.x[a] > gminx && s2.x[a] < gmaxx &&
-                                          s2.y[a] > gminy && s2.y[a] < gmaxy &&
-                                          s2.z[a] > gminz && s2.z[a] < gmaxz))
-                                        inb = false;
-                                }
-                                g2_valid[kk] = inb ? 1 : 0;
-                            }
-                        } else ok = false;
-                        gpu2 = ok;
-                    }
-                }
-
                 for (k = 0; ((k < exp_seeds.size())&&(j==seeds.size()-1)); k++) {
 
                     if (cb_ok[k] == 2) {
@@ -1820,34 +1540,8 @@ seed_key((unsigned)dock_mol_serial,
                             // compute the score for the molecule
                             // now internal energy is computed within compute_primary_score
                             if (score.use_primary_score){
-                                if (gpu2) {
-                                    valid_orient = (g2_valid[k] != 0);
-                                    exp_seeds[k].structure.current_score =
-                                        g2_grid[k];
-                                    exp_seeds[k].structure.internal_energy =
-                                        g2_comb[k] - g2_grid[k];
-                                    if (getenv("DOCK_GPU2_DEBUG") && k == 0) {
-                                        DOCKMol ref = exp_seeds[k].structure;
-                                        bool cpu_ok =
-                                            score.compute_primary_score(ref);
-                                        fprintf(stderr,
-                                            "GPU2 i=%d l=%d j=%d na2=%d "
-                                            "gpu_grid=%f gpu_comb=%f "
-                                            "cpu_grid=%f cpu_ie=%f "
-                                            "cpu_ok=%d cutoff=%f\n",
-                                            i, l, j,
-                                            exp_seeds[k].structure.num_atoms,
-                                            g2_grid[k], g2_comb[k],
-                                            ref.current_score,
-                                            ref.internal_energy, cpu_ok,
-                                            growth_score_cutoff_begin /
-                                                pow(growth_score_scaling_factor,
-                                                    i));
-                                    }
-                                } else {
-                                    valid_orient = score.compute_primary_score(exp_seeds[k].structure);
-                                    valid_orient = score.compute_primary_score(b4min_seeds[k].structure);
-                                }
+                                valid_orient = score.compute_primary_score(exp_seeds[k].structure);
+                                valid_orient = score.compute_primary_score(b4min_seeds[k].structure);
                             } else
                                 valid_orient = true;
 
@@ -1876,17 +1570,17 @@ seed_key((unsigned)dock_mol_serial,
  
                                          growth_score_cutoff = growth_score_cutoff_begin  / ( pow (growth_score_scaling_factor, i) );
 
-if (exp_seeds[k].structure.current_score <= growth_score_cutoff) {
-                                              if (ie_prune) {
-                                                  if (exp_seeds[k].structure.internal_energy > internal_energy_cutoff) {
-                                                      exp_seeds[k].used = true;
-                                                      confs_pruned_bad_score++;
-                                                  }
-                                              }
-                                          } else {
-                                                exp_seeds[k].used = true;
-                                                confs_pruned_bad_score++;
-                                          }
+                                         if (exp_seeds[k].structure.current_score <= growth_score_cutoff) {
+                                             if (ie_prune) {
+                                                 if (exp_seeds[k].structure.internal_energy > internal_energy_cutoff) {
+                                                     exp_seeds[k].used = true;
+                                                     confs_pruned_bad_score++;
+                                                 }
+                                             }
+                                         } else {
+                                               exp_seeds[k].used = true;
+                                               confs_pruned_bad_score++;
+                                         }
 
                             } else {
                                 exp_seeds[k].used = true;  // scoring failed
@@ -1909,15 +1603,6 @@ if (exp_seeds[k].structure.current_score <= growth_score_cutoff) {
  
             // Pruning section
             seeds.clear(); seeds.reserve(500);
-            if (getenv("DOCK_GPU2_DEBUG")) {
-                int bidx = 0;
-                for (int bq = 1; bq < (int)exp_seeds.size(); bq++)
-                    if (exp_seeds[bq].score < exp_seeds[bidx].score) bidx = bq;
-                fprintf(stderr, "CPUBEST i=%d l=%d grid=%f ie=%f n=%d\n",
-                        i, l, exp_seeds[bidx].structure.current_score,
-                        exp_seeds[bidx].structure.internal_energy,
-                        (int)exp_seeds.size());
-            }
             sort(exp_seeds.begin(), exp_seeds.end(), conformer_less_than);
             sort(b4min_seeds.begin(), b4min_seeds.end(), conformer_less_than);
 
@@ -2115,13 +1800,6 @@ AG_Conformer_Search::segment_torsion_drive(CONFORMER & conf, int current_bond, v
 
     num_torsions = conf.structure.amber_bt_torsion_total[bond_list[bond].bond_num];
 
-    /* Pre-size the return list: vector growth would relocate existing
-       CONFORMERs and every relocation deep-copies its DOCKMol via the
-       copy constructor (-> copy_molecule), multiplying heap churn in
-       the VS growth loop by the element count on each realloc. */
-    return_list.reserve(return_list.size() +
-                        (size_t)num_torsions * (size_t)num_rec);
-
     // sudipto & trent Dec 09, 2008
     // print num of torsions sampled
     //if (verbose) cout << num_torsions << " torsions sampled for bond_num=" << bond_list[bond].bond_num 
@@ -2234,13 +1912,7 @@ AG_Conformer_Search::segment_torsion_drive(CONFORMER & conf, int current_bond, v
 
     for (int i = 0; i < num_torsions; i++) {
 
-        /* First angle carries a full topology copy; subsequent angles
-           only refresh coords/flags — typing is identical by
-           construction and re-copying it churns the heap. */
-        if (i == 0)
-            copy_molecule(new_conf.structure, conf.structure);
-        else
-            copy_molecule_coords_only(new_conf.structure, conf.structure);
+        copy_molecule(new_conf.structure, conf.structure);
         new_conf.layer_num = conf.layer_num;
         new_conf.score = conf.score;
         new_conf.used = conf.used;
@@ -2296,11 +1968,7 @@ AG_Conformer_Search::segment_torsion_drive(CONFORMER & conf, int current_bond, v
       // Generate a copy for each grid
       // Generate copies of each segment_torsion_drive seed for each individual receptor grid_num
       for (int mg_num=0; mg_num < num_rec; mg_num++) {
-              /* emplace an empty CONFORMER and fill it directly — the
-                 old push_back(tmp_conf) deep-copied tmp_conf (incl. its
-                 whole DOCKMol) only for every field to be overwritten
-                 below, doubling the per-variant heap churn. */
-              return_list.emplace_back();
+              return_list.push_back(tmp_conf);        // ///////////////////////////////////////////////////////////////
               return_list[return_list.size() - 1].layer_num = new_conf.layer_num;
               return_list[return_list.size() - 1].score = new_conf.score;
               return_list[return_list.size() - 1].used = new_conf.used;
@@ -2503,13 +2171,6 @@ AG_Conformer_Search::segment_clash_check(DOCKMol & conf, int layer_num,
                     new_seg;
 
     bool            skip_flag = false;
-
-    if (use_clash_penalty && dock_gpu_is_active()) {
-        fprintf(stderr, "DOCK: clash checking (use_clash_overlap yes) is not "
-                        "supported with GPU scoring; run on CPU or disable "
-                        "use_clash_overlap\n");
-        exit(1);
-    }
 
     if (use_clash_penalty) {
 
@@ -4136,972 +3797,3 @@ vector <float> AG_Conformer_Search::calc_atoms_wt( vector <string> vec_atoms_cal
 
 
 
-
-// +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-// Windowed (batch-scheduler) growth — GPU path.
-//
-// Mirrors grow_periphery's per-round logic (drive -> clash/bump -> pool
-// minimize -> GPU2 score -> prune -> next seeds) but operates on a
-// VSGrowState whose rounds are interleaved across ligands in a SHARED
-// ConformerPool by the dock.cpp phase-3b scheduler.  State that depends
-// on the ligand (layers, bond list, anchors, ...) is parked in the
-// VSGrowState via grow_win_swap and swapped back before every call.
-// +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-
-void
-AG_Conformer_Search::grow_win_park(VSGrowState & g)
-{
-    std::swap(g.anchor_positions, anchor_positions);
-    std::swap(g.anchor_confs, anchor_confs);
-    std::swap(g.conf_anchors, conf_anchors);
-    std::swap(g.pruned_confs, pruned_confs);
-    std::swap(g.current_anchor, current_anchor);
-    std::swap(g.dock_mol_serial, dock_mol_serial);
-    std::swap(g.layers, layers);
-    std::swap(g.layer_segments, layer_segments);
-    std::swap(g.bond_list, bond_list);
-    std::swap(g.bond_tors_vectors, bond_tors_vectors);
-    std::swap(g.atom_seg_ids, atom_seg_ids);
-    std::swap(g.bond_seg_ids, bond_seg_ids);
-    std::swap(g.assigned_atoms, assigned_atoms);
-    std::swap(g.next_nbrs, next_nbrs);
-    std::swap(g.tmp_nextnbrs, tmp_nextnbrs);
-    std::swap(g.atom_in_anchor, atom_in_anchor);
-    std::swap(g.orig, orig);
-    std::swap(g.orig_segments, orig_segments);
-    std::swap(g.ligand_mol_symmetric, ligand_mol_symmetric);
-}
-
-void
-AG_Conformer_Search::grow_win_restore(VSGrowState & g)
-{
-    /* Deep copy the parked state back into the AG.  The park/restore
-       pair in the phase-3 prep loop restores from `base` once per
-       anchor set WITHOUT re-parking between sets, so the source must
-       stay intact — std::move would empty `base` after the first set
-       and crash setup_growth_anchor() on the second (empty
-       orig_segments, fault at 0x600). */
-    anchor_positions  = g.anchor_positions;
-    anchor_confs      = g.anchor_confs;
-    conf_anchors      = g.conf_anchors;
-    pruned_confs      = g.pruned_confs;
-    current_anchor    = g.current_anchor;
-    dock_mol_serial   = g.dock_mol_serial;
-    layers            = g.layers;
-    layer_segments    = g.layer_segments;
-    bond_list         = g.bond_list;
-    bond_tors_vectors = g.bond_tors_vectors;
-    atom_seg_ids      = g.atom_seg_ids;
-    bond_seg_ids      = g.bond_seg_ids;
-    assigned_atoms    = g.assigned_atoms;
-    next_nbrs         = g.next_nbrs;
-    tmp_nextnbrs      = g.tmp_nextnbrs;
-    atom_in_anchor    = g.atom_in_anchor;
-    orig              = g.orig;
-    orig_segments     = g.orig_segments;
-    ligand_mol_symmetric = g.ligand_mol_symmetric;
-}
-
-void
-AG_Conformer_Search::grow_win_init(VSGrowState & g, Master_Score & score,
-                                   Minimizer & simplex, Bump_Filter & bump)
-{
-    Trace trace("AG_Conformer_Search::grow_win_init()");
-    (void)bump;
-    int i;
-    int num_layers = (int)layers.size();
-    bool ie_prune = false;
-    bool valid_orient = false;
-    CONFORMER tmp_conf;
-    SCOREMol tmp_scoremol;
-    std::vector<SCOREMol> anchor_positions_b4min;
-    float rmsd;
-    std::vector<int>    wl_colors;
-    std::vector<double> wl_weights;
-
-    /* ---- internal-energy init (mirrors grow_periphery L1183-1201) ---- */
-    if (score.use_primary_score) {
-        trace.note("AG_conformer::grow_win_init:reinitialize energy ");
-        score.primary_score->use_internal_energy = use_internal_energy;
-        if (use_internal_energy || score.c_int.use_primary_score) {
-            if (use_internal_energy) {
-                score.primary_score->ie_att_exp = ie_att_exp;
-                score.primary_score->ie_rep_exp = ie_rep_exp;
-                score.primary_score->ie_diel = ie_diel;
-                score.primary_score->ie_soft_delta = ie_soft_delta;
-                ie_prune = true;
-            }
-            if (!use_internal_energy) {
-                initialize_internal_energy_parms(use_internal_energy,
-                    score.primary_score->ie_rep_exp,
-                    score.primary_score->ie_att_exp,
-                    score.primary_score->ie_diel,
-                    score.primary_score->ie_soft_delta,
-                    growth_score_cutoff);
-            }
-            /* The LUT row for this ligand was already registered by the
-               batch driver's phase-2 (dock.cpp); skip the legacy
-               single-ligand uploads, which are unused in VS mode. */
-            score.primary_score->initialize_internal_energy(
-                anchor_positions[0].second);
-            if (getenv("DOCK_GPU2_DEBUG"))
-                fprintf(stderr,
-                    "GROWDBG set=%d na=%d na_snap=%d "
-                    "seg0=%d seg7=%d seg10=%d "
-                    "np=%d\n",
-                    current_anchor, anchor_positions[0].second.num_atoms,
-                    (int)atom_seg_ids.size(),
-                    anchor_positions[0].second.atom_segment_ids[0],
-                    anchor_positions[0].second.atom_segment_ids[7],
-                    anchor_positions[0].second.atom_segment_ids[10],
-                    (int)score.primary_score->nb_int.size());
-        }
-    }
-    /* Snapshot THIS row's pair list + per-atom IE: primary_score is
-       shared across the window's rows and re-initialized per row, so the
-       per-round LUT refresh must not read it. */
-    if (score.primary_score->ie_vdwA != NULL) {
-        int np = score.primary_score->nb_int.size();
-        g.nb_flat.resize(np * 2);
-        for (int pi = 0; pi < np; pi++) {
-            g.nb_flat[pi * 2]     = score.primary_score->nb_int[pi].first;
-            g.nb_flat[pi * 2 + 1] = score.primary_score->nb_int[pi].second;
-        }
-        int na_ie = anchor_positions[0].second.num_atoms;
-        g.ie_vdwA_snap.assign(score.primary_score->ie_vdwA,
-                              score.primary_score->ie_vdwA + na_ie);
-    }
-    g.ie_prune = ie_prune;
-
-    /* ---- anchors: preminimized by the batch driver ---- */
-    if (verbose) cout << "-----------------------------------" << endl
-         << "VERBOSE GROWTH STATS : ANCHOR #" << current_anchor << endl << endl;
-
-    if (simplex.use_min_rigid_anchor) {
-        simplex.bond_vectors.clear();
-        simplex.bond_vectors.resize(anchor_positions[0].second.num_bonds, -1);
-    }
-    for (i = 0; i < (int)anchor_positions.size(); i++)
-        anchor_positions_b4min.push_back(anchor_positions[i]);
-
-    /* ---- seed init (mirrors grow_periphery L1360-1504) ---- */
-    for (i = 0; i < (int)anchor_positions.size(); i++) {
-        if (score.use_primary_score) {
-            valid_orient = score.primary_score->compute_score(
-                anchor_positions[i].second);
-            if (!valid_orient && verbose)
-                cout << "Error scoring Anchor #" << current_anchor
-                     << " Orient #" << i << ": "
-                     << anchor_positions[i].second.current_data << endl;
-        } else valid_orient = true;
-
-        if (valid_orient) {
-            g.exp_seeds.push_back(tmp_conf);
-            g.exp_seeds[g.exp_seeds.size() - 1].layer_num = 1;
-            g.exp_seeds[g.exp_seeds.size() - 1].score =
-                anchor_positions[i].second.current_score;
-            g.exp_seeds[g.exp_seeds.size() - 1].used = false;
-            copy_molecule(g.exp_seeds[g.exp_seeds.size() - 1].structure,
-                          anchor_positions[i].second);
-
-            g.b4min_seeds.push_back(tmp_conf);
-            g.b4min_seeds[g.b4min_seeds.size() - 1].layer_num = 1;
-            g.b4min_seeds[g.b4min_seeds.size() - 1].score =
-                anchor_positions[i].second.current_score;
-            g.b4min_seeds[g.b4min_seeds.size() - 1].used = false;
-            copy_molecule(g.b4min_seeds[g.b4min_seeds.size() - 1].structure,
-                          anchor_positions_b4min[i].second);
-        }
-    }
-
-    g.seeds.clear(); g.seeds.reserve(500);
-    sort(g.exp_seeds.begin(), g.exp_seeds.end(), conformer_less_than);
-    sort(g.b4min_seeds.begin(), g.b4min_seeds.end(), conformer_less_than);
-
-    /* filter confs by scores */
-    for (int j = 0; j < (int)g.exp_seeds.size(); j++) {
-        if (g.exp_seeds[j].score > anchor_score_cutoff)
-            g.exp_seeds[j].used = true;
-    }
-
-    /* cluster prune (mirrors grow_periphery L1414-1464) */
-    if (cluster) {
-        float RMSD_CUTOFF = pruning_clustering_cutoff;
-        if (pruning_cluster_rmsd_type == "weisfeiler" && ligand_mol_symmetric
-            && !g.exp_seeds.empty()) {
-            compute_wl_weights(layers, layer_segments, wl_weights);
-            {
-                static WL_RMSD wl;
-                wl.wl_color_refine(g.exp_seeds[0].structure, wl_colors, true);
-            }
-        }
-        for (int j = 0; j < (int)g.exp_seeds.size(); j++) {
-            if (!g.exp_seeds[j].used) {
-                for (int k = j + 1; k < (int)g.exp_seeds.size(); k++) {
-                    if (!g.exp_seeds[k].used) {
-                        if ((pruning_cluster_rmsd_type == "hungarian" ||
-                             pruning_cluster_rmsd_type == "min" ||
-                             pruning_cluster_rmsd_type == "weisfeiler") &&
-                            (!ligand_mol_symmetric))
-                            rmsd = calc_layer_rmsd(g.exp_seeds[j], g.exp_seeds[k]);
-                        else if (pruning_cluster_rmsd_type == "hungarian")
-                            rmsd = calc_layer_rmsd_hungarian(g.exp_seeds[j], g.exp_seeds[k]);
-                        else if (pruning_cluster_rmsd_type == "min")
-                            rmsd = calc_layer_rmsd_min(g.exp_seeds[j], g.exp_seeds[k]);
-                        else if (pruning_cluster_rmsd_type == "weisfeiler")
-                            rmsd = calc_layer_rmsd_weisfeiler(g.exp_seeds[j], g.exp_seeds[k],
-                                                              wl_colors, wl_weights.data());
-                        else
-                            rmsd = calc_layer_rmsd(g.exp_seeds[j], g.exp_seeds[k]);
-                        rmsd = MAX(rmsd, 0.001);
-                        if ((float)k / rmsd > RMSD_CUTOFF)
-                            g.exp_seeds[k].used = true;
-                    }
-                }
-            }
-        }
-    }
-
-    /* seed build (mirrors grow_periphery L1467-1504) */
-    int anchor_count = 0;
-    conf_anchors.clear();
-    conf_anchors.reserve(anchor_positions.size());
-    for (int j = 0; j < (int)g.exp_seeds.size(); j++) {
-        g.exp_seeds[j].conformer_num = count_conf_num;
-        g.exp_seeds[j].parent_num    = -1;
-        g.b4min_seeds[j].conformer_num = count_conf_num;
-        g.b4min_seeds[j].parent_num    = -1;
-        if (!g.exp_seeds[j].used) {
-            g.exp_seeds[j].anchor_num   = anchor_count;
-            g.b4min_seeds[j].anchor_num = anchor_count;
-            conf_anchors.push_back(g.b4min_seeds[j]);
-            if (print_growth_tree) conf_header(g.exp_seeds[j], "Minimized Anchor", score);
-            if (print_growth_tree) conf_header(g.b4min_seeds[j], "Unminimized Anchor", score);
-            if (print_growth_tree) g.b4min_seeds[j].structure.simplex_text = "";
-            g.seeds.push_back(g.exp_seeds[j]);
-            if (print_growth_tree) g.all_gen_seeds.push_back(g.exp_seeds[j]);
-            if (print_growth_tree) g.all_gen_b4min_seeds.push_back(g.b4min_seeds[j]);
-            anchor_count++;
-        }
-        count_conf_num++;
-    }
-
-    if (verbose) cout << g.seeds.size() << "/" << anchor_positions.size()
-               << " anchor orients retained (max " << num_anchor_poses << ")"
-               << endl;
-
-    if (getenv("DOCK_GPU2_DEBUG")) {
-        fprintf(stderr, "[ANCHDBG] win anchor=%d retained=%d scores:",
-                current_anchor, (int)g.seeds.size());
-        for (int j = 0; j < (int)g.exp_seeds.size() && j < 20; j++)
-            if (!g.exp_seeds[j].used)
-                fprintf(stderr, " %.4f@(%.2f,%.2f,%.2f)", g.exp_seeds[j].score,
-                        g.exp_seeds[j].structure.x[0],
-                        g.exp_seeds[j].structure.y[0],
-                        g.exp_seeds[j].structure.z[0]);
-        fprintf(stderr, "\n");
-    }
-
-    if (verbose) {
-        for (int layer_count = 1; layer_count < num_layers; layer_count++)
-            cout << "Lyr " << layer_count << "-"
-                 << layers[layer_count].segments.size() << " Segs|";
-        cout << "number of layers:" << num_layers << endl;
-    }
-
-    g.i = 1;
-    g.l = 0;
-    g.num_layers = num_layers;
-    g.k_add = 0;
-    g.inflight = 0;
-    g.adding = true;
-    g.drain_done = false;
-    g.done = false;
-}
-
-void
-AG_Conformer_Search::grow_win_prep(VSGrowState & g, ConformerPool & pool,
-                                   Master_Score & score,
-                                   Minimizer & simplex, Bump_Filter & bump)
-{
-    if (g.done) return;
-
-    const long t_prep0 = us_clock();
-
-    /* A single-layer ligand has no layers to grow (mirrors the sequential
-       grow_periphery loop `for (i = 1; i < num_layers; i++)`, which never
-       enters for num_layers==1).  The anchors are already the final
-       conformers; skipping ahead avoids indexing layers[g.seeds[0].layer_num]
-       (== layers[1]) on a size-1 vector when the round's verbose block runs
-       before the first drain. */
-    if (!g.drain_done && g.i >= g.num_layers) {
-        if (print_growth_tree)
-            for (int ii = 0; ii < (int)g.seeds.size(); ii++)
-                print_branch(g.all_gen_seeds, g.all_gen_b4min_seeds,
-                             g.seeds[ii], score);
-        g.pruned_confs.clear(); g.pruned_confs.reserve(g.seeds.size());
-        SCOREMol tmp_scoremol;
-        for (int ii = 0; ii < (int)g.seeds.size(); ii++) {
-            g.pruned_confs.push_back(tmp_scoremol);
-            g.pruned_confs[ii].first = g.seeds[ii].score;
-            copy_molecule(g.pruned_confs[ii].second, g.seeds[ii].structure);
-        }
-        pruned_confs = g.pruned_confs;
-        count_conf_num++;
-        g.seeds.clear();
-        g.exp_seeds.clear();
-        g.b4min_seeds.clear();
-        g.all_gen_seeds.clear();
-        g.all_gen_b4min_seeds.clear();
-        g.done = true;
-        return;
-    }
-
-    int i = g.i;
-    int l = g.l;
-
-    /* advance to the next round once the current one is drained/pruned */
-    if (g.drain_done) {
-        g.l++;
-        if (g.l >= (int)layers[g.i].segments.size()) {
-            g.l = 0;
-            g.i++;
-        }
-        if (g.i >= g.num_layers) {
-            /* END GROWTH (mirrors grow_periphery L1988-2010) */
-            if (print_growth_tree)
-                for (int ii = 0; ii < (int)g.seeds.size(); ii++)
-                    print_branch(g.all_gen_seeds, g.all_gen_b4min_seeds,
-                                 g.seeds[ii], score);
-            g.pruned_confs.clear(); g.pruned_confs.reserve(g.seeds.size());
-            SCOREMol tmp_scoremol;
-            for (int ii = 0; ii < (int)g.seeds.size(); ii++) {
-                g.pruned_confs.push_back(tmp_scoremol);
-                g.pruned_confs[ii].first = g.seeds[ii].score;
-                copy_molecule(g.pruned_confs[ii].second, g.seeds[ii].structure);
-            }
-            pruned_confs = g.pruned_confs;
-            count_conf_num++;
-            g.seeds.clear();
-            g.exp_seeds.clear();
-            g.b4min_seeds.clear();
-            g.all_gen_seeds.clear();
-            g.all_gen_b4min_seeds.clear();
-            g.done = true;
-            return;
-        }
-        g.drain_done = false;
-        g.drive_done = false;
-        g.adding = true;
-        g.k_add = 0;
-        g.inflight = 0;
-        i = g.i;
-        l = g.l;
-    }
-    if (!g.adding) return;
-
-
-    /* drive this round's torsion sampling (once) */
-    if (!g.drive_done) {
-        g.exp_seeds.clear(); g.exp_seeds.reserve(1000);
-        g.b4min_seeds.clear(); g.b4min_seeds.reserve(1000);
-
-        if (verbose && g.seeds.size() > 0) {
-            int bond = layer_segments[layers[g.seeds[0].layer_num].segments[l]].rot_bond;
-            cout << "Lyr:" << i << " Seg:" << l << " Bond:"
-                 << bond_list[bond].bond_num
-                 << " : Sampling "
-                 << g.seeds[0].structure.amber_bt_torsion_total[bond_list[bond].bond_num]
-                 << " dihedrals "
-                 << g.seeds[0].structure.atom_names[bond_list[bond].atom1] << "("
-                 << g.seeds[0].structure.atom_types[bond_list[bond].atom1] << ")  "
-                 << g.seeds[0].structure.atom_names[bond_list[bond].atom2] << "("
-                 << g.seeds[0].structure.atom_types[bond_list[bond].atom2] << ")  "
-                 << g.seeds[0].structure.atom_names[bond_list[bond].atom3] << "("
-                 << g.seeds[0].structure.atom_types[bond_list[bond].atom3] << ")  "
-                 << g.seeds[0].structure.atom_names[bond_list[bond].atom4] << "("
-                 << g.seeds[0].structure.atom_types[bond_list[bond].atom4] << ")"
-                 << endl;
-        }
-
-        const long t_drive0 = us_clock();
-        {
-            /* Parallel drive: each seed is independent (segment_torsion_drive
-               only reads the row's const layer tables + its own seed and
-               writes its own conformer list).  Order-preserving merge keeps
-               exp_seeds identical to the serial path (deterministic). */
-            const int num_seeds = (int)g.seeds.size();
-            const unsigned hw = std::thread::hardware_concurrency();
-            const int nworkers =
-                (hw > 1 && num_seeds > 8) ? (int)std::min<unsigned>(hw, 8) : 1;
-            if (nworkers > 1) {
-                std::vector<std::vector<CONFORMER> > per_seed(num_seeds);
-                std::vector<std::thread> workers;
-                workers.reserve(nworkers);
-                for (int t = 0; t < nworkers; t++)
-                    workers.push_back(std::thread([&, t]() {
-                        const int num_rec = score.ir_ensemble
-                            ? score.c_mg_nrg.numgrids : 1;
-                        for (int j = t; j < num_seeds; j += nworkers)
-                            segment_torsion_drive(g.seeds[j], l,
-                                                  per_seed[j], num_rec);
-                    }));
-                for (int t = 0; t < nworkers; t++)
-                    workers[t].join();
-                {   /* Reserve before merging: insert() into a vector that
-                       reallocs would deep-copy every existing seed. */
-                    size_t _ps_total = 0;
-                    for (int j = 0; j < num_seeds; j++)
-                        _ps_total += per_seed[j].size();
-                    g.exp_seeds.reserve(g.exp_seeds.size() + _ps_total);
-                }
-                for (int j = 0; j < num_seeds; j++)
-                    g.exp_seeds.insert(g.exp_seeds.end(),
-                                       per_seed[j].begin(),
-                                       per_seed[j].end());
-            } else {
-                for (int j = 0; j < num_seeds; j++) {
-                    if (score.ir_ensemble)
-                        segment_torsion_drive(g.seeds[j], l, g.exp_seeds,
-                                              score.c_mg_nrg.numgrids);
-                    else
-                        segment_torsion_drive(g.seeds[j], l, g.exp_seeds, 1);
-                }
-            }
-        }
-        g.dbg_drive_us += us_clock() - t_drive0;
-        g.cb_ok.assign(g.exp_seeds.size(), 0);
-        g.k_add = 0;
-        g.drive_done = true;
-    }
-
-    /* Re-register this set's LUT row for THIS round's active atom set.
-       The row was registered during phase-2 with the anchor's active
-       flags; each growth round activates additional atoms, and the VS
-       kernels skip atoms whose LUT flag is 0 — without this refresh the
-       grid/IE scores (and the pool's NM iterations) would only cover the
-       anchor subset of the molecule.  All samples of a round share the
-       same active set (exp_seeds[0]), and the pair list is the full
-       molecule's (built at init), so only the flags change per round. */
-    if (!g.exp_seeds.empty() && dock_gpu_is_active()) {
-        DOCKMol & amol = anchor_positions[0].second;
-        int na = amol.num_atoms;
-        std::vector<int> af(na);
-        for (int a = 0; a < na; a++)
-            af[a] = g.exp_seeds[0].structure.atom_active_flags[a] ? 1 : 0;
-        dock_gpu_vs_update_active_flags(g.lig_idx, af.data(), na);
-        /* The phase-2 pair registration was built from the phase-1
-           orientation replay, whose bond/neighbor state can differ from
-           this row's growth-prep molecule; push the CPU-exact table
-           snapshotted at grow_win_init so NM + pruning score the same
-           internal energy the classic path computes. */
-        if (!g.nb_flat.empty() && !g.ie_vdwA_snap.empty()) {
-            dock_gpu_vs_update_pairs(g.lig_idx, g.ie_vdwA_snap.data(),
-                                     g.nb_flat.data(),
-                                     (int)g.nb_flat.size() / 2, na);
-        }
-    }
-
-    /* first pass: b4min save + clash/bump + pool.add (resumable) */
-    const long t_add0 = us_clock();
-    while (g.k_add < (int)g.exp_seeds.size()) {
-        /* backpressure: stop adding when the shared pool is full; the
-           scheduler steps the pool and we resume here */
-        if (pool.active_count() >= pool.capacity()) {
-            g.dbg_add_us += us_clock() - t_add0;
-            g.dbg_prep_us += us_clock() - t_prep0;
-            return;
-        }
-
-        const int k = g.k_add;
-        g.b4min_seeds.push_back(g.exp_seeds[k]);
-
-        if (segment_clash_check(g.exp_seeds[k].structure, i, l)) {
-            if (bump.check_growth_bumps(g.exp_seeds[k].structure)) {
-                g.cb_ok[k] = 2;
-                FLOATVec vertex;
-                for (int iv = 0; iv < 6; iv++) vertex.push_back(0.0f);
-                simplex.id_torsions(g.exp_seeds[k].structure, vertex);
-                simplex.torsion_scale_factors.resize(simplex.torsions.size(), 1);
-                /* id_torsions leaves bond_vectors at whatever grow_win_init
-                   set (anchor-sized); the torsion list may reference bonds
-                   of the full grown structure, so size it per-seed before
-                   the pool snapshots it. */
-                simplex.bond_vectors.clear();
-                simplex.bond_vectors.resize(
-                    g.exp_seeds[k].structure.num_bonds, -1);
-                if (simplex.use_min_flex_growth) {
-                    float pool_score_converge;
-                    if (simplex.use_min_flex_growth_ramp) {
-                        float diff_interval =
-                            simplex.initial_score_converge -
-                            simplex.flex_min_score_converge;
-                        float adj_unit =
-                            diff_interval / (float)(g.num_layers - 1);
-                        adj_unit *= (float)i;
-                        pool_score_converge =
-                            simplex.initial_score_converge - adj_unit;
-                    } else {
-                        pool_score_converge = simplex.flex_min_cycle_converge;
-                    }
-                    float stageA_converge =
-                        (simplex.use_min_flex_growth_ramp)
-                            ? pool_score_converge
-                            : simplex.flex_min_score_converge;
-                    SimplexStage gA;
-                    gA.max_iterations  = simplex.flex_min_torsion_iterations;
-                    gA.max_cycles      = simplex.flex_min_max_cycles;
-                    gA.score_converge  = stageA_converge;
-                    gA.trans_step_size = 0.0f;
-                    gA.rot_step_size   = 0.0f;
-                    gA.tors_step_size  = simplex.flex_min_tors_step_size;
-                    SimplexStage gB;
-                    gB.max_iterations  = simplex.flex_min_max_iterations;
-                    gB.max_cycles      = simplex.flex_min_max_cycles;
-                    gB.score_converge  = pool_score_converge;
-                    gB.trans_step_size = simplex.flex_min_trans_step_size;
-                    gB.rot_step_size   = simplex.flex_min_rot_step_size;
-                    gB.tors_step_size  = simplex.flex_min_tors_step_size;
-
-                    if (pool.gpu_active() || getenv("DOCK_POOL_CPU")) {
-                        if (getenv("DOCK_POOL_CPU"))
-                            g.cpu_min_round = true;
-                        int added = pool.add(
-                            &g.exp_seeds[k].structure, vertex, gA, gB,
-                            simplex.flex_min_cycle_converge,
-                            simplex.restrained_min,
-                            simplex.coefficient_restraint,
-                            nullptr,
-                            reinterpret_cast<void*>((intptr_t)
-                                (((size_t)g.route << 12) | (size_t)k)),
-                            g.lig_idx,
-                            g.exp_seeds[k].structure.num_atoms,
-                            seed_key((unsigned)dock_mol_serial,
-                                     (unsigned)current_anchor + 1,
-                                     (unsigned)i, (unsigned)l,
-                                     (unsigned)k));
-                        if (added >= 0) g.inflight++;
-                        else fprintf(stderr, "POOLADDFAIL route=%d k=%d na=%d "
-                                     "pool add failed, conformer left raw\n",
-                                     g.route, k,
-                                     g.exp_seeds[k].structure.num_atoms);
-                    } else {
-                        /* CPU-min mode: refine synchronously in place
-                           (mirrors grow_periphery's CPU fallback); the
-                           round completes without pool round-trips. */
-                        g.cpu_min_round = true;
-                        simplex.set_local_rng_seed(
-                            seed_key((unsigned)dock_mol_serial,
-                                     (unsigned)current_anchor + 1,
-                                     (unsigned)i, (unsigned)l,
-                                     (unsigned)k));
-                        if (!simplex.use_min_flex_growth_ramp) {
-                            simplex.minimize_flexible_growth(
-                                g.exp_seeds[k].structure, score,
-                                bond_tors_vectors);
-                        } else {
-                            simplex.minimize_flexible_ramp_growth(
-                                g.exp_seeds[k].structure, score,
-                                bond_tors_vectors, i, g.num_layers);
-                        }
-                    }
-                    }
-            } else {
-                g.cb_ok[k] = 1;
-            }
-        }
-        g.k_add++;
-    }
-    g.dbg_add_us += us_clock() - t_add0;
-    g.dbg_prep_us += us_clock() - t_prep0;
-    g.dbg_nseeds = (int)g.seeds.size();
-    g.dbg_nexp = (int)g.exp_seeds.size();
-    g.adding = false;
-}
-
-void
-AG_Conformer_Search::grow_win_score_round(VSGrowState & g, Master_Score & score)
-{
-    g.gpu2_ok = false;
-    if (!score.use_primary_score) return;
-    if (g.exp_seeds.empty()) return;
-    const int n2 = (int)g.exp_seeds.size();
-    const int na2 = g.exp_seeds[0].structure.num_atoms;
-    if (na2 <= 0) return;
-
-    /* Persistent staging: the stream-ordered batches reference these
-       buffers until dock_gpu_batch_score_sync2() copies results out. */
-    g.g2_xyz.resize((size_t)n2 * na2 * 3);
-    g.g2_pose_lig.assign((size_t)n2, g.lig_idx);
-    for (int kk = 0; kk < n2; kk++) {
-        DOCKMol & s2 = g.exp_seeds[kk].structure;
-        for (int a = 0; a < na2; a++) {
-            g.g2_xyz[(size_t)kk * na2 * 3 + a * 3 + 0] = s2.x[a];
-            g.g2_xyz[(size_t)kk * na2 * 3 + a * 3 + 1] = s2.y[a];
-            g.g2_xyz[(size_t)kk * na2 * 3 + a * 3 + 2] = s2.z[a];
-        }
-    }
-    g.g2_grid.resize((size_t)n2);
-    g.g2_comb.resize((size_t)n2);
-    g.g2_valid.assign((size_t)n2, 0);
-
-    /* Async on the secondary stream: grid-only pass, then grid+IE pass.
-       dock.cpp syncs stream2 at the top of the row block, so the consume
-       (prune) half of the next grow_win_finish() sees valid scores. */
-    bool ok = true;
-    for (int off = 0; off < n2; off += GPU_MAX_BATCH_POSES) {
-        int cnt = n2 - off;
-        if (cnt > GPU_MAX_BATCH_POSES) cnt = GPU_MAX_BATCH_POSES;
-        if (!dock_gpu_batch_score_vs_enqueue2(
-                &g.g2_xyz[(size_t)off * na2 * 3], cnt, na2,
-                &g.g2_pose_lig[off], &g.g2_grid[off], 1)) {
-            ok = false; break;
-        }
-        if (!dock_gpu_batch_score_vs_enqueue2(
-                &g.g2_xyz[(size_t)off * na2 * 3], cnt, na2,
-                &g.g2_pose_lig[off], &g.g2_comb[off], 0)) {
-            ok = false; break;
-        }
-    }
-    float gminx, gminy, gminz, gmaxx, gmaxy, gmaxz;
-    if (ok && dock_gpu_grid_bounds(&gminx, &gminy, &gminz,
-                                   &gmaxx, &gmaxy, &gmaxz)) {
-        for (int kk = 0; kk < n2; kk++) {
-            DOCKMol & s2 = g.exp_seeds[kk].structure;
-            bool inb = true;
-            for (int a = 0; a < na2 && inb; a++) {
-                if (!s2.atom_active_flags[a]) continue;
-                if (!(s2.x[a] > gminx && s2.x[a] < gmaxx &&
-                      s2.y[a] > gminy && s2.y[a] < gmaxy &&
-                      s2.z[a] > gminz && s2.z[a] < gmaxz))
-                    inb = false;
-            }
-            g.g2_valid[kk] = inb ? 1 : 0;
-        }
-    } else ok = false;
-    g.gpu2_ok = ok;
-
-}
-
-void
-AG_Conformer_Search::grow_win_finish(VSGrowState & g, Master_Score & score,
-                                     Minimizer & simplex, Bump_Filter & bump)
-{
-    (void)simplex;
-    if (g.adding || g.inflight > 0 || g.done) {
-        return;
-    }
-
-    if (g.gpu2_pending) {
-        /* Async screen results are ready (dock.cpp synced stream2 at the
-           top of the row block): prune and promote now. */
-        grow_win_prune(g, score, bump);
-        g.gpu2_pending = false;
-        g.drain_done = true;
-        g.adding = true;
-        return;
-    }
-
-    /* Enqueue the screen on stream2; the prune half runs on the next
-       selection of this row, once dock.cpp has synced the results. */
-    grow_win_score_round(g, score);
-    g.gpu2_pending = g.gpu2_ok;
-    if (g.gpu2_pending) return;
-
-    /* Backend unavailable: score on the CPU now (prune loop's fallback)
-       and advance immediately. */
-    grow_win_prune(g, score, bump);
-    g.drain_done = true;
-    g.adding = true;
-}
-
-void
-AG_Conformer_Search::grow_win_prune(VSGrowState & g, Master_Score & score,
-                                    Bump_Filter & bump)
-{
-    const int i = g.i;
-    const int l = g.l;
-    const int j_last = (int)g.seeds.size() - 1;
-    const long t_prune0 = us_clock();
-    const long dbg_p0 = g.dbg_prep_us, dbg_d0 = g.dbg_drive_us,
-               dbg_a0 = g.dbg_add_us;
-
-    /* second pass: score + prune (mirrors grow_periphery L1786-1876) */
-    /* The pool's NM refines the added samples' coordinates in place
-       (exp_seeds[k].structure), so the g2_* scores enqueued at
-       score_round time are stale for the added poses.  Re-score the
-       current (refined) coordinates so the layer's ranking matches the
-       minimized poses the classic path keeps. */
-    if (g.gpu2_ok && !g.cpu_min_round && !g.exp_seeds.empty()) {
-        const int n2 = (int)g.exp_seeds.size();
-        const int na2 = g.exp_seeds[0].structure.num_atoms;
-        if (na2 > 0) {
-            for (int kk = 0; kk < n2; kk++) {
-                DOCKMol & s2 = g.exp_seeds[kk].structure;
-                for (int a = 0; a < na2; a++) {
-                    g.g2_xyz[(size_t)kk * na2 * 3 + a * 3 + 0] = s2.x[a];
-                    g.g2_xyz[(size_t)kk * na2 * 3 + a * 3 + 1] = s2.y[a];
-                    g.g2_xyz[(size_t)kk * na2 * 3 + a * 3 + 2] = s2.z[a];
-                }
-            }
-            for (int off = 0; off < n2; off += GPU_MAX_BATCH_POSES) {
-                int cnt = n2 - off;
-                if (cnt > GPU_MAX_BATCH_POSES) cnt = GPU_MAX_BATCH_POSES;
-                dock_gpu_batch_score_vs_enqueue2(
-                    &g.g2_xyz[(size_t)off * na2 * 3], cnt, na2,
-                    &g.g2_pose_lig[off], &g.g2_grid[off], 1);
-                dock_gpu_batch_score_vs_enqueue2(
-                    &g.g2_xyz[(size_t)off * na2 * 3], cnt, na2,
-                    &g.g2_pose_lig[off], &g.g2_comb[off], 0);
-            }
-            dock_gpu_batch_score_sync2();
-            float gminx, gminy, gminz, gmaxx, gmaxy, gmaxz;
-            if (dock_gpu_grid_bounds(&gminx, &gminy, &gminz,
-                                     &gmaxx, &gmaxy, &gmaxz)) {
-                for (int kk = 0; kk < n2; kk++) {
-                    DOCKMol & s2 = g.exp_seeds[kk].structure;
-                    bool inb = true;
-                    for (int a = 0; a < na2 && inb; a++) {
-                        if (!s2.atom_active_flags[a]) continue;
-                        if (!(s2.x[a] > gminx && s2.x[a] < gmaxx &&
-                              s2.y[a] > gminy && s2.y[a] < gmaxy &&
-                              s2.z[a] > gminz && s2.z[a] < gmaxz))
-                            inb = false;
-                    }
-                    g.g2_valid[kk] = inb ? 1 : 0;
-                }
-            }
-        }
-    }
-    bool valid_orient = false;
-    for (int k = 0; k < (int)g.exp_seeds.size(); k++) {
-        if (g.cb_ok[k] == 2) {
-            if (score.use_primary_score) {
-                if (g.gpu2_ok && !g.cpu_min_round) {
-                    valid_orient = (g.g2_valid[k] != 0);
-                    g.exp_seeds[k].structure.current_score = g.g2_grid[k];
-                    g.exp_seeds[k].structure.internal_energy =
-                        g.g2_comb[k] - g.g2_grid[k];
-                    if (getenv("DOCK_GPU2_DEBUG")) {
-                        if (getenv("DOCK_GPU2_ALL")) {
-                            for (int bq = 0; bq < (int)g.exp_seeds.size(); bq++) {
-                                DOCKMol refa = g.exp_seeds[bq].structure;
-                                bool coka = score.compute_primary_score(refa);
-                                fprintf(stderr, "GPU2ALL r%d i=%d l=%d k=%d gpu_grid=%f gpu_comb=%f cpu_grid=%f cpu_ok=%d\n",
-                                        g.route, i, l, bq, g.g2_grid[bq],
-                                        g.g2_comb[bq], refa.current_score,
-                                        (int)coka);
-                            }
-                        }
-                        int bidx = 0;
-                        for (int bq = 1; bq < (int)g.exp_seeds.size(); bq++)
-                            if (g.g2_comb[bq] < g.g2_comb[bidx]) bidx = bq;
-                        DOCKMol ref = g.exp_seeds[bidx].structure;
-                        bool cpu_ok = score.compute_primary_score(ref);
-                        static int np_gpu = -1;
-                        if (np_gpu < 0) {
-                            int pairs[8192];
-                            np_gpu = dock_gpu_vs_dump_pairs(
-                                g.lig_idx, pairs, 4096);
-                            int np_cpu = (int)g.nb_flat.size() / 2;
-                            std::vector<std::pair<int,int> > gp, cp;
-                            for (int pi = 0; pi < np_gpu; pi++)
-                                gp.push_back(std::make_pair(pairs[pi*2],
-                                                            pairs[pi*2+1]));
-                            for (int pi = 0; pi < np_cpu; pi++)
-                                cp.push_back(std::make_pair(g.nb_flat[pi*2],
-                                                            g.nb_flat[pi*2+1]));
-                            std::sort(gp.begin(), gp.end());
-                            std::sort(cp.begin(), cp.end());
-                            int i1 = 0, i2 = 0, nmiss = 0, nadd = 0;
-                            int miss[6], add[6];
-                            for (int m = 0; m < 6; m++) {
-                                miss[m] = -1; add[m] = -1;
-                            }
-                            while (i1 < np_cpu || i2 < np_gpu) {
-                                if (i2 >= np_gpu ||
-                                    (i1 < np_cpu && cp[i1] < gp[i2])) {
-                                    if (nmiss < 6) {
-                                        miss[nmiss*2] = cp[i1].first;
-                                        miss[nmiss*2+1] = cp[i1].second;
-                                    }
-                                    nmiss++; i1++;
-                                } else if (i1 >= np_cpu ||
-                                           gp[i2] < cp[i1]) {
-                                    if (nadd < 6) {
-                                        add[nadd*2] = gp[i2].first;
-                                        add[nadd*2+1] = gp[i2].second;
-                                    }
-                                    nadd++; i2++;
-                                } else { i1++; i2++; }
-                            }
-                            fprintf(stderr,
-                                "PAIRDBG set=%d np_cpu=%d np_gpu=%d "
-                                "nmiss=%d nadd=%d "
-                                "miss0=(%d,%d) miss1=(%d,%d) miss2=(%d,%d) "
-                                "add0=(%d,%d) add1=(%d,%d) "
-                                "seg0=%d seg7=%d seg10=%d\n",
-                                g.set_idx, np_cpu, np_gpu, nmiss, nadd,
-                                miss[0], miss[1], miss[2], miss[3],
-                                miss[4], miss[5],
-                                add[0], add[1], add[2], add[3],
-                                g.exp_seeds[bidx].structure.
-                                    atom_segment_ids[0],
-                                g.exp_seeds[bidx].structure.
-                                    atom_segment_ids[7],
-                                g.exp_seeds[bidx].structure.
-                                    atom_segment_ids[10]);
-                        }
-                        fprintf(stderr,
-                            "GPU2 r%d i=%d l=%d na=%d "
-                            "gpu_grid=%f gpu_comb=%f "
-                            "cpu_grid=%f cpu_ie=%f "
-                            "cpu_ok=%d cutoff=%f n=%d\n",
-                            g.route, i, l,
-                            g.exp_seeds[bidx].structure.num_atoms,
-                            g.g2_grid[bidx], g.g2_comb[bidx],
-                            ref.current_score, ref.internal_energy,
-                            cpu_ok, growth_score_cutoff_begin /
-                                pow(growth_score_scaling_factor, i),
-                            (int)g.exp_seeds.size());
-                    }
-                } else {
-                    valid_orient = score.compute_primary_score(g.exp_seeds[k].structure);
-                    valid_orient = score.compute_primary_score(g.b4min_seeds[k].structure);
-                }
-            } else valid_orient = true;
-
-            if (valid_orient) {
-                if (print_growth_tree) {
-                    ostringstream text;
-                    text << i << ":" << l << ":" << j_last << ":" << k;
-                    conf_header(g.exp_seeds[k], text.str(), score);
-                    conf_header(g.b4min_seeds[k], text.str(), score);
-                    g.b4min_seeds[k].structure.simplex_text = "";
-                }
-                g.exp_seeds[k].score =
-                    g.exp_seeds[k].structure.current_score +
-                    g.exp_seeds[k].structure.internal_energy;
-                g.b4min_seeds[k].score = g.exp_seeds[k].score;
-
-                growth_score_cutoff =
-                    growth_score_cutoff_begin / (pow(growth_score_scaling_factor, i));
-                if (g.exp_seeds[k].structure.current_score <= growth_score_cutoff) {
-                    if (g.ie_prune) {
-                        if (g.exp_seeds[k].structure.internal_energy >
-                            internal_energy_cutoff) {
-                            g.exp_seeds[k].used = true;
-                            g.confs_pruned_bad_score++;
-                        }
-                    }
-                } else {
-                    g.exp_seeds[k].used = true;
-                    g.confs_pruned_bad_score++;
-                }
-            } else {
-                g.exp_seeds[k].used = true;
-                g.confs_pruned_outside_grid++;
-            }
-        } else if (g.cb_ok[k] == 1) {
-            g.exp_seeds[k].used = true;
-            g.confs_pruned_bump_filter++;
-        } else {
-            g.exp_seeds[k].used = true;
-            g.confs_pruned_clash_overlap++;
-        }
-    }
-
-    /* pruning section (mirrors grow_periphery L1880-1979) */
-    g.seeds.clear(); g.seeds.reserve(500);
-    sort(g.exp_seeds.begin(), g.exp_seeds.end(), conformer_less_than);
-    sort(g.b4min_seeds.begin(), g.b4min_seeds.end(), conformer_less_than);
-
-    if (cluster) {
-        float RMSD_CUTOFF = pruning_clustering_cutoff;
-        std::vector<int>    wl_colors2;
-        std::vector<double> wl_weights2;
-        if (pruning_cluster_rmsd_type == "weisfeiler" && ligand_mol_symmetric
-            && !g.exp_seeds.empty()) {
-            compute_wl_weights(layers, layer_segments, wl_weights2);
-            {
-                static WL_RMSD wl;
-                wl.wl_color_refine(g.exp_seeds[0].structure, wl_colors2, true);
-            }
-        }
-        float rmsd;
-        for (int j = 0; j < (int)g.exp_seeds.size(); j++) {
-            if (!g.exp_seeds[j].used) {
-                for (int k = j + 1; k < (int)g.exp_seeds.size(); k++) {
-                    if (!g.exp_seeds[k].used) {
-                        if ((pruning_cluster_rmsd_type == "hungarian" ||
-                             pruning_cluster_rmsd_type == "min" ||
-                             pruning_cluster_rmsd_type == "weisfeiler") &&
-                            (!ligand_mol_symmetric))
-                            rmsd = calc_layer_rmsd(g.exp_seeds[j], g.exp_seeds[k]);
-                        else if (pruning_cluster_rmsd_type == "hungarian")
-                            rmsd = calc_layer_rmsd_hungarian(g.exp_seeds[j], g.exp_seeds[k]);
-                        else if (pruning_cluster_rmsd_type == "min")
-                            rmsd = calc_layer_rmsd_min(g.exp_seeds[j], g.exp_seeds[k]);
-                        else if (pruning_cluster_rmsd_type == "weisfeiler")
-                            rmsd = calc_layer_rmsd_weisfeiler(g.exp_seeds[j], g.exp_seeds[k],
-                                                              wl_colors2, wl_weights2.data());
-                        else
-                            rmsd = calc_layer_rmsd(g.exp_seeds[j], g.exp_seeds[k]);
-                        rmsd = MAX(rmsd, 0.001);
-                        if ((float)k / rmsd > RMSD_CUTOFF) {
-                            g.exp_seeds[k].used = true;
-                            g.confs_pruned_clustered++;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /* copy pruned confs to seed list (mirrors grow_periphery L1946-1958) */
-    for (int j = 0; ((j < (int)g.exp_seeds.size()) &&
-                     ((int)g.seeds.size() < num_growth_poses)); j++) {
-        if (!g.exp_seeds[j].used) {
-            g.seeds.push_back(g.exp_seeds[j]);
-            if (print_growth_tree) g.all_gen_seeds.push_back(g.exp_seeds[j]);
-            if (print_growth_tree) g.all_gen_b4min_seeds.push_back(g.b4min_seeds[j]);
-        }
-    }
-
-    if (verbose) {
-        cout << "Lyr:" << i << " Seg:" << l << " ";
-        cout << g.seeds.size() << "/" << g.exp_seeds.size() << " retained, Pruning: ";
-        if (g.confs_pruned_outside_grid>0) cout << g.confs_pruned_outside_grid << "-outside grid ";
-        if (g.confs_pruned_bad_score>0) cout << g.confs_pruned_bad_score << "-score ";
-        if (cluster && g.confs_pruned_clustered>0) cout << g.confs_pruned_clustered << "-clustered ";
-        if (use_clash_penalty && g.confs_pruned_clash_overlap>0) cout << g.confs_pruned_clash_overlap << "-clash overlap ";
-        if (bump.bump_filter && g.confs_pruned_bump_filter>0) cout << g.confs_pruned_bump_filter << "-bump filter ";
-        if (print_growth_tree) cout << " (" << g.all_gen_seeds.size() << " in growth tree)";
-        cout << endl;
-    }
-    g.confs_pruned_bad_score = 0;
-    g.confs_pruned_clash_overlap = 0;
-    g.confs_pruned_outside_grid = 0;
-    g.confs_pruned_bump_filter = 0;
-    g.confs_pruned_clustered = 0;
-
-    if (verbose) dock_gpu_monitor(i, l, (int)layers[i].segments.size());
-
-    g.dbg_prune_us += us_clock() - t_prune0;
-    if (getenv("DOCK_LBAL_DEBUG")) {
-        fprintf(stderr, "[LBALDBG] r=%d i=%d l=%d seeds=%d exp=%d "
-                "prep=%lldms drive=%lldms add=%lldms prune=%lldms\n",
-                g.route, i, l, g.dbg_nseeds, g.dbg_nexp,
-                (long long)((g.dbg_prep_us - dbg_p0) / 1000),
-                (long long)((g.dbg_drive_us - dbg_d0) / 1000),
-                (long long)((g.dbg_add_us - dbg_a0) / 1000),
-                (long long)((g.dbg_prune_us - t_prune0) / 1000));
-    }
-
-    /* Round fully processed.  Signal prep() to advance the cursor and
-       run the next round; prep()'s drain_done block also hosts the
-       end-of-growth pruned_confs build.  adding=true re-enables the
-       scheduler's prep() call for this row. */
-    g.drain_done = true;
-    g.adding = true;
-}

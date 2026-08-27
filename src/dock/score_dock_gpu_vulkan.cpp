@@ -143,7 +143,6 @@ void kernel_persistent() {
             for (int i = start; i < end; i++) {
                 int a2 = pair_indices[i];
                 if (a2 < 0 || a2 >= p.num_atoms) continue;
-                if (active_flags[a2] == 0) continue;
                 float dx = xyz[stride + int(a)*3]     - xyz[stride + a2*3];
                 float dy = xyz[stride + int(a)*3 + 1] - xyz[stride + a2*3 + 1];
                 float dz = xyz[stride + int(a)*3 + 2] - xyz[stride + a2*3 + 2];
@@ -1049,19 +1048,13 @@ int dock_gpu_set_ligand_ie(const float *ie_vdwA, const float *ie_vdwB,
 }
 
 int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
-                         const int *active_flags, float *out_scores)
+                         float *out_scores)
 {
     if (!g_initialized) return 0;
     if (num_poses > GPU_MAX_POSES || num_atoms > GPU_MAX_ATOMS) return 0;
 
     size_t xyz_bytes = sizeof(float) * (size_t)num_poses * (size_t)num_atoms * 3;
     memcpy(g_xyz.map, xyz, xyz_bytes);
-    if (active_flags) {
-        memcpy(g_active_flags.map, active_flags, sizeof(int) * (size_t)num_atoms);
-    } else {
-        int *af = (int *)g_active_flags.map;
-        for (int i = 0; i < num_atoms; i++) af[i] = 1;
-    }
 
     PushConstants pc = {};
     fill_push_constants(&pc, num_atoms, num_poses, 0.0f, 1e10f, 0);
@@ -1173,6 +1166,60 @@ int dock_gpu_is_active(void)
 {
     return g_initialized && (g_dev != VK_NULL_HANDLE);
 }
+int dock_gpu_is_integrated(void)
+{
+    if (!g_initialized || g_phys == VK_NULL_HANDLE) return -1;
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(g_phys, &mp);
+    for (uint32_t i = 0; i < mp.memoryHeapCount; i++) {
+        if (mp.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+            // integrated shares single heap with HOST_VISIBLE, discrete has separate DEVICE_LOCAL without HOST_VISIBLE
+            // heuristic: if heap is DEVICE_LOCAL and not HOST_VISIBLE, discrete; else integrated
+            // check memory types for this heap
+            bool has_host_visible = false;
+            for (uint32_t t = 0; t < mp.memoryTypeCount; t++) {
+                if (mp.memoryTypes[t].heapIndex == i &&
+                    (mp.memoryTypes[t].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
+                    has_host_visible = true;
+            }
+            if (!has_host_visible) return 0; // discrete
+        }
+    }
+    return 1; // integrated (unified)
+}
+int dock_gpu_mem_info(size_t *freeB, size_t *totalB)
+{
+    if (!g_initialized || g_phys == VK_NULL_HANDLE) return 0;
+    // try VK_EXT_memory_budget if available
+    VkPhysicalDeviceMemoryProperties2 mp2; mp2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT budget; budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
+    mp2.pNext = &budget;
+    // check if extension supported via vkGetPhysicalDeviceMemoryProperties2
+    // fallback to heap size
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(g_phys, &mp);
+    if (freeB) *freeB = 0;
+    if (totalB) *totalB = 0;
+    // try budget if loaded (we probe via instance extension)
+    // for integrated, heapBudget ~ avail host, for discrete, heap 0 is VRAM
+    // use prop if we can get it via vkGetPhysicalDeviceMemoryProperties2
+    // we attempt to call it if present
+    PFN_vkGetPhysicalDeviceMemoryProperties2 fn = (PFN_vkGetPhysicalDeviceMemoryProperties2)vkGetInstanceProcAddr(g_inst, "vkGetPhysicalDeviceMemoryProperties2");
+    if (fn) {
+        fn(g_phys, &mp2);
+        // use heap 0 budget (device local) for discrete, else heap 0 for integrated
+        if (freeB) *freeB = (size_t)(budget.heapBudget[0] > budget.heapUsage[0] ? budget.heapBudget[0] - budget.heapUsage[0] : 0);
+        if (totalB) *totalB = (size_t)budget.heapBudget[0];
+        return 1;
+    }
+    // fallback: heap size
+    if (mp.memoryHeapCount > 0) {
+        if (freeB) *freeB = (size_t)(mp.memoryHeaps[0].size * 0.7); // estimate
+        if (totalB) *totalB = (size_t)mp.memoryHeaps[0].size;
+        return 1;
+    }
+    return 0;
+}
 
 int dock_gpu_recommended_batch_size(void)
 {
@@ -1205,56 +1252,6 @@ void dock_gpu_monitor(int layer, int segment, int total_segments)
             prof_dispatch_count > 0
                 ? (double)prof_total_conformers / (double)prof_dispatch_count : 0.0,
             prof_last_dispatch_ms, rolling_avg);
-}
-
-/* ---- Virtual-screening LUT API: not implemented on this backend. ----
-   Returning 0 makes the VS driver fall back to CPU scoring for the
-   affected ligand (registration failure drops the LUT row, batch calls
-   return failure and the pool marks its slots converged), so a Vulkan
-   build links and stays correct — just unaccelerated for VS batches. */
-
-int dock_gpu_vs_register_ligand(int lig_idx,
-                                const float *vdwA, const float *vdwB,
-                                const float *charges, const int *active_flags,
-                                const float *ie_vdwA,
-                                const int *nb_int_pairs, int num_nb_pairs,
-                                int num_atoms,
-                                float ie_soft_delta, float ie_cutoff_sq)
-{
-    (void)lig_idx; (void)vdwA; (void)vdwB; (void)charges;
-    (void)active_flags; (void)ie_vdwA; (void)nb_int_pairs;
-    (void)num_nb_pairs; (void)num_atoms;
-    (void)ie_soft_delta; (void)ie_cutoff_sq;
-    return 0;
-}
-
-int dock_gpu_vs_max_ligands(void)
-{
-    return 0;
-}
-
-int dock_gpu_batch_score_vs(const float *xyz, int num_poses, int num_atoms,
-                            const int *pose_lig, float *out_scores)
-{
-    (void)xyz; (void)num_poses; (void)num_atoms; (void)pose_lig;
-    (void)out_scores;
-    return 0;
-}
-
-int dock_gpu_batch_score_vs_grid(const float *xyz, int num_poses,
-                                 int num_atoms, const int *pose_lig,
-                                 float *out_scores)
-{
-    (void)xyz; (void)num_poses; (void)num_atoms; (void)pose_lig;
-    (void)out_scores;
-    return 0;
-}
-
-int dock_gpu_grid_bounds(float *minx, float *miny, float *minz,
-                         float *maxx, float *maxy, float *maxz)
-{
-    (void)minx; (void)miny; (void)minz; (void)maxx; (void)maxy; (void)maxz;
-    return 0;
 }
 
 } /* extern "C" */

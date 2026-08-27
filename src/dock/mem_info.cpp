@@ -6,7 +6,6 @@
 #include "string.h"
 #include "stdlib.h"
 #include <iostream>
-#include <unistd.h>
 
 // MEMORY FUNCTIONS
 int parseMemLine(char* line){
@@ -49,48 +48,5 @@ int getPhysValue(){ //Note: this value is in KB!
     }    
     fclose(file);
     return result;
-}
-
-static long readMemInfoKeyKB(const char *key)
-{
-    FILE *f = fopen("/proc/meminfo", "r");
-    if (!f) return -1;
-    char line[256];
-    size_t klen = strlen(key);
-    long out = -1;
-    while (fgets(line, sizeof line, f)) {
-        if (strncmp(line, key, klen) == 0) {
-            char *p = line + klen;
-            while (*p && (*p < '0' || *p > '9')) p++;
-            if (*p) out = atol(p);
-            break;
-        }
-    }
-    fclose(f);
-    return out;
-}
-
-long getMemAvailableKB(void)
-{
-    long v = readMemInfoKeyKB("MemAvailable:");
-    if (v < 0) v = readMemInfoKeyKB("MemFree:");
-    return v;
-}
-
-long getMemFreeKB(void)
-{
-    return readMemInfoKeyKB("MemFree:");
-}
-
-long getSwapFreeKB(void)
-{
-    return readMemInfoKeyKB("SwapFree:");
-}
-
-int hostMemoryLow(int threshold_mb)
-{
-    long avail = getMemAvailableKB();
-    if (avail < 0) return -1;
-    return (avail / 1024) < threshold_mb ? 1 : 0;
 }
 #endif

@@ -16,18 +16,6 @@ All GPU calls go through the score_dock_gpu.h C API.
 
 #include "conformer_pool.h"
 #include "dockmol.h"
-#include "master_score.h"
-#include <cstring>
-#include <malloc.h>
-#include <chrono>
-#include <thread>
-#include <atomic>
-
-static long long lbal_now_ms(void)
-{
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-}
 
 using namespace std;
 
@@ -36,50 +24,19 @@ using namespace std;
 /*  Internal helpers                                                  */
 /* ------------------------------------------------------------------ */
 
-/* Compute Nelder-Mead coefficients from simplex_mode and dimension.
-   Exact mirror of simplex.cpp do_minimize() lines 129-149. */
-static void compute_nm_coeffs(int size, int simplex_mode, int simplex_crossover,
-                               float& gamma, float& beta, float& sigma)
-{
-    gamma = 2.0f;
-    beta  = 0.5f;
-    sigma = 0.5f;
-
-    if (simplex_mode == 1) {
-        const float n = (float)size;
-        gamma = 1.0f + 2.0f / n;
-        beta  = 0.75f - 0.5f / n;
-        sigma = 1.0f  - 1.0f  / n;
-    } else if (simplex_mode == 2) {
-        const float n  = (float)size;
-        const float n0 = (float)(simplex_crossover + 6);
-        const float k  = 0.5f;
-        float w = 1.0f - 1.0f / (1.0f + expf(-k * (n - n0)));
-        if (w < 0.0f) w = 0.0f;
-        if (w > 1.0f) w = 1.0f;
-        const float ga = 1.0f + 2.0f / n;
-        const float rb = 0.75f - 0.5f / n;
-        const float sg = 1.0f  - 1.0f  / n;
-        gamma = w * 2.0f + (1.0f - w) * ga;
-        beta  = w * 0.5f + (1.0f - w) * rb;
-        sigma = w * 0.5f + (1.0f - w) * sg;
-    }
-}
-
-
 /* Build the initial N+1 simplex vertices via axis-aligned perturbation.
    Matches the initialization in simplex.cpp do_minimize() iteration 0:
        p[0] = vertex (starting point)
        p[1..N] = vertex + random uniform [-1, 1] in each dimension
 */
-static void build_initial_simplex(Minimizer* min, const FLOATVec& vertex, float** p, float* y, int size)
+static void build_initial_simplex(const FLOATVec& vertex, float** p, float* y, int size)
 {
     for (int i = 0; i < size; i++) {
         p[0][i] = vertex[i];
     }
     for (int i = 1; i < size + 1; i++) {
         for (int j = 0; j < size; j++) {
-            p[i][j] = vertex[j] + 2.0f * (min->next_rand_01() - 0.5f);
+            p[i][j] = vertex[j] + 2.0f * (((float)rand() / (float)RAND_MAX) - 0.5f);
         }
     }
     /* y values are filled by GPU scoring in step(), not here */
@@ -91,38 +48,22 @@ static void build_initial_simplex(Minimizer* min, const FLOATVec& vertex, float*
 /*  Constructor / Destructor                                          */
 /* ------------------------------------------------------------------ */
 
-ConformerPool::ConformerPool(int batch_max, Minimizer* minimizer, bool use_gpu,
-                              int simplex_mode, int simplex_crossover,
-                              Base_Score* score)
+ConformerPool::ConformerPool(int batch_max, Minimizer* minimizer, bool use_gpu)
     : m_batch_max(batch_max)
     , m_minimizer(minimizer)
     , m_use_gpu(use_gpu)
-    , m_score(score)
-    , m_simplex_mode(simplex_mode)
-    , m_simplex_crossover(simplex_crossover)
     , m_num_atoms(0)
     , m_xyz_buffer(nullptr)
     , m_score_buffer(nullptr)
     , m_active_flags(nullptr)
     , m_dispatch_capacity(0)
 {
-    for (int i = 0; i < 4096; i++) m_slot_base[i] = -1;
     m_slots.reserve(batch_max);
-    m_pw_active = false;
-    m_pw_seen_gen = 0;
 }
 
 
 ConformerPool::~ConformerPool()
 {
-    /* Shut down persistent packing workers (gen < 0 is the exit flag). */
-    if (m_pw_active) {
-        m_pw_gen.store(-1, std::memory_order_release);
-        for (auto& th : m_pack_workers)
-            if (th.joinable()) th.join();
-        m_pack_workers.clear();
-        m_pw_active = false;
-    }
     for (auto& slot : m_slots) {
         if (slot.p) {
             for (int i = 0; i < slot.size + 1; i++) {
@@ -131,14 +72,12 @@ ConformerPool::~ConformerPool()
             delete[] slot.p;
         }
         delete[] slot.y;
-        delete[] slot.p_saved;
         delete slot.m_refMol;
         delete slot.m_tmpMol;
     }
     delete[] m_xyz_buffer;
     delete[] m_score_buffer;
     delete[] m_active_flags;
-    delete[] m_pose_lig;
 }
 
 
@@ -149,15 +88,12 @@ ConformerPool::~ConformerPool()
 int
 ConformerPool::add(DOCKMol* mol,
                    const FLOATVec& initial_vertex,
-                   const SimplexStage& stageA,
-                   const SimplexStage& stageB,
-                   float cycle_converge,
+                   float trans_step_size, float rot_step_size,
+                   float tors_step_size, float score_converge,
+                   int max_iterations,
                    bool restrained, float coefficient_restraint,
-                   DOCKMol* rmsd_ref, void* user_data,
-                   int lig_idx, int lig_num_atoms,
-                   unsigned int rng_seed)
+                   DOCKMol* rmsd_ref, void* user_data)
 {
-    if (lig_idx >= 0) m_vs_mode = true;
     /* Find a recyclable (CONVERGED) slot, or append a new one.
        Caller must poll() before add() so m_converged is drained —
        conf_gen_ag does this in its backpressure / drain loops. */
@@ -172,15 +108,12 @@ ConformerPool::add(DOCKMol* mol,
                 delete[] m_slots[idx].p;
             }
             delete[] m_slots[idx].y;
-            delete[] m_slots[idx].p_saved;
-            /* m_refMol/m_tmpMol are RETAINED: the next add() copies into
-               them, and copy_molecule's dimension-match fast path skips
-               the ~46 delete[] + ~48 new[] cycle per add.  The anchor
-               pool's per-add mol copies are the dominant heap-traffic
-               source in the VS batch path. */
+            delete m_slots[idx].m_refMol;
+            delete m_slots[idx].m_tmpMol;
             m_slots[idx].p = nullptr;
             m_slots[idx].y = nullptr;
-            m_slots[idx].p_saved = nullptr;
+            m_slots[idx].m_refMol = nullptr;
+            m_slots[idx].m_tmpMol = nullptr;
             break;
         }
     }
@@ -188,119 +121,37 @@ ConformerPool::add(DOCKMol* mol,
         if ((int)m_slots.size() >= m_batch_max) return -1;
         idx = (int)m_slots.size();
     }
-    m_slot_base[idx] = -1;   /* not enqueued this round until packed */
 
     int size = (int)initial_vertex.size();
 
     /* Lazy buffer allocation on first add().  All conformers in one
        growth layer share the same DOF and atom count, so the first
-       conformer's dimensions define buffer sizing for the pool.
-       VS mode (lig_idx >= 0): ligands may have different atom counts,
-       so the xyz stride is the LARGEST num_atoms seen so far and
-       buffers grow on demand (poses padded with inactive atoms). */
-    int first_stride = 0;
-    if (m_vs_mode) {
-        if (lig_num_atoms <= 0) lig_num_atoms = mol->num_atoms;
-        first_stride = lig_num_atoms;
-    } else {
-        first_stride = mol->num_atoms;
-    }
-
+       conformer's dimensions define buffer sizing for the pool. */
     if (!m_xyz_buffer) {
-m_num_atoms = first_stride;
-        /* Sizing covers the worst single step: INIT (size+1), REFLECT
-           (size+4: 4 reflect candidates + N speculative shrink),
-           SHRINK (size). */
-        int max_cand = m_batch_max * max(4, size + 4);
+        m_num_atoms = mol->num_atoms;
+        int max_cand = m_batch_max * max(4, size + 1);
         m_xyz_buffer      = new float[max_cand * m_num_atoms * 3];
         m_score_buffer    = new float[max_cand];
-        m_pose_lig        = new int[max_cand];
         m_active_flags    = new int[m_num_atoms];
-        if (m_vs_mode) {
-            for (int a = 0; a < m_num_atoms; a++)
-                m_active_flags[a] = 0;  // VS path: flags come from the LUT per ligand
-        } else {
-            for (int a = 0; a < m_num_atoms; a++)
-                m_active_flags[a] = (mol->atom_active_flags[a]) ? 1 : 0;
-        }
-        m_dispatch_capacity = max_cand;
-    } else if (m_vs_mode && first_stride > m_num_atoms) {
-        /* A larger ligand arrived — grow the stride (and buffers).  Any
-           pending async batches reference the OLD buffers (their DtoH
-           targets are m_score_buffer + offset), so they must be drained
-           BEFORE the buffers are freed.  Dropping the scores of one
-           round is benign: the affected slots re-score the same vertices
-           on the next enqueue. */
-        if (m_npends > 0) {
-            dock_gpu_batch_score_sync();
-            m_npends = 0;
-        }
-        int max_cand = m_batch_max * max(4, size + 4);
-        delete[] m_xyz_buffer;
-        delete[] m_score_buffer;
-        delete[] m_pose_lig;
-        delete[] m_active_flags;
-        m_num_atoms = first_stride;
-        m_xyz_buffer      = new float[max_cand * m_num_atoms * 3];
-        m_score_buffer    = new float[max_cand];
-        m_pose_lig        = new int[max_cand];
-        m_active_flags    = new int[m_num_atoms];
-        if (m_vs_mode) {
-            for (int a = 0; a < m_num_atoms; a++)
-                m_active_flags[a] = 0;  // VS path: flags come from the LUT per ligand
-        } else {
-            for (int a = 0; a < m_num_atoms; a++)
-                m_active_flags[a] = (mol->atom_active_flags[a]) ? 1 : 0;
-        }
-        m_dispatch_capacity = max_cand;
-    } else if (!m_vs_mode) {
-        /* Non-VS pools (growth minimization) all carry the same active
-           set as the caller's conformer: refresh so flags always match
-           the current layer's grown atoms. */
         for (int a = 0; a < m_num_atoms; a++)
-            m_active_flags[a] = (mol->atom_active_flags[a]) ? 1 : 0;
+            m_active_flags[a] = mol->atom_active_flags[a] ? 1 : 0;
+        m_dispatch_capacity = max_cand;
     }
 
     SimplexSlot slot;
-    slot.lig_idx          = lig_idx;
-    slot.lig_num_atoms    = (m_vs_mode) ? first_stride
-                                       : mol->num_atoms;
-    /* Snapshot the DOF→xyz mapping so this slot can be packed even when
-       the pool holds slots of other ligands (the minimizer's members are
-       shared and reflect the most recent id_torsions() call). */
-    slot.torsions             = m_minimizer->torsions;
-    slot.bond_vectors         = m_minimizer->bond_vectors;
-    slot.torsion_scale_factors = m_minimizer->torsion_scale_factors;
     slot.id                 = idx;
     slot.phase              = SlotPhase::INIT;
     slot.size               = size;
-    compute_nm_coeffs(size, m_simplex_mode, m_simplex_crossover,
-                      slot.nm_gamma, slot.nm_beta, slot.nm_sigma);
     slot.iteration          = 0;
     slot.converged          = false;
     slot.ihi                = 0;
     slot.inhi               = 0;
     slot.ilo                = 0;
-    slot.shrink_skips       = 0;
-    slot.trans_step_size    = stageA.trans_step_size;
-    slot.rot_step_size      = stageA.rot_step_size;
-    slot.tors_step_size     = stageA.tors_step_size;
-    slot.score_converge     = stageA.score_converge;
-    slot.max_iterations     = stageA.max_iterations;
-    slot.current_cycle      = 0;
-    slot.max_cycles         = stageA.max_cycles;
-    slot.cycle_converge     = cycle_converge;
-    slot.stage              = 0;
-    slot.max_iterations_B   = stageB.max_iterations;
-    slot.max_cycles_B       = stageB.max_cycles;
-    slot.score_converge_B   = stageB.score_converge;
-    slot.trans_step_size_B  = stageB.trans_step_size;
-    slot.rot_step_size_B    = stageB.rot_step_size;
-    slot.tors_step_size_B   = stageB.tors_step_size;
-    slot.rng_state          = rng_seed ? rng_seed : 1u;
-    slot.has_best           = false;
-    slot.best_score         = 1e30f;
-    slot.best_vertex.resize(size);
+    slot.trans_step_size    = trans_step_size;
+    slot.rot_step_size      = rot_step_size;
+    slot.tors_step_size     = tors_step_size;
+    slot.score_converge     = score_converge;
+    slot.max_iterations     = max_iterations;
     slot.user_data          = user_data;
     slot.restrained         = restrained;
     slot.coefficient_restraint = coefficient_restraint;
@@ -319,30 +170,15 @@ m_num_atoms = first_stride;
         slot.p[i] = new float[size];
     }
     slot.y = new float[size + 1];
-    slot.p_saved = new float[(size_t)(size + 1) * size];
     slot.centroid.resize(size);
     slot.reflect_v.resize(size);
-    m_minimizer->set_local_rng_state(slot.rng_state);
-    build_initial_simplex(m_minimizer, initial_vertex, slot.p, slot.y, size);
-    slot.rng_state = m_minimizer->local_rng_state();
+    build_initial_simplex(initial_vertex, slot.p, slot.y, size);
 
     /* Molecule state: caller's original (in-place update on convergence),
-       ref_mol (read-only copy), tmp_mol (scratch for vector_to_dockmol).
-       When recycling a converged slot, reuse its DOCKMol objects —
-       copy_molecule's dimension-match fast path then skips the full
-       clear+allocate cycle (the anchor pool's per-add copies dominate
-       heap traffic in the VS batch path). */
-    DOCKMol* reuse_ref = nullptr;
-    DOCKMol* reuse_tmp = nullptr;
-    if (idx < (int)m_slots.size()) {
-        reuse_ref = m_slots[idx].m_refMol;
-        reuse_tmp = m_slots[idx].m_tmpMol;
-        m_slots[idx].m_refMol = nullptr;
-        m_slots[idx].m_tmpMol = nullptr;
-    }
+       ref_mol (read-only copy), tmp_mol (scratch for vector_to_dockmol). */
     slot.m_mol              = mol;
-    slot.m_refMol           = reuse_ref ? reuse_ref : new DOCKMol();
-    slot.m_tmpMol           = reuse_tmp ? reuse_tmp : new DOCKMol();
+    slot.m_refMol           = new DOCKMol();
+    slot.m_tmpMol           = new DOCKMol();
     copy_molecule(*slot.m_refMol, *mol);
     copy_molecule(*slot.m_tmpMol, *mol);
 
@@ -350,58 +186,6 @@ m_num_atoms = first_stride;
         m_slots[idx] = std::move(slot);   /* recycle converged slot */
     } else {
         m_slots.push_back(std::move(slot));  /* new slot */
-    }
-
-    if (!m_use_gpu) {
-        /* CPU whole-seed path (DOCK_LBAL_CPU_MIN): skip the pool machinery
-           entirely and run the minimizer directly on the caller's molecule,
-           mirroring the classic sequential path (stage A torsion pre-min
-           with rigid DOF locked, then stage B full minimization when
-           present).  The slot is marked converged immediately so the
-           drain/poll delivers the pose as usual.  The caller's mol is
-           updated in place to the minimized pose. */
-        if (m_score != nullptr) {
-            m_minimizer->set_local_rng_state(rng_seed ? rng_seed : 1u);
-            FLOATVec v;
-            v.resize(size);
-            for (int j = 0; j < size; j++) v[j] = initial_vertex[j];
-            /* The caller's vertex already carries the full DOF set
-               (anchors: 6 rigid DOF; growth seeds: 6 + torsions loaded
-               by the caller's id_torsions before pool.add).  Do NOT call
-               id_torsions here: it would append torsion DOF to rigid
-               anchor slots and double the growth vertex's torsion DOF. */
-            /* vector_to_dockmol indexes bond_vectors by torsion bond_num;
-               the caller may not have set minimizer state (anchor pool),
-               so guarantee valid sizing (directions don't matter). */
-            if ((int)m_minimizer->bond_vectors.size() != mol->num_bonds) {
-                m_minimizer->bond_vectors.resize(mol->num_bonds, -1);
-            }
-            m_minimizer->torsion_scale_factors.resize(
-                m_minimizer->torsions.size(), 1);
-            if (slot.max_iterations > 0 && slot.max_cycles > 0) {
-                m_minimizer->minimize(*m_score, *mol, v,
-                                      slot.max_cycles, slot.cycle_converge,
-                                      slot.max_iterations, slot.score_converge,
-                                      slot.trans_step_size, slot.rot_step_size,
-                                      slot.tors_step_size);
-                if (slot.max_iterations_B > 0 && slot.max_cycles_B > 0) {
-                    /* stage B reuses the same vertex: the torsion angles
-                       stay loaded (trans/rot may move too). */
-                    m_minimizer->minimize(*m_score, *mol, v,
-                                          slot.max_cycles_B, slot.cycle_converge,
-                                          slot.max_iterations_B, slot.score_converge_B,
-                                          slot.trans_step_size_B, slot.rot_step_size_B,
-                                          slot.tors_step_size_B);
-                }
-            }
-        }
-        /* refMol now holds the minimized pose: fill_slot_from_mol's
-           zero-vertex reconstruction from it is the identity, so the
-           drained pose matches the minimizer's result. */
-        copy_molecule(*m_slots[idx].m_refMol, *mol);
-        m_slots[idx].converged = true;
-        m_slots[idx].phase = SlotPhase::CONVERGED;
-        m_converged.push_back(&m_slots[idx]);
     }
     return idx;
 }
@@ -449,356 +233,6 @@ ConformerPool::idle() const
 int
 ConformerPool::step()
 {
-    int c = step_enqueue();
-    if (c) return c;                 /* non-VS path finishes in enqueue */
-    return step_finish();
-}
-
-/*  Persistent packing workers                                        */
-/* ------------------------------------------------------------------ */
-/*  pack_worker_loop — worker body: spins waiting for a new round id
-    (m_pw_gen), grabs PackItem indices from m_pw_next and packs them.
-    gen == -1 shuts the worker down.                                   */
-
-void
-ConformerPool::pack_worker_loop()
-{
-    int seen = 0;
-    for (;;) {
-        int g = m_pw_gen.load(std::memory_order_acquire);
-        if (g < 0) return;
-        if (g == seen) { std::this_thread::yield(); continue; }
-        seen = g;
-        int idx;
-        while ((idx = m_pw_next.fetch_add(1)) < m_pw_todo.load()) {
-            PackItem& it = m_pack_items[(size_t)idx];
-            pack_slot(m_slots[it.si], it.off, it.end);
-        }
-        m_pw_done.fetch_add(1);
-    }
-}
-
-/*  pack_parallel — run one packing round over m_pack_items using the
-    persistent worker pool (spawned once, reused every round).  The main
-    thread packs too; workers park on generation changes between rounds. */
-
-void
-ConformerPool::pack_parallel(int nitems)
-{
-    if (nitems <= 0) return;
-
-    if (!m_pw_active) {
-        int nw = (int)std::thread::hardware_concurrency();
-        if (nw < 1) nw = 1;
-        if (nw > 8) nw = 8;
-        if (nitems <= 8) nw = 1;   /* tiny rounds don't need workers */
-        if (nw > 1) {
-            m_pack_workers.reserve((size_t)nw);
-            for (int t = 0; t < nw; t++)
-                m_pack_workers.emplace_back(&ConformerPool::pack_worker_loop, this);
-            m_pw_active = true;
-        } else {
-            m_pw_active = false;
-        }
-    }
-
-    if (!m_pw_active) {
-        /* Inline fallback: single-threaded pack. */
-        for (int idx = 0; idx < nitems; idx++) {
-            PackItem& it = m_pack_items[(size_t)idx];
-            pack_slot(m_slots[it.si], it.off, it.end);
-        }
-        return;
-    }
-
-    m_pw_todo.store(nitems);
-    m_pw_next.store(0);
-    m_pw_done.store(0);
-    m_pw_gen.fetch_add(1, std::memory_order_release);
-
-    /* Main thread packs as well. */
-    int idx;
-    while ((idx = m_pw_next.fetch_add(1)) < nitems) {
-        PackItem& it = m_pack_items[(size_t)idx];
-        pack_slot(m_slots[it.si], it.off, it.end);
-    }
-
-    /* Barrier: wait until every worker finished this round's items. */
-    while (m_pw_done.load() < (int)m_pack_workers.size())
-        std::this_thread::yield();
-}
-
-
-
-void
-ConformerPool::adapt_split_k()
-{
-    /* Governor: compare the GPU's busy time with the host's step time.
-       gpu ≫ host  → split into more groups so multiple kernels per step
-       keep the GPU fed while the host preps the next step.
-       host ≫ gpu   → merge back into one batch (nothing to feed). */
-    long long h = m_lbal_host, g = m_lbal_gpu;
-    if (h <= 0) h = 1;
-    if (g <= 0) g = 1;
-    double ratio = (double)g / (double)(h + g);
-    if (ratio > 0.55 && m_split_k < 4) m_split_k++;
-    else if (ratio < 0.25 && m_split_k > 1) m_split_k--;
-    m_steps_since_lbal++;
-}
-
-int
-ConformerPool::step_enqueue()
-{
-    if (!m_use_gpu) return 0;
-    if (m_slots.empty()) return 0;
-    if (!m_vs_mode) return step_legacy();
-
-    m_lbal_t0 = lbal_now_ms();
-
-    int na = m_num_atoms;
-
-    /* Split the active slots into m_split_k groups (round-robin) so one
-       group's packing overlaps the previous group's GPU kernel. */
-    int need_of[4096], act_list[4096];
-    int nact = 0, total = 0;
-    for (size_t si = 0; si < m_slots.size(); si++) {
-        SimplexSlot& slot = m_slots[si];
-        if (slot.phase == SlotPhase::CONVERGED || slot.converged) continue;
-        int need = 0;
-        switch (slot.phase) {
-        case SlotPhase::INIT:    need = slot.size + 1; break;
-        case SlotPhase::REFLECT: need = 4;             break;
-        case SlotPhase::SHRINK:  need = slot.size;     break;
-        default: break;
-        }
-        need_of[nact] = need;
-        act_list[nact] = (int)si;
-        total += need;
-        nact++;
-    }
-    /* Nothing ready this round — finish() will convergence-check. */
-    m_npends = 0;
-    if (nact == 0 || total == 0) return 0;
-
-    int k = m_split_k;
-    int groups = (nact < k) ? nact : k;
-    if (groups < 1) groups = 1;
-
-    /* Group base offsets (packing order: group 0, 1, ... round-robin). */
-    int base[4] = {0, 0, 0, 0};
-    int gtot[4] = {0, 0, 0, 0};
-    int gcnt[4] = {0, 0, 0, 0};
-    /* Cap per group so the TOTAL packed poses never exceed the
-       m_xyz_buffer/m_score_buffer/m_pose_lig buffer capacity
-       (m_dispatch_capacity == buffer size).  A per-group cap of the
-       full capacity would overflow the buffers when k > 1. */
-    int cap = m_dispatch_capacity / groups;
-    if (cap < 1) cap = 1;
-    int incl[4096];
-    for (int si = 0; si < nact; si++) incl[si] = 0;
-    for (int si = 0; si < nact; si++) {
-        int g = si % groups;
-        if (gtot[g] + need_of[si] > cap) continue;   /* deferred */
-        gtot[g] += need_of[si];
-        gcnt[g]++;
-        incl[si] = 1;
-    }
-    int off = 0;
-    for (int g = 0; g < groups; g++) {
-        base[g] = off;
-        off += gtot[g];
-    }
-    if (off == 0) return 0;
-
-    /* Default: no slot was enqueued this round (stale bases invalid). */
-    for (size_t si = 0; si < m_slots.size(); si++) m_slot_base[si] = -1;
-
-    /* Pack each group, then enqueue its chunks on the background stream. */
-    bool fail = false;
-    long long t_pack0 = lbal_now_ms();
-
-    /* Fix per-slot offsets up front: candidate regions are disjoint, so
-       the pack itself can run in parallel — each slot owns its tmpMol
-       and its slice of the xyz/pose_lig buffers. */
-    m_pack_items.clear();
-    m_pack_items.reserve((size_t)nact);
-    for (int g = 0; g < groups; g++) {
-        int o = base[g];
-        int end = base[g] + gtot[g];
-        for (int si = 0; si < nact; si++) {
-            if ((si % groups) != g) continue;
-            if (!incl[si]) continue;                 /* deferred this round */
-            m_slot_base[act_list[si]] = o;
-            m_pack_items.push_back(PackItem{act_list[si], o, end});
-            o += need_of[si];
-        }
-    }
-
-    /* Persistent packing workers: spawning/joining up to 8 std::threads
-       every simplex step churned thread stacks through glibc and grew RSS
-       ~10MB/s on long VS runs.  pack_parallel() spawns workers once and
-       reuses them across rounds. */
-    pack_parallel((int)m_pack_items.size());
-
-    long long t_enq0 = lbal_now_ms();
-    for (int g = 0; g < groups && !fail; g++) {
-        int filled = gtot[g];
-        if (filled == 0) continue;
-
-        /* Emit bounded chunks (≤ GPU_MAX_BATCH_POSES per call). */
-        int dispatched = 0;
-        while (dispatched < filled) {
-            int n = filled - dispatched;
-            if (n > GPU_MAX_BATCH_POSES) n = GPU_MAX_BATCH_POSES;
-            const float *xyz_pos = m_xyz_buffer +
-                (size_t)(base[g] + dispatched) * m_num_atoms * 3;
-            int chunk_ok = dock_gpu_batch_score_vs_enqueue(
-                xyz_pos, n, na, m_pose_lig + base[g] + dispatched,
-                m_score_buffer + base[g] + dispatched, 0);
-            if (!chunk_ok) { fail = true; break; }
-            m_npends++;
-            dispatched += n;
-        }
-    }
-    if (getenv("DOCK_LBAL_DEBUG")) {
-        fprintf(stderr,
-                "[POOL] slots=%zu nact=%d total=%d groups=%d cap=%d pack=%lldms enq=%lldms\n",
-                m_slots.size(), nact, total, groups, cap,
-                t_enq0 - t_pack0, lbal_now_ms() - t_enq0);
-    }
-
-    if (fail) {
-        m_lbal_fail = true;
-        return 0;
-    }
-    return 0;
-}
-
-int
-ConformerPool::step_finish()
-{
-    if (!m_use_gpu) return 0;
-    if (m_slots.empty()) return 0;
-    if (!m_vs_mode) return 0;
-
-    double host_phase = (double)(lbal_now_ms() - m_lbal_t0);
-    if (host_phase < 0.1) host_phase = 0.1;
-    m_lbal_host = (long long)(0.85 * (double)m_lbal_host + 0.15 * host_phase);
-
-    if (m_lbal_fail) {
-        m_lbal_fail = false;
-        if (getenv("DOCK_GPU2_DEBUG"))
-            fprintf(stderr, "POOLFAIL nactive=%zu\n", m_slots.size());
-        m_npends = 0;
-        int newly = 0;
-        for (auto& slot : m_slots) {
-            if (slot.converged || slot.phase == SlotPhase::CONVERGED) continue;
-            slot.converged = true;
-            slot.phase = SlotPhase::CONVERGED;
-            if (slot.has_best) {
-                fill_slot_from_mol(slot, slot.id);
-            } else {
-                /* Never scored a vertex: p[ilo] holds an arbitrary
-                   initial-simplex vertex.  Restore the pre-min pose
-                   instead (matches the sentinel/out-of-grid path). */
-                copy_crds(*slot.m_mol, *slot.m_refMol);
-            }
-            m_converged.push_back(&slot);
-            newly++;
-        }
-        return newly;
-    }
-
-    if (m_npends > 0) {
-        dock_gpu_batch_score_sync();
-        dock_gpu_lbal_stats(&m_lbal_host, &m_lbal_gpu);
-        adapt_split_k();
-        m_npends = 0;
-        /* Return freed small-block arena space to the OS each GPU round.
-           The VS growth loop churns ~200MB/s of sub-4KB blocks (torsion
-           variant copies); without trimming, glibc's arena high-water
-           made RSS balloon to OOM on integrated-GPU machines.  Purely
-           an allocator-level call — no semantic effect. */
-        malloc_trim(0);
-    } else {
-        int newly = 0;
-        for (auto& slot : m_slots) {
-            if (slot.converged || slot.phase == SlotPhase::CONVERGED) continue;
-            if (check_convergence(slot)) {
-                fill_slot_from_mol(slot, slot.id);
-                m_converged.push_back(&slot);
-                newly++;
-            }
-        }
-        return newly;
-    }
-
-    int newly_converged = 0;
-    for (size_t i = 0; i < m_slots.size(); i++) {
-        SimplexSlot& slot = m_slots[i];
-        if (slot.phase == SlotPhase::CONVERGED || slot.converged) continue;
-
-        int sb = m_slot_base[i];
-        if (sb < 0) continue;   /* not enqueued this round — leave for next */
-
-        int ncan = 0;
-        switch (slot.phase) {
-        case SlotPhase::INIT:    ncan = slot.size + 1; break;
-        case SlotPhase::REFLECT: ncan = 4;             break;
-        case SlotPhase::SHRINK:  ncan = slot.size;     break;
-        default: break;
-        }
-        if (ncan == 0) continue;
-        m_slot_base[i] = -1;   /* consumed */
-
-        /* Add restraint energy — same Econstraint per slot per iteration */
-        if (slot.restrained) {
-            float Econstraint = slot.coefficient_restraint *
-                m_minimizer->calc_active_rmsd2(*slot.m_rmsd_ref, *slot.m_refMol);
-            for (int ci = 0; ci < ncan; ci++) {
-                m_score_buffer[sb + ci] += Econstraint;
-            }
-        }
-
-        /* Sentinel check (defense-in-depth: the current kernel
-           score_batch_kernel_atom_parallel never writes a sentinel —
-           out-of-grid atoms just get 0 grid contribution.  Kept in
-           case the kernel is changed to reject out-of-grid poses.) */
-        bool sentinel_hit = false;
-        for (int ci = 0; ci < ncan; ci++) {
-            if (m_score_buffer[sb + ci] < -1.0e30f) {
-                sentinel_hit = true;
-                break;
-            }
-        }
-        if (sentinel_hit) {
-            /* Out-of-grid: restore pre-min pose (matches CPU failure_exit) */
-            copy_crds(*slot.m_mol, *slot.m_refMol);
-            slot.converged = true;
-            slot.phase     = SlotPhase::CONVERGED;
-            m_converged.push_back(&slot);
-            newly_converged++;
-            continue;
-        }
-
-        /* Run decision tree */
-        evaluate_slot(slot, m_score_buffer + sb);
-
-        if (check_convergence(slot)) {
-            fill_slot_from_mol(slot, slot.id);
-            m_converged.push_back(&slot);
-            newly_converged++;
-        }
-    }
-
-    return newly_converged;
-}
-
-/* Legacy whole-cycle implementation (single synchronous dispatch),
-   used when the pool is not in VS mode.  Returns newly converged. */
-int
-ConformerPool::step_legacy()
-{
     if (!m_use_gpu) return 0;
     if (m_slots.empty()) return 0;
 
@@ -826,64 +260,23 @@ ConformerPool::step_legacy()
         return newly;
     }
 
-    /* Phase 2: Submit GPU dispatch — the packed candidate list may
-       exceed GPU_MAX_BATCH_POSES (large pools pack several thousand
-       poses per step), so emit it in bounded chunks.  Poses are
-       row-major in m_xyz_buffer and scores/pose tags are contiguous,
-       so each chunk is just a pointer/offset slice of the same
-       buffers; chunk dispatches write their scores back at the
-       matching offsets. */
-    int ok = 1;
-    int dispatched = 0;
-    while (dispatched < total) {
-        int n = total - dispatched;
-        if (n > GPU_MAX_BATCH_POSES) n = GPU_MAX_BATCH_POSES;
-        const float *xyz_pos = m_xyz_buffer +
-                               (size_t)dispatched * m_num_atoms * 3;
-        int chunk_ok;
-        if (m_vs_mode) {
-            /* Multi-ligand VS path: poses tagged with their ligand LUT
-               slot, stride = max atoms across slots, per-pose params
-               from the LUT. */
-            chunk_ok = dock_gpu_batch_score_vs(xyz_pos, n, m_num_atoms,
-                                               m_pose_lig + dispatched,
-                                               m_score_buffer + dispatched);
-        } else {
-            chunk_ok = dock_gpu_batch_score_with_ie_persistent(
-                xyz_pos, n, m_num_atoms, active_flags,
-                m_score_buffer + dispatched);
-        }
-        if (!chunk_ok) { ok = 0; break; }
-        dispatched += n;
-    }
+    /* Phase 2: Submit GPU dispatch */
+    int ok = dock_gpu_batch_score_with_ie_persistent(
+        m_xyz_buffer, total, na, active_flags, m_score_buffer);
 
     if (!ok) {
         /* GPU scoring failed (e.g. IE data not uploaded).
            Mark all active slots converged with their current best
            pose so the drain loop terminates instead of spinning. */
-        static long pool_gpu_fail_count = 0;
         int newly = 0;
-        int n_raw = 0;
         for (auto& slot : m_slots) {
             if (slot.converged || slot.phase == SlotPhase::CONVERGED) continue;
-            if (!slot.has_best) n_raw++;
             slot.converged = true;
             slot.phase = SlotPhase::CONVERGED;
-            if (slot.has_best) {
-                fill_slot_from_mol(slot, slot.id);
-            } else {
-                /* Never scored a vertex: restore pre-min pose rather
-                   than an arbitrary initial-simplex vertex. */
-                copy_crds(*slot.m_mol, *slot.m_refMol);
-            }
+            fill_slot_from_mol(slot, slot.id);
             m_converged.push_back(&slot);
             newly++;
         }
-        pool_gpu_fail_count++;
-        if (getenv("DOCK_POOL_DEBUG") || pool_gpu_fail_count <= 5)
-            fprintf(stderr, "POOLFAIL #%ld step_finish GPU batch score failed: "
-                    "poisoned %d slots (%d with NO best pose -> raw coords)\n",
-                    pool_gpu_fail_count, newly, n_raw);
         return newly;
     }
 
@@ -956,27 +349,23 @@ void
 ConformerPool::pack_vertex(SimplexSlot& slot, const float* vertex, int idx)
 {
     int na = m_num_atoms;
-    if (slot.lig_idx >= 0) na = slot.lig_num_atoms;  // VS: real atoms only
-    float* buf = m_xyz_buffer + idx * m_num_atoms * 3;
+    float* buf = m_xyz_buffer + idx * na * 3;
 
     /* Restore coordinates from reference molecule */
     copy_crds(*slot.m_tmpMol, *slot.m_refMol);
 
-    /* Convert float* vertex to FLOATVec and apply step sizes.
-       thread_local reuse: avoids two heap allocations per candidate
-       (thousands of candidates per pool step). */
-    static thread_local FLOATVec vertex_vec, new_vec;
-    vertex_vec.resize((size_t)slot.size);
+    /* Convert float* vertex to FLOATVec and apply step sizes */
+    FLOATVec vertex_vec(slot.size);
     for (int j = 0; j < slot.size; j++) vertex_vec[j] = vertex[j];
+
+    FLOATVec new_vec;
     m_minimizer->scale_vector(new_vec, vertex_vec,
                                slot.trans_step_size,
                                slot.rot_step_size,
-                               slot.tors_step_size,
-                               slot.torsion_scale_factors);
+                               slot.tors_step_size);
 
     /* Convert scaled DOF vector to molecule coordinates */
-    m_minimizer->vector_to_dockmol(*slot.m_tmpMol, new_vec,
-                                   slot.torsions, slot.bond_vectors);
+    m_minimizer->vector_to_dockmol(*slot.m_tmpMol, new_vec);
 
     /* Extract xyz into flat buffer (row-major: candidate × atom × xyz) */
     for (int a = 0; a < na; a++) {
@@ -1000,21 +389,12 @@ ConformerPool::pack_slot(SimplexSlot& slot, int offset, int capacity)
        are deferred to the next step() (no state advance). */
     int need = 0;
     switch (slot.phase) {
-    case SlotPhase::INIT:    need = N + 1;     break;
-    case SlotPhase::REFLECT: need = 4;         break;
-    case SlotPhase::SHRINK:  need = N;         break;
+    case SlotPhase::INIT:    need = N + 1; break;
+    case SlotPhase::REFLECT: need = 4;     break;
+    case SlotPhase::SHRINK:  need = N;     break;
     default: return offset;
     }
     if (offset + need > capacity) return offset;
-
-    /* VS path: tag every packed candidate with its ligand LUT slot.
-       Never leave tags uninitialized — the kernel reads them per pose. */
-    int vs_tag = slot.lig_idx;
-    if (m_vs_mode) {
-        for (int ci = 0; ci < need; ci++) {
-            m_pose_lig[offset + ci] = (vs_tag >= 0) ? vs_tag : 0;
-        }
-    }
 
     switch (slot.phase) {
 
@@ -1028,12 +408,11 @@ ConformerPool::pack_slot(SimplexSlot& slot, int offset, int capacity)
     case SlotPhase::REFLECT: {
         /* Pack 4 speculative candidates:
              0: reflect_v (pr)
-             1: expand   = gamma*pr + (1-gamma)*pbar
+             1: expand   = (1+alpha)*pr - alpha*pbar
              2: contract_cA = beta*pr + (1-beta)*pbar
              3: contract_cB = beta*p[ihi] + (1-beta)*pbar
-           Matches simplex.cpp spec_verts layout for GPU batch. */
-        float gamma = slot.nm_gamma;
-        float beta  = slot.nm_beta;
+        */
+        const float alpha = 1.0f, beta = 0.5f;
         float* pbar = slot.centroid.data();
         float* pr   = slot.reflect_v.data();
         float** p   = slot.p;
@@ -1045,7 +424,7 @@ ConformerPool::pack_slot(SimplexSlot& slot, int offset, int capacity)
         /* Candidates 1-3 computed on the fly */
         FLOATVec expand_v(N), cA_v(N), cB_v(N);
         for (int j = 0; j < N; j++) {
-            expand_v[j] = gamma * pr[j] + (1.0f - gamma) * pbar[j];
+            expand_v[j] = (1.0f + alpha) * pr[j] - alpha * pbar[j];
             cA_v[j]     = beta * pr[j] + (1.0f - beta) * pbar[j];
             cB_v[j]     = beta * p[ihi][j] + (1.0f - beta) * pbar[j];
         }
@@ -1057,23 +436,12 @@ ConformerPool::pack_slot(SimplexSlot& slot, int offset, int capacity)
     }
 
     case SlotPhase::SHRINK: {
-        /* Pack N candidates: every vertex except p[ilo] moved toward
-           ilo by sigma, computed from the unmutated simplex so a bad
-           shrink can be rejected at evaluate time.  Also apply the
-           shrink to p[] in place here: the scores arrive in this step,
-           and the evaluate applies them (or reverts p[] from the
-           p_saved copy taken at the REFLECT-failure transition). */
+        /* Pack N candidates: all N+1 vertices except p[ilo] */
         int ilo = slot.ilo;
-        float sigma = slot.nm_sigma;
-        float** p = slot.p;
         int ci = 0;
-        FLOATVec shrink_v(N);
         for (int vi = 0; vi < N + 1; vi++) {
             if (vi == ilo) continue;
-            for (int j = 0; j < N; j++)
-                shrink_v[j] = sigma * p[vi][j] + (1.0f - sigma) * p[ilo][j];
-            pack_vertex(slot, shrink_v.data(), offset + ci);
-            for (int j = 0; j < N; j++) p[vi][j] = shrink_v[j];
+            pack_vertex(slot, slot.p[vi], offset + ci);
             ci++;
         }
         return offset + ci;
@@ -1152,7 +520,6 @@ ConformerPool::evaluate_slot(SimplexSlot& slot, const float* scores)
     int     N   = slot.size;
     float** p   = slot.p;
     float*  y   = slot.y;
-    char    trace_path = 'I';
 
     switch (slot.phase) {
 
@@ -1161,72 +528,20 @@ ConformerPool::evaluate_slot(SimplexSlot& slot, const float* scores)
         for (int vi = 0; vi < N + 1; vi++) {
             y[vi] = scores[vi];
         }
-        static const bool dbg = (getenv("DOCK_POOL_DEBUG") != NULL);
-        if (dbg && slot.id < 4) {
-            fprintf(stderr, "POOLDBG init id=%d y=", slot.id);
-            for (int vi = 0; vi < N + 1; vi++) fprintf(stderr, " %.5f", y[vi]);
-            fprintf(stderr, "\n");
-        }
-        if (dbg && slot.id == 0) {
-            FLOATVec vertex_vec(N), new_vec(N);
-            for (int vi = 0; vi < N + 1; vi++) {
-                for (int j = 0; j < N; j++) vertex_vec[j] = p[vi][j];
-                copy_crds(*slot.m_tmpMol, *slot.m_refMol);
-                m_minimizer->scale_vector(new_vec, vertex_vec,
-                                          slot.trans_step_size,
-                                          slot.rot_step_size,
-                                          slot.tors_step_size,
-                                          slot.torsion_scale_factors);
-                m_minimizer->vector_to_dockmol(*slot.m_tmpMol, new_vec,
-                                               slot.torsions,
-                                               slot.bond_vectors);
-                m_score->compute_ligand_internal_energy(*slot.m_tmpMol);
-                float gie = slot.m_tmpMol->internal_energy;
-                m_score->compute_score(*slot.m_tmpMol);
-                float ggrid = slot.m_tmpMol->current_score;
-                float bx = m_xyz_buffer[(vi) * m_num_atoms * 3 + 0];
-                float by = m_xyz_buffer[(vi) * m_num_atoms * 3 + 1];
-                float bz = m_xyz_buffer[(vi) * m_num_atoms * 3 + 2];
-                float px = slot.m_tmpMol->x[0];
-                float py = slot.m_tmpMol->y[0];
-                float pz = slot.m_tmpMol->z[0];
-                fprintf(stderr,
-                        "POOLX id=%d vi=%d gpu=%.5f grid=%.5f ie=%.5f "
-                        "buf=%.4f,%.4f,%.4f pose=%.4f,%.4f,%.4f\n",
-                        slot.id, vi, y[vi], ggrid, gie, bx, by, bz, px, py, pz);
-            }
-            if (slot.lig_idx >= 0) {
-                float gbuf[128];
-                int poses = 0;
-                for (int vi = 0; vi < N + 1; vi++) {
-                    int off = vi * m_num_atoms * 3;
-                    if (dock_gpu_batch_score_vs_enqueue(
-                            m_xyz_buffer + off, 1, m_num_atoms,
-                            m_pose_lig + vi, gbuf + vi, 1)) poses++;
-                }
-                if (poses == N + 1) {
-                    dock_gpu_batch_score_sync();
-                    for (int vi = 0; vi < N + 1; vi++) {
-                        fprintf(stderr, "POOLG vi=%d gridonly=%.5f\n",
-                                vi, gbuf[vi]);
-                    }
-                }
-            }
-        }
         rank_vertices(y, N + 1, slot.ihi, slot.inhi, slot.ilo);
         compute_centroid_reflect(p, N, slot.ihi,
                                   slot.centroid.data(),
                                   slot.reflect_v.data());
+        slot.iteration++;
         slot.phase = SlotPhase::REFLECT;
         break;
     }
 
     /* --- REFLECT: full Nelder-Mead decision tree --- */
     case SlotPhase::REFLECT: {
-        float gamma    = slot.nm_gamma;
-        float beta     = slot.nm_beta;
-        float* pbar    = slot.centroid.data();
-        float* pr      = slot.reflect_v.data();
+        const float alpha = 1.0f, beta = 0.5f;
+        float* pbar      = slot.centroid.data();
+        float* pr        = slot.reflect_v.data();
 
         float  ypr       = scores[0];   // reflected
         float  yprr_exp  = scores[1];   // expanded
@@ -1242,62 +557,50 @@ ConformerPool::evaluate_slot(SimplexSlot& slot, const float* scores)
         /* --- Expansion path --- */
         if (ypr <= y[ilo]) {
             if (yprr_exp < y[ilo]) {
-                /* Accept expansion point: gamma*pr + (1-gamma)*pbar */
+                /* Accept expansion point */
                 for (int j = 0; j < N; j++) {
-                    p[ihi][j] = gamma * pr[j] + (1.0f - gamma) * pbar[j];
+                    p[ihi][j] = (1.0f + alpha) * pr[j] - alpha * pbar[j];
                 }
                 y[ihi] = yprr_exp;
-                trace_path = 'E';
             } else {
                 /* Accept reflected point */
                 for (int j = 0; j < N; j++) p[ihi][j] = pr[j];
                 y[ihi] = ypr;
-                trace_path = 'R';
             }
             replace_flag = true;
 
         /* --- Contraction / Shrink path --- */
         } else if (ypr >= y[inhi]) {
 
-            /* Save condition BEFORE overwriting p[ihi]/y[ihi].  After the
-               overwrite below, `(ypr < y[ihi])` would always be false
-               (ypr < ypr), incorrectly selecting the cB variant. */
-            bool outer = (ypr < y[ihi]);
-
-            if (outer) {
+            if (ypr < y[ihi]) {
                 /* Replace worst vertex with reflected point */
                 for (int j = 0; j < N; j++) p[ihi][j] = pr[j];
                 y[ihi] = ypr;
                 replace_flag = true;
-                trace_path = 'O';
             }
 
-            float yprr_contract = outer ? yprr_cA : yprr_cB;
+            float yprr_contract = (ypr < y[ihi]) ? yprr_cA : yprr_cB;
 
             if (yprr_contract < y[ihi]) {
-                /* Accept the contracted point: beta*hi + (1-beta)*pbar */
-                const float* contr_base = outer ? pr : p[ihi];
+                /* Accept the contracted point */
+                const float* contr_base = (ypr < y[ihi]) ? pr : p[ihi];
                 for (int j = 0; j < N; j++) {
                     p[ihi][j] = beta * contr_base[j] + (1.0f - beta) * pbar[j];
                 }
                 y[ihi] = yprr_contract;
                 replace_flag = true;
-                trace_path = 'C';
             }
 
             if (!replace_flag) {
-                /* SHRINK: the next step scores every vertex except ilo
-                   moved toward ilo by sigma.  Save the current simplex
-                   first: the pack applies the shrink to p[] in place,
-                   and the shrink evaluate either accepts the fresh
-                   scores or reverts p[] from this copy (a bad shrink —
-                   clash spikes — costs one step instead of a
-                   multi-step detour). */
-                for (int vi = 0; vi < N + 1; vi++)
-                    memcpy(slot.p_saved + (size_t)vi * N, p[vi], N * sizeof(float));
+                /* SHRINK: move all vertices toward ilo */
+                for (int vi = 0; vi < N + 1; vi++) {
+                    if (vi == ilo) continue;
+                    for (int j = 0; j < N; j++) {
+                        p[vi][j] = 0.5f * (p[vi][j] + p[ilo][j]);
+                    }
+                }
                 slot.phase = SlotPhase::SHRINK;
-                trace_path = 'S';
-                break;  /* scores are stale — skip ranking */
+                return;  /* scores are stale — skip ranking */
             }
 
         } else {
@@ -1305,7 +608,6 @@ ConformerPool::evaluate_slot(SimplexSlot& slot, const float* scores)
             for (int j = 0; j < N; j++) p[ihi][j] = pr[j];
             y[ihi] = ypr;
             replace_flag = true;
-            trace_path = 'M';
         }
 
         /* Re-rank and compute centroid for next iteration */
@@ -1317,41 +619,25 @@ ConformerPool::evaluate_slot(SimplexSlot& slot, const float* scores)
         break;
     }
 
-    /* --- SHRINK: apply the rescored vertex scores --- */
+    /* --- SHRINK: copy rescored vertex scores --- */
     case SlotPhase::SHRINK: {
-        /* Always accept the shrink: the pool NM must reproduce
-           do_minimize (simplex.cpp) exactly, which has no reject
-           heuristic — every shrink is applied.  The reject path was
-           pool-only and changed the trajectory (different local
-           minima than the classic minimizer). */
         int ci = 0;
         for (int vi = 0; vi < N + 1; vi++) {
             if (vi == slot.ilo) continue;
             y[vi] = scores[ci++];
         }
-        if (getenv("DOCK_POOL_DEBUG") && slot.id < 4)
-            fprintf(stderr, "POOLDBG shrink id=%d it=%d APPLY s0=%.3f\n",
-                    slot.id, slot.iteration, scores[0]);
         rank_vertices(y, N + 1, slot.ihi, slot.inhi, slot.ilo);
         slot.iteration++;
         compute_centroid_reflect(p, N, slot.ihi,
                                   slot.centroid.data(),
                                   slot.reflect_v.data());
         slot.phase = SlotPhase::REFLECT;
-        trace_path = 'S';
         break;
     }
 
     case SlotPhase::CONVERGED:
     default:
         break;
-    }
-
-    static const bool dbg_trace = (getenv("DOCK_POOL_DEBUG") != NULL);
-    if (dbg_trace && slot.id < 4) {
-        fprintf(stderr, "POOLDBG step id=%d it=%d ph=%d path=%c delta=%.6f ylo=%.5f\n",
-                slot.id, slot.iteration, (int)slot.phase, trace_path,
-                fabsf(y[slot.ihi] - y[slot.ilo]), y[slot.ilo]);
     }
 }
 
@@ -1378,12 +664,9 @@ ConformerPool::fill_slot_from_mol(SimplexSlot& slot, int slot_idx)
     m_minimizer->scale_vector(new_vec, vertex_vec,
                                slot.trans_step_size,
                                slot.rot_step_size,
-                               slot.tors_step_size,
-                               slot.torsion_scale_factors);
-    m_minimizer->vector_to_dockmol(*slot.m_tmpMol, new_vec,
-                                   slot.torsions, slot.bond_vectors);
+                               slot.tors_step_size);
+    m_minimizer->vector_to_dockmol(*slot.m_tmpMol, new_vec);
     copy_crds(*slot.m_mol, *slot.m_tmpMol);
-    if (slot.has_best) slot.m_mol->current_score = slot.best_score;
     return true;
 }
 
@@ -1396,14 +679,7 @@ bool
 ConformerPool::check_convergence(SimplexSlot& slot)
 {
     if (slot.converged) return true;
-    /* INIT is excluded: the initial simplex spread (huge clash
-       vertices) must not trigger.  SHRINK is NOT excluded — the shrink
-       halves the vertex spread, and checking the delta on the step
-       right after the shrink (instead of waiting for the following
-       REFLECT phase) is what lets a stubborn seed converge in ~40
-       iterations instead of the full ~200-iteration shrink collapse
-       (CPU-contract parity: simplex.cpp re-checks every iteration). */
-    if (slot.phase == SlotPhase::INIT) return false;
+    if (slot.phase == SlotPhase::INIT || slot.phase == SlotPhase::SHRINK) return false;
     if (slot.phase == SlotPhase::CONVERGED) {
         slot.converged = true;
         return true;
@@ -1411,138 +687,9 @@ ConformerPool::check_convergence(SimplexSlot& slot)
 
     float delta = fabs(slot.y[slot.ihi] - slot.y[slot.ilo]);
     bool done = (delta <= slot.score_converge) || (slot.iteration >= slot.max_iterations);
-    if (getenv("DOCK_POOL_DEBUG") != NULL && slot.id < 4) {
-        fprintf(stderr, "POOLDBG conv id=%d it=%d cyc=%d stg=%d delta=%.6f ylo=%.5f yhi=%.5f done=%d\n",
-                slot.id, slot.iteration, slot.current_cycle, slot.stage,
-                delta, slot.y[slot.ilo], slot.y[slot.ihi], done);
+    if (done) {
+        slot.converged = true;
+        slot.phase     = SlotPhase::CONVERGED;
     }
-    if (!done) return false;
-
-    /* Simplex converged.  Save best result across cycles. */
-    {
-        float score = slot.y[slot.ilo];
-        if (!slot.has_best || score < slot.best_score) {
-            slot.best_score = score;
-            slot.best_vertex.resize(slot.size);
-            for (int j = 0; j < slot.size; j++)
-                slot.best_vertex[j] = slot.p[slot.ilo][j];
-            slot.has_best = true;
-        }
-    }
-
-    /* Check if we should restart another cycle. */
-    slot.current_cycle++;
-
-    if (slot.current_cycle < slot.max_cycles) {
-        /* Compute distance moved (matches minimizer.cpp cycle logic) */
-        float distance = 0.0f;
-        int ilo = slot.ilo;
-        for (int j = 0; j < slot.size; j++)
-            distance += slot.p[ilo][j] * slot.p[ilo][j];
-        distance = sqrtf(distance) / (float)slot.current_cycle;
-
-        if (distance > slot.cycle_converge) {
-            /* Update ref_mol to the current pose, then restart.
-               (fill_slot_from_mol is a no-op here — it requires
-               slot.converged — so apply the best vertex inline.) */
-            copy_crds(*slot.m_tmpMol, *slot.m_refMol);
-            FLOATVec vv(slot.size);
-            for (int j = 0; j < slot.size; j++) vv[j] = slot.p[slot.ilo][j];
-            FLOATVec nv;
-            m_minimizer->scale_vector(nv, vv, slot.trans_step_size,
-                                       slot.rot_step_size, slot.tors_step_size,
-                                       slot.torsion_scale_factors);
-            m_minimizer->vector_to_dockmol(*slot.m_tmpMol, nv,
-                                           slot.torsions, slot.bond_vectors);
-            copy_crds(*slot.m_mol, *slot.m_tmpMol);
-            copy_molecule(*slot.m_refMol, *slot.m_mol);
-
-            /* Reset vertex to zeros (start from current best) */
-            for (int vi = 0; vi < slot.size + 1; vi++)
-                memset(slot.p[vi], 0, slot.size * sizeof(float));
-
-            /* Build new initial simplex from zeros, continuing the
-               pose's deterministic RNG stream (matches the sequential
-               path's next cycle draws). */
-            FLOATVec zero_vertex(slot.size, 0.0f);
-            m_minimizer->set_local_rng_state(slot.rng_state);
-            build_initial_simplex(m_minimizer, zero_vertex, slot.p, slot.y, slot.size);
-            slot.rng_state = m_minimizer->local_rng_state();
-
-            /* Reset iteration state */
-            slot.iteration = 0;
-            slot.phase = SlotPhase::INIT;
-            slot.ihi = 0;
-            slot.inhi = 0;
-            slot.ilo = 0;
-            slot.shrink_skips = 0;
-            return false;  /* not done yet */
-        }
-    }
-
-    /* All cycles of this stage done.  Transition to stage B (the full
-       minimization, mirroring minimize_flexible_growth's second minimize()
-       call) if one was requested.  Stage B starts from stage A's best
-       pose with a fresh zero vertex, exactly like the sequential path's
-       second minimize() call. */
-    if (slot.stage == 0 && slot.max_cycles_B > 0) {
-        /* Restore best-across-cycles (matches Minimizer::minimize's
-           best_cycle_mol restore), then apply it to mol + refMol. */
-        if (slot.has_best) {
-            for (int j = 0; j < slot.size; j++)
-                slot.p[slot.ilo][j] = slot.best_vertex[j];
-            slot.y[slot.ilo] = slot.best_score;
-        }
-        copy_crds(*slot.m_tmpMol, *slot.m_refMol);
-        FLOATVec vv(slot.size);
-        for (int j = 0; j < slot.size; j++) vv[j] = slot.p[slot.ilo][j];
-        FLOATVec nv;
-        m_minimizer->scale_vector(nv, vv, slot.trans_step_size,
-                                   slot.rot_step_size, slot.tors_step_size,
-                                   slot.torsion_scale_factors);
-        m_minimizer->vector_to_dockmol(*slot.m_tmpMol, nv,
-                                       slot.torsions, slot.bond_vectors);
-        copy_crds(*slot.m_mol, *slot.m_tmpMol);
-        copy_molecule(*slot.m_refMol, *slot.m_mol);
-
-        for (int vi = 0; vi < slot.size + 1; vi++)
-            memset(slot.p[vi], 0, slot.size * sizeof(float));
-
-        FLOATVec zero_vertex(slot.size, 0.0f);
-        m_minimizer->set_local_rng_state(slot.rng_state);
-        build_initial_simplex(m_minimizer, zero_vertex, slot.p, slot.y, slot.size);
-        slot.rng_state = m_minimizer->local_rng_state();
-
-        /* Switch to stage B parameters; best-across-cycles tracking
-           restarts (the sequential path discards stage A's best once
-           stage B runs). */
-        slot.stage              = 1;
-        slot.max_iterations     = slot.max_iterations_B;
-        slot.max_cycles         = slot.max_cycles_B;
-        slot.score_converge     = slot.score_converge_B;
-        slot.trans_step_size    = slot.trans_step_size_B;
-        slot.rot_step_size      = slot.rot_step_size_B;
-        slot.tors_step_size     = slot.tors_step_size_B;
-        slot.current_cycle      = 0;
-        slot.iteration          = 0;
-        slot.has_best           = false;
-        slot.best_score         = 1e30f;
-        slot.phase              = SlotPhase::INIT;
-        slot.ihi                = 0;
-        slot.inhi               = 0;
-        slot.ilo                = 0;
-        slot.shrink_skips       = 0;
-        return false;  /* stage B still running */
-    }
-
-    /* All cycles done.  Restore best vertex across all cycles. */
-    if (slot.has_best) {
-        for (int j = 0; j < slot.size; j++)
-            slot.p[slot.ilo][j] = slot.best_vertex[j];
-        slot.y[slot.ilo] = slot.best_score;
-    }
-
-    slot.converged = true;
-    slot.phase     = SlotPhase::CONVERGED;
-    return true;
+    return done;
 }

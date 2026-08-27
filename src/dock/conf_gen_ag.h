@@ -7,7 +7,6 @@
 
 #include "dockmol.h"
 #include "utils.h"  // INTVec
-class ConformerPool;  // batch NM pool (conformer_pool.h) — refs only
 
 #define ATOMIC_WEIGHT_H 1.00794
 #define ATOMIC_WEIGHT_C 12.011
@@ -24,31 +23,6 @@ class Bump_Filter;
 class Master_Score;
 class Parameter_Reader;
 class Minimizer;
-
-/* ------------------------------------------------------------------ */
-/*  Per-pose simplex RNG seed keys                                    */
-/* ------------------------------------------------------------------ */
-
-/* Deterministic key mixing the pose's position in the growth tree.
-   The sequential path and the GPU pool both call seed_key() with the
-   same indices, so every pose draws the same simplex random numbers
-   regardless of processing order.  Anchor poses: (serial, anchor, pose).
-   Growth poses: (serial, anchor, layer, segment, pose).  Must stay
-   identical across conf_gen_ag.cpp and dock.cpp. */
-inline unsigned int
-seed_key(unsigned int a, unsigned int b, unsigned int c,
-         unsigned int d, unsigned int e)
-{
-    unsigned int x = a * 0x9E3779B1u ^ b * 0x85EBCA77u ^
-                     c * 0xC2B2AE3Du ^ d * 0x27D4EB2Fu ^
-                     e * 0x165667B1u;
-    x ^= x >> 16;
-    x *= 0x7FEB352Du;
-    x ^= x >> 15;
-    x *= 0x846CA68Bu;
-    x ^= x >> 16;
-    return x;
-}
 
 
 /********************************************************************/
@@ -143,105 +117,9 @@ class           CONFORMER {
     int             conformer_num; // independent number;
     int             parent_num;   // number;
     std::string     header;       // text with energy score, rmsd etc. for branch_*.mol2
-  
+ 
     DOCKMol         structure;  // structure of conformer
 
-};
-
-
-/********************************************************************/
-/* Windowed growth: per-ligand round state for the batch scheduler
-   (dock.cpp phase-3b).  One VSGrowState per (job, set) drives the
-   same growth algorithm as grow_periphery, but its exp_seeds are
-   added to a SHARED ConformerPool whose slots interleave NM
-   iterations of many ligands in one GPU dispatch. */
-class VSGrowState {
-
-  public:
-
-    int             lig_idx = -1;   // GPU LUT row for this ligand
-    int             route   = 0;    // scheduler row index (user_data tag hi bits)
-
-    // Lazy-prep support: rows are stubbed at window start; the full
-    // grow_win_init runs when the scheduler first picks the row, so only
-    // the in-flight rows' anchor copies + seed structures are live
-    // (the eager prep of every row held all ~90MB-per-row states at once).
-    int             job_idx = -1;   // owning VSWindowJob
-    int             set_idx = -1;   // anchor set within the job
-    bool            prepped = false; // grow_win_init ran for this row
-
-    int             i = 1;          // current layer (growth starts at 1)
-    int             l = 0;          // current segment within layer
-    int             num_layers = 1;
-
-    int             k_add = 0;      // first-pass resume cursor into exp_seeds
-    int             inflight = 0;   // slots of this round still in the pool
-    bool            adding = true;  // round adds still in progress
-    bool            drive_done = false; // torsion drive ran for this round
-    bool            drain_done = false; // round fully drained + pruned
-    bool            done = false;   // growth complete
-    bool            ie_prune = false;   // internal-energy pruning active
-    bool            cpu_min_round = false; // poses refined by CPU minimizer
-                                          // (keep CPU scores; skip GPU re-score)
-
-    // Ligand state parked here while the shared AG_Conformer_Search is
-    // serving another row (grow_win_swap).
-    std::vector<SCOREMol>        anchor_positions;
-    std::vector<DOCKMol>         anchor_confs;
-    std::vector<CONFORMER>       conf_anchors;
-    int                          current_anchor = 0;
-    int                          dock_mol_serial = 0;
-    std::vector<LAYER>           layers;
-    std::vector<LAYER_SEGMENT>   layer_segments;
-    std::vector<ROT_BOND>        bond_list;
-    INTVec                       bond_tors_vectors;
-    INTVec                       atom_seg_ids;
-    INTVec                       bond_seg_ids;
-    std::vector<bool>            assigned_atoms;
-    std::vector<int>             next_nbrs;
-    std::vector<int>             tmp_nextnbrs;
-    std::string                  atom_in_anchor;
-    DOCKMol                      orig;
-    std::vector<SEGMENT>         orig_segments;
-    bool                         ligand_mol_symmetric = false;
-
-    std::vector<CONFORMER> seeds;
-    std::vector<CONFORMER> exp_seeds;
-    std::vector<CONFORMER> b4min_seeds;
-    std::vector<int>    cb_ok;      // 0 clash fail, 1 bump fail, 2 passed
-    std::vector<char>   g2_valid;   // GPU2 in-grid per conformer
-    std::vector<float>  g2_grid;    // GPU2 grid-only scores (VS LUT)
-    std::vector<float>  g2_comb;    // GPU2 grid+IE scores (VS LUT)
-    bool                gpu2_ok = false;
-    bool                gpu2_pending = false; // async screen in flight (stream2)
-    /* Persistent staging for the async GPU2 screen: must outlive the
-       stream-ordered batch until dock_gpu_batch_score_sync2(). */
-    std::vector<float>  g2_xyz;
-    std::vector<int>    g2_pose_lig;
-    /* Per-set IE snapshot: primary_score is shared across the window's
-       rows and initialize_internal_energy() rebuilds nb_int/ie_vdwA per
-       row — the LUT refresh must use THIS row's pair list. */
-    std::vector<int>    nb_flat;
-    std::vector<float>  ie_vdwA_snap;
-
-    std::vector<CONFORMER> all_gen_seeds;      // growth tree (print_growth_tree)
-    std::vector<CONFORMER> all_gen_b4min_seeds;
-
-    /* LBAL round-phase debug timings (DOCK_LBAL_DEBUG) */
-    long    dbg_prep_us = 0;
-    long    dbg_drive_us = 0;
-    long    dbg_add_us = 0;
-    long    dbg_prune_us = 0;
-    int     dbg_nseeds = 0;
-    int     dbg_nexp = 0;
-
-    std::vector<SCOREMol> pruned_confs;        // final output for next_conformer
-
-    int             confs_pruned_bad_score = 0;
-    int             confs_pruned_clash_overlap = 0;
-    int             confs_pruned_outside_grid = 0;
-    int             confs_pruned_bump_filter = 0;
-    int             confs_pruned_clustered = 0;
 };
 
 
@@ -349,14 +227,9 @@ class           AG_Conformer_Search {
     bool            last_conformer;                // 
 
     int             current_anchor;                // current anchor (anchors.size() -> 0)
-
-    // Serial index of the molecule being docked (library order, 0-based).
-    // The sequential main loop and the GPU VS driver both set this so the
-    // per-pose simplex RNG seeds (seed_key) match across the two paths.
-    int             dock_mol_serial = 0;
-
     bool            return_anchor_value;           // used when no flex ligand is
-                                                   // requested    bool            return_periph_value;           // used when no flex ligand is
+                                                   // requested
+    bool            return_periph_value;           // used when no flex ligand is
                                                    // requested
 
     INTVec          atom_seg_ids;                  // id of which segment each atom
@@ -385,7 +258,6 @@ class           AG_Conformer_Search {
     void            extend_segments(int, int, DOCKMol &);       // 
     void            id_anchor_segments();       // 
     bool            next_anchor(DOCKMol &);     // 
-    void            setup_growth_anchor(int anchor_idx); // VS batch replay: rebuild layers for one anchor
     void            extend_layers(int, int, int);       // 
     bool            submit_anchor_orientation(DOCKMol &, bool); // 
     // RMSD type for pruning clustering: "std" (standard layer-weighted heavy-atom),
@@ -408,8 +280,7 @@ class           AG_Conformer_Search {
                                                   const std::vector<int> & colors,
                                                   const double * weights);  // layer-weighted WL symmetry-corrected RMSD
     float           calc_active_rmsd(CONFORMER &, CONFORMER &);  // 2008-11-17 trent balius add  
-    void            grow_periphery(Master_Score &, Minimizer &, Bump_Filter &,
-                                   bool anchors_preminimized = false);
+    void            grow_periphery(Master_Score &, Minimizer &, Bump_Filter &);
     void            conf_header(CONFORMER &, std::string, Master_Score &);
     void            segment_torsion_drive(CONFORMER &, int, std::vector < CONFORMER > &, int);
     void            activate_layer_segment(DOCKMol &, int, int);        // 
@@ -453,36 +324,6 @@ class           AG_Conformer_Search {
     void            write_unique_fragments();           // rewrites unique fragment libraries
     void            calc_mol_wt(DOCKMol &);
     std::vector <float>                               calc_atoms_wt(std::vector<std::string>, bool); 
-
-    // ----- Windowed (batch-scheduler) growth, GPU path -----
-    // Park the ligand-dependent members of this object into / restore
-    // them from a VSGrowState (the scheduler serves many ligands through
-    // one AG_Conformer_Search).  park() exchanges (this left empty);
-    // restore() deep-copies (state kept in g).
-    void            grow_win_park(VSGrowState &);
-    void            grow_win_restore(VSGrowState &);
-    // Seed build from anchor_positions (anchors_preminimized path) +
-    // IE/LUT setup.  Must run with this object's members holding the
-    // ligand's state (anchor_positions, dock_mol_serial loaded).
-    void            grow_win_init(VSGrowState &, Master_Score &,
-                                  Minimizer &, Bump_Filter &);
-    // Resumable first pass for the current round: torsion drive + clash/
-    // bump + pool.add with backpressure.  Returns when the pool is full
-    // or the round is fully added (g.adding == false).
-    void            grow_win_prep(VSGrowState &, ConformerPool &,
-                                  Master_Score &, Minimizer &, Bump_Filter &);
-    // Second pass (GPU2 VS scoring) + prune + seed rebuild; advances the
-    // (i, l) cursor; builds pruned_confs when growth ends.  With the async
-    // screen, finish splits into an enqueue pass (gpu2_pending set) and a
-    // consume pass (results already synced by dock.cpp) that prunes.
-    void            grow_win_finish(VSGrowState &, Master_Score &,
-                                    Minimizer &, Bump_Filter &);
-    // Prune + seed rebuild (the consume half of grow_win_finish).
-    void            grow_win_prune(VSGrowState &, Master_Score &,
-                                   Bump_Filter &);
-    // GPU2 dispatch used by grow_win_finish (kept separate so dock.cpp
-    // can run it without holding a swapped-in state).  Async on stream2.
-    void            grow_win_score_round(VSGrowState &, Master_Score &);
 
 
 };
