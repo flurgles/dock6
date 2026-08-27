@@ -78,6 +78,9 @@
 #ifndef __APPLE__
 #include <sys/sysinfo.h>
 #endif
+#include <sstream>
+#include "mem_info.h"
+#include "score_dock_gpu.h"
 
 
 // Temporary support on cygwin for calculate_simulation_time vs wall_clock_seconds
@@ -98,6 +101,44 @@ inline double   calculate_simulation_time(timespec t_start, timespec t_end);
 #endif
 using namespace std;
 
+static int vs_calc_window_max()
+{
+    long avail_kb = getMemAvailableKB();
+    if (avail_kb < 0) avail_kb = 8L * 1024 * 1024;
+    long avail_mb = avail_kb / 1024;
+    int per_row_mb = 650;
+    if (getenv("DOCK_VS_PER_ROW_MB"))
+        per_row_mb = atoi(getenv("DOCK_VS_PER_ROW_MB"));
+    if (per_row_mb < 100) per_row_mb = 100;
+    int reserve_mb = 1024;
+    if (getenv("DOCK_VS_RESERVE_MB"))
+        reserve_mb = atoi(getenv("DOCK_VS_RESERVE_MB"));
+    if (reserve_mb < 256) reserve_mb = 256;
+    long usable_mb = avail_mb - reserve_mb;
+    if (usable_mb < per_row_mb) usable_mb = per_row_mb;
+    int vs_window_max;
+    if (getenv("DOCK_VS_WINDOW_MAX")) {
+        vs_window_max = atoi(getenv("DOCK_VS_WINDOW_MAX"));
+    } else {
+        vs_window_max = (int)(usable_mb / per_row_mb);
+        if (dock_gpu_is_active() && dock_gpu_is_integrated() == 0) {
+            size_t freeB = 0, totalB = 0;
+            if (dock_gpu_mem_info(&freeB, &totalB) == 1 && totalB > 0) {
+                long gpu_free_mb = (long)(freeB / (1024 * 1024));
+                int gpu_per_row_mb = 20;
+                if (getenv("DOCK_VS_GPU_PER_ROW_MB"))
+                    gpu_per_row_mb = atoi(getenv("DOCK_VS_GPU_PER_ROW_MB"));
+                if (gpu_per_row_mb < 5) gpu_per_row_mb = 5;
+                long gpu_usable = (long)(gpu_free_mb * 0.7);
+                int gpu_window = gpu_per_row_mb > 0 ? (int)(gpu_usable / gpu_per_row_mb) : vs_window_max;
+                if (gpu_window < vs_window_max) vs_window_max = gpu_window;
+            }
+        }
+        if (vs_window_max < 1) vs_window_max = 1;
+    }
+    if (vs_window_max < 1) vs_window_max = 1;
+    return vs_window_max;
+}
 
 /************************************************/
 int
@@ -811,8 +852,23 @@ main(int argc, char **argv)
 
     // Else if you are doing flexible, rigid, or fixed anchor docking, enter here
     } else {
+    {
+        int _vs_wm = vs_calc_window_max();
+        long _vs_av = getMemAvailableKB();
+        const char* _vs_gpu = dock_gpu_is_active() ? (dock_gpu_is_integrated()==1?"integrated":dock_gpu_is_integrated()==0?"discrete":"unknown") : "inactive";
+        fprintf(stderr, "[VS] window_max=%d per_row=650MB avail=%ldMB gpu=%s\n", _vs_wm, _vs_av/1024, _vs_gpu);
+    }
 
     while (c_library.get_mol(mol,c_filter.use_database_filter, USE_MPI, c_master_score.amber, c_typer, c_master_score, *active_min)) { 
+        // Buffer per-ligand verbose (ANCHOR / Lyr / VERBOSE GROWTH) into
+        // a string and emit as one contiguous block just before the
+        // Grid_Score, avoiding interleaving when windowed and keeping
+        // -v output readable (sprintf -> string -> print before best score).
+        std::ostringstream vs_verbose_buf;
+        std::streambuf* vs_old_cout = nullptr;
+        bool vs_do_capture = c_master_conf.c_ag_conf.verbose;
+        if (vs_do_capture) vs_old_cout = std::cout.rdbuf(vs_verbose_buf.rdbuf());
+
         // If MPI is used this is done on the compute nodes.
         // filtering must be done here because it needs all prep for docking
         // before the mols can be eliminated.
@@ -966,6 +1022,11 @@ main(int argc, char **argv)
                     }
                 }
             }
+        }
+        if (vs_old_cout) {
+            std::cout.rdbuf(vs_old_cout);
+            std::string _vs = vs_verbose_buf.str();
+            if (!_vs.empty()) std::cout << _vs << std::flush;
         }
         //write out list of final conformations
         c_library.submit_conformations(c_master_score);
