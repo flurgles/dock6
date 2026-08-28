@@ -16,6 +16,7 @@ All GPU calls go through the score_dock_gpu.h C API.
 
 #include "conformer_pool.h"
 #include "dockmol.h"
+#include <cstdio>
 
 using namespace std;
 
@@ -160,14 +161,7 @@ ConformerPool::add(DOCKMol* mol,
     slot.user_data          = user_data;
     slot.restrained         = restrained;
     slot.coefficient_restraint = coefficient_restraint;
-    /* Restraint reference: use caller's rmsd_ref if provided, otherwise
-       use the internal refMol snapshot (RMSD^2 = 0 for the GPU path, which
-       matches the existing do_minimize() GPU behavior). */
-    if (restrained) {
-        slot.m_rmsd_ref = (rmsd_ref != nullptr) ? rmsd_ref : slot.m_refMol;
-    } else {
-        slot.m_rmsd_ref = nullptr;
-    }
+    // m_rmsd_ref deferred until after m_refMol is valid (see below)
 
     /* Allocate and build initial simplex vertices (N+1 vertices, each of length size) */
     slot.p = new float*[size + 1];
@@ -188,6 +182,15 @@ ConformerPool::add(DOCKMol* mol,
     slot.m_tmpMol           = reuse_tmp ? reuse_tmp : new DOCKMol();
     copy_molecule(*slot.m_refMol, *mol);
     copy_molecule(*slot.m_tmpMol, *mol);
+
+    /* Restraint reference: must be after m_refMol is valid; use caller's
+       rmsd_ref if provided, otherwise internal refMol snapshot (RMSD^2 = 0
+       for the GPU path, matching do_minimize() behavior). */
+    if (restrained) {
+        slot.m_rmsd_ref = (rmsd_ref != nullptr) ? rmsd_ref : slot.m_refMol;
+    } else {
+        slot.m_rmsd_ref = nullptr;
+    }
 
     if (idx < (int)m_slots.size()) {
         m_slots[idx] = std::move(slot);   /* recycle converged slot */
@@ -272,6 +275,7 @@ ConformerPool::step()
         m_xyz_buffer, total, na, active_flags, m_score_buffer);
 
     if (!ok) {
+        fprintf(stderr, "[pool] GPU batch failed (%d candidates) — force-converging %d active slots\n", total, active_count());
         /* GPU scoring failed (e.g. IE data not uploaded).
            Mark all active slots converged with their current best
            pose so the drain loop terminates instead of spinning. */

@@ -136,9 +136,41 @@ static int vs_calc_window_max()
         }
         if (vs_window_max < 1) vs_window_max = 1;
     }
+    // Cap computed window to avoid unbounded windows when avail is large;
+    // explicit DOCK_VS_WINDOW_MAX env override is uncapped.
+    if (!getenv("DOCK_VS_WINDOW_MAX") && vs_window_max > 64) vs_window_max = 64;
     if (vs_window_max < 1) vs_window_max = 1;
     return vs_window_max;
 }
+
+// RAII guard for per-ligand verbose capture (dock.cpp:862-1030)
+// Ensures std::cout.rdbuf is restored on all exit paths (including
+// write_fragment_libraries / DB-filter continues) to avoid dangling
+// streambuf when -v is active.
+struct VsVerboseGuard {
+    std::streambuf* old = nullptr;
+    std::ostringstream* buf = nullptr;
+    bool active = false;
+    VsVerboseGuard(bool capture, std::ostringstream* b) : buf(b) {
+        if (capture && b) { old = std::cout.rdbuf(b->rdbuf()); active = true; }
+    }
+    void flush_and_restore() {
+        if (active) {
+            std::cout.rdbuf(old);
+            std::string s = buf->str();
+            if (!s.empty()) std::cout << s << std::flush;
+            active = false;
+            old = nullptr;
+        }
+    }
+    ~VsVerboseGuard() {
+        if (active) {
+            std::cout.rdbuf(old);
+            std::string s = buf->str();
+            if (!s.empty()) std::cout << s << std::flush;
+        }
+    }
+};
 
 /************************************************/
 int
@@ -859,15 +891,14 @@ main(int argc, char **argv)
         fprintf(stderr, "[VS] window_max=%d per_row=650MB avail=%ldMB gpu=%s\n", _vs_wm, _vs_av/1024, _vs_gpu);
     }
 
-    while (c_library.get_mol(mol,c_filter.use_database_filter, USE_MPI, c_master_score.amber, c_typer, c_master_score, *active_min)) { 
+    while (c_library.get_mol(mol,c_filter.use_database_filter, USE_MPI, c_master_score.amber, c_typer, c_master_score, *active_min)) {
         // Buffer per-ligand verbose (ANCHOR / Lyr / VERBOSE GROWTH) into
         // a string and emit as one contiguous block just before the
         // Grid_Score, avoiding interleaving when windowed and keeping
-        // -v output readable (sprintf -> string -> print before best score).
+        // -v output readable. RAII guard ensures rdbuf is restored on
+        // all exit paths (write_fragment_libraries / DB-filter continues).
         std::ostringstream vs_verbose_buf;
-        std::streambuf* vs_old_cout = nullptr;
-        bool vs_do_capture = c_master_conf.c_ag_conf.verbose;
-        if (vs_do_capture) vs_old_cout = std::cout.rdbuf(vs_verbose_buf.rdbuf());
+        VsVerboseGuard vs_verbose_guard(c_master_conf.c_ag_conf.verbose, &vs_verbose_buf);
 
         // If MPI is used this is done on the compute nodes.
         // filtering must be done here because it needs all prep for docking
@@ -1023,11 +1054,7 @@ main(int argc, char **argv)
                 }
             }
         }
-        if (vs_old_cout) {
-            std::cout.rdbuf(vs_old_cout);
-            std::string _vs = vs_verbose_buf.str();
-            if (!_vs.empty()) std::cout << _vs << std::flush;
-        }
+        vs_verbose_guard.flush_and_restore();
         //write out list of final conformations
         c_library.submit_conformations(c_master_score);
         
