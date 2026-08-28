@@ -1,0 +1,58 @@
+
+#version 450
+
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) buffer BXYZ   { float xyz[]; };
+layout(std430, binding = 1) buffer BVDWA  { float vdwA[]; };
+layout(std430, binding = 2) buffer BVDWB  { float vdwB[]; };
+layout(std430, binding = 3) buffer BCHG   { float charges[]; };
+layout(binding = 4) uniform sampler3D g_avdw;
+layout(binding = 5) uniform sampler3D g_bvdw;
+layout(binding = 6) uniform sampler3D g_es;
+layout(std430, binding = 7) buffer BOUT   { float out_scores[]; };
+layout(std430, binding = 8) buffer BACT   { int   active_flags[]; };
+
+layout(push_constant) uniform Params {
+    float origin_x, origin_y, origin_z;
+    int   span_x, span_y, span_z;
+    float spacing;
+    int   num_atoms;
+    float ie_soft_delta;
+    float ie_cutoff_sq;
+    int   num_nb_pairs;
+    int   num_poses;
+} p;
+
+float sample_grid(sampler3D grid, float x, float y, float z) {
+    float gx = (x - p.origin_x) / p.spacing;
+    float gy = (y - p.origin_y) / p.spacing;
+    float gz = (z - p.origin_z) / p.spacing;
+    if (gx < 0.0 || gy < 0.0 || gz < 0.0 ||
+        gx >= float(p.span_x - 1) ||
+        gy >= float(p.span_y - 1) ||
+        gz >= float(p.span_z - 1))
+        return 0.0;
+    vec3 coord = vec3((gx + 0.5) / float(p.span_x),
+                      (gy + 0.5) / float(p.span_y),
+                      (gz + 0.5) / float(p.span_z));
+    return texture(grid, coord).r;
+}
+
+void main() {
+    uint tid = gl_GlobalInvocationID.x;
+    if (tid >= uint(p.num_poses)) return;
+    int stride = int(tid) * p.num_atoms * 3;
+    float score = 0.0;
+    for (int a = 0; a < p.num_atoms; a++) {
+        int o3 = stride + a*3;
+        float x = xyz[o3], y = xyz[o3+1], z = xyz[o3+2];
+        if (active_flags[a] != 0) {
+            float vdw  = sample_grid(g_avdw, x, y, z);
+            float bvdw = sample_grid(g_bvdw, x, y, z);
+            float es   = sample_grid(g_es,   x, y, z);
+            score += vdwA[a]*vdw - vdwB[a]*bvdw + charges[a]*es;
+        }
+    }
+    out_scores[tid] = score;
+}

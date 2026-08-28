@@ -1,0 +1,111 @@
+
+#version 450
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) buffer BXYZ   { float xyz[]; };
+layout(std430, binding = 1) buffer BVDWA  { float vdwA[]; };
+layout(std430, binding = 2) buffer BVDWB  { float vdwB[]; };
+layout(std430, binding = 3) buffer BCHG   { float charges[]; };
+layout(binding = 4) uniform sampler3D g_avdw;
+layout(binding = 5) uniform sampler3D g_bvdw;
+layout(binding = 6) uniform sampler3D g_es;
+layout(std430, binding = 7) buffer BOUT   { float out_scores[]; };
+layout(std430, binding = 8) buffer BACT   { int   active_flags[]; };
+layout(std430, binding = 9) buffer BIEA   { float ie_vdwA[]; };
+layout(std430, binding = 10) buffer BSTART { int   pair_starts[]; };
+layout(std430, binding = 11) buffer BIDX   { int   pair_indices[]; };
+layout(std430, binding = 12) buffer BCNT   { uint  pose_counter[]; };
+
+layout(push_constant) uniform Params {
+    float origin_x, origin_y, origin_z;
+    int   span_x, span_y, span_z;
+    float spacing;
+    int   num_atoms;
+    float ie_soft_delta;
+    float ie_cutoff_sq;
+    int   num_nb_pairs;
+    int   num_poses;
+} p;
+
+float sample_grid(sampler3D grid, float x, float y, float z) {
+    float gx = (x - p.origin_x) / p.spacing;
+    float gy = (y - p.origin_y) / p.spacing;
+    float gz = (z - p.origin_z) / p.spacing;
+    if (gx < 0.0 || gy < 0.0 || gz < 0.0 ||
+        gx >= float(p.span_x - 1) ||
+        gy >= float(p.span_y - 1) ||
+        gz >= float(p.span_z - 1))
+        return 0.0;
+    vec3 coord = vec3((gx + 0.5) / float(p.span_x),
+                      (gy + 0.5) / float(p.span_y),
+                      (gz + 0.5) / float(p.span_z));
+    return texture(grid, coord).r;
+}
+
+shared float tg_partial[64];
+shared uint tg_candidate;
+
+void kernel_persistent() {
+    uint tid = gl_LocalInvocationID.x;
+    uint tg_size = gl_WorkGroupSize.x;
+    uint simd_idx = tid / gl_SubgroupSize;
+
+    if (tid == 0u) {
+        tg_candidate = atomicAdd(pose_counter[0], 1u);
+    }
+    barrier();
+
+    while (tg_candidate < uint(p.num_poses)) {
+        int stride = int(tg_candidate) * p.num_atoms * 3;
+        float total = 0.0;
+
+        for (uint a = tid; a < uint(p.num_atoms); a += tg_size) {
+            if (active_flags[a] == 0) continue;
+            float x = xyz[stride + int(a)*3];
+            float y = xyz[stride + int(a)*3 + 1];
+            float z = xyz[stride + int(a)*3 + 2];
+            float vdw  = sample_grid(g_avdw, x, y, z);
+            float bvdw = sample_grid(g_bvdw, x, y, z);
+            float es   = sample_grid(g_es,   x, y, z);
+            total += vdwA[a]*vdw - vdwB[a]*bvdw + charges[a]*es;
+            int start = pair_starts[a];
+            int end   = pair_starts[a + 1];
+            for (int i = start; i < end; i++) {
+                int a2 = pair_indices[i];
+                if (a2 < 0 || a2 >= p.num_atoms) continue;
+                float dx = xyz[stride + int(a)*3]     - xyz[stride + a2*3];
+                float dy = xyz[stride + int(a)*3 + 1] - xyz[stride + a2*3 + 1];
+                float dz = xyz[stride + int(a)*3 + 2] - xyz[stride + a2*3 + 2];
+                float r2 = dx*dx + dy*dy + dz*dz;
+                if (r2 < p.ie_cutoff_sq) {
+                    float r2eff = r2 + p.ie_soft_delta;
+                    float denom = r2eff*r2eff*r2eff;
+                    total += (ie_vdwA[a]*ie_vdwA[a2]) / (denom*denom);
+                }
+            }
+        }
+
+        float s = subgroupAdd(total);
+        if (gl_SubgroupInvocationID == 0u) {
+            tg_partial[simd_idx] = s;
+        }
+        barrier();
+
+        if (tid == 0u) {
+            float final_score = 0.0;
+            uint num_subgroups = tg_size / gl_SubgroupSize;
+            for (uint i = 0u; i < num_subgroups; i++)
+                final_score += tg_partial[i];
+            out_scores[tg_candidate] = final_score;
+            tg_candidate = atomicAdd(pose_counter[0], 1u);
+        }
+        barrier();
+    }
+}
+
+void main() {
+    kernel_persistent();
+}

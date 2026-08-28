@@ -59,185 +59,66 @@
 #include <math.h>
 #include <sys/stat.h>
 #include <vector>
+#include <string>
+#include <fstream>
+#include <sstream>
+#include <unistd.h>
+#include <limits.h>
 
 #define GPU_MAX_POSES       4096
 #define GPU_MAX_ATOMS       512
 #define GPU_MAX_NB_PAIRS    32768
 
-/* GLSL source for the persistent IE compute kernel. */
-static const char* shader_src = R"glsl(
-#version 450
-#extension GL_KHR_shader_subgroup_basic : enable
-#extension GL_KHR_shader_subgroup_arithmetic : enable
-
-layout(local_size_x = 64) in;
-
-layout(std430, binding = 0) buffer BXYZ   { float xyz[]; };
-layout(std430, binding = 1) buffer BVDWA  { float vdwA[]; };
-layout(std430, binding = 2) buffer BVDWB  { float vdwB[]; };
-layout(std430, binding = 3) buffer BCHG   { float charges[]; };
-layout(binding = 4) uniform sampler3D g_avdw;
-layout(binding = 5) uniform sampler3D g_bvdw;
-layout(binding = 6) uniform sampler3D g_es;
-layout(std430, binding = 7) buffer BOUT   { float out_scores[]; };
-layout(std430, binding = 8) buffer BACT   { int   active_flags[]; };
-layout(std430, binding = 9) buffer BIEA   { float ie_vdwA[]; };
-layout(std430, binding = 10) buffer BSTART { int   pair_starts[]; };
-layout(std430, binding = 11) buffer BIDX   { int   pair_indices[]; };
-layout(std430, binding = 12) buffer BCNT   { uint  pose_counter[]; };
-
-layout(push_constant) uniform Params {
-    float origin_x, origin_y, origin_z;
-    int   span_x, span_y, span_z;
-    float spacing;
-    int   num_atoms;
-    float ie_soft_delta;
-    float ie_cutoff_sq;
-    int   num_nb_pairs;
-    int   num_poses;
-} p;
-
-float sample_grid(sampler3D grid, float x, float y, float z) {
-    float gx = (x - p.origin_x) / p.spacing;
-    float gy = (y - p.origin_y) / p.spacing;
-    float gz = (z - p.origin_z) / p.spacing;
-    if (gx < 0.0 || gy < 0.0 || gz < 0.0 ||
-        gx >= float(p.span_x - 1) ||
-        gy >= float(p.span_y - 1) ||
-        gz >= float(p.span_z - 1))
-        return 0.0;
-    vec3 coord = vec3((gx + 0.5) / float(p.span_x),
-                      (gy + 0.5) / float(p.span_y),
-                      (gz + 0.5) / float(p.span_z));
-    return texture(grid, coord).r;
-}
-
-shared float tg_partial[64];
-shared uint tg_candidate;
-
-void kernel_persistent() {
-    uint tid = gl_LocalInvocationID.x;
-    uint tg_size = gl_WorkGroupSize.x;
-    uint simd_idx = tid / gl_SubgroupSize;
-
-    if (tid == 0u) {
-        tg_candidate = atomicAdd(pose_counter[0], 1u);
+/* Shader loader - external files instead of embedded strings.
+ * Search order: DOCK_SHADER_PATH, dirname(/proc/self/exe)/../src/dock/shaders,
+ *               ./shaders, ../src/dock/shaders, dev absolute, bin/shaders */
+static std::string load_shader_source(const char *label) {
+    const char *env = getenv("DOCK_SHADER_PATH");
+    std::vector<std::string> candidates;
+    if (env && *env) {
+        candidates.push_back(std::string(env) + "/" + label + ".comp");
+        candidates.push_back(std::string(env) + "/" + label);
     }
-    barrier();
-
-    while (tg_candidate < uint(p.num_poses)) {
-        int stride = int(tg_candidate) * p.num_atoms * 3;
-        float total = 0.0;
-
-        for (uint a = tid; a < uint(p.num_atoms); a += tg_size) {
-            if (active_flags[a] == 0) continue;
-            float x = xyz[stride + int(a)*3];
-            float y = xyz[stride + int(a)*3 + 1];
-            float z = xyz[stride + int(a)*3 + 2];
-            float vdw  = sample_grid(g_avdw, x, y, z);
-            float bvdw = sample_grid(g_bvdw, x, y, z);
-            float es   = sample_grid(g_es,   x, y, z);
-            total += vdwA[a]*vdw - vdwB[a]*bvdw + charges[a]*es;
-            int start = pair_starts[a];
-            int end   = pair_starts[a + 1];
-            for (int i = start; i < end; i++) {
-                int a2 = pair_indices[i];
-                if (a2 < 0 || a2 >= p.num_atoms) continue;
-                float dx = xyz[stride + int(a)*3]     - xyz[stride + a2*3];
-                float dy = xyz[stride + int(a)*3 + 1] - xyz[stride + a2*3 + 1];
-                float dz = xyz[stride + int(a)*3 + 2] - xyz[stride + a2*3 + 2];
-                float r2 = dx*dx + dy*dy + dz*dz;
-                if (r2 < p.ie_cutoff_sq) {
-                    float r2eff = r2 + p.ie_soft_delta;
-                    float denom = r2eff*r2eff*r2eff;
-                    total += (ie_vdwA[a]*ie_vdwA[a2]) / (denom*denom);
-                }
+    // exe dir
+    char exe[PATH_MAX] = {0};
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe)-1);
+    if (n > 0) {
+        exe[n] = 0;
+        std::string dir(exe);
+        size_t p = dir.rfind('/');
+        if (p != std::string::npos) dir = dir.substr(0, p);
+        candidates.push_back(dir + "/shaders/" + label + ".comp");
+        candidates.push_back(dir + "/../src/dock/shaders/" + label + ".comp");
+        candidates.push_back(dir + "/../../src/dock/shaders/" + label + ".comp");
+    }
+    candidates.push_back(std::string("./shaders/") + label + ".comp");
+    candidates.push_back(std::string("./dock6/src/dock/shaders/") + label + ".comp");
+    candidates.push_back(std::string("../src/dock/shaders/") + label + ".comp");
+    candidates.push_back(std::string("shaders/") + label + ".comp");
+    candidates.push_back(std::string("/home/deck/dock6/dock6/src/dock/shaders/") + label + ".comp");
+    candidates.push_back(std::string("../../bin/shaders/") + label + ".comp");
+    candidates.push_back(std::string("../../dock6/src/dock/shaders/") + label + ".comp");
+    for (auto &path : candidates) {
+        std::ifstream f(path);
+        if (f) {
+            std::ostringstream ss;
+            ss << f.rdbuf();
+            std::string s = ss.str();
+            if (!s.empty()) {
+                fprintf(stderr, "GPU-VK: loaded shader '%s' from %s (%zu bytes)\n", label, path.c_str(), s.size());
+                return s;
             }
         }
-
-        float s = subgroupAdd(total);
-        if (gl_SubgroupInvocationID == 0u) {
-            tg_partial[simd_idx] = s;
-        }
-        barrier();
-
-        if (tid == 0u) {
-            float final_score = 0.0;
-            uint num_subgroups = tg_size / gl_SubgroupSize;
-            for (uint i = 0u; i < num_subgroups; i++)
-                final_score += tg_partial[i];
-            out_scores[tg_candidate] = final_score;
-            tg_candidate = atomicAdd(pose_counter[0], 1u);
-        }
-        barrier();
     }
+    fprintf(stderr, "GPU-VK: shader '%s' not found in any search path\n", label);
+    return std::string();
 }
 
-void main() {
-    kernel_persistent();
-}
-)glsl";
-
-/* Second GLSL module: grid-only batch_score (1 thread/pose). */
-static const char* shader_src_grid = R"glsl(
-#version 450
-
-layout(local_size_x = 64) in;
-
-layout(std430, binding = 0) buffer BXYZ   { float xyz[]; };
-layout(std430, binding = 1) buffer BVDWA  { float vdwA[]; };
-layout(std430, binding = 2) buffer BVDWB  { float vdwB[]; };
-layout(std430, binding = 3) buffer BCHG   { float charges[]; };
-layout(binding = 4) uniform sampler3D g_avdw;
-layout(binding = 5) uniform sampler3D g_bvdw;
-layout(binding = 6) uniform sampler3D g_es;
-layout(std430, binding = 7) buffer BOUT   { float out_scores[]; };
-layout(std430, binding = 8) buffer BACT   { int   active_flags[]; };
-
-layout(push_constant) uniform Params {
-    float origin_x, origin_y, origin_z;
-    int   span_x, span_y, span_z;
-    float spacing;
-    int   num_atoms;
-    float ie_soft_delta;
-    float ie_cutoff_sq;
-    int   num_nb_pairs;
-    int   num_poses;
-} p;
-
-float sample_grid(sampler3D grid, float x, float y, float z) {
-    float gx = (x - p.origin_x) / p.spacing;
-    float gy = (y - p.origin_y) / p.spacing;
-    float gz = (z - p.origin_z) / p.spacing;
-    if (gx < 0.0 || gy < 0.0 || gz < 0.0 ||
-        gx >= float(p.span_x - 1) ||
-        gy >= float(p.span_y - 1) ||
-        gz >= float(p.span_z - 1))
-        return 0.0;
-    vec3 coord = vec3((gx + 0.5) / float(p.span_x),
-                      (gy + 0.5) / float(p.span_y),
-                      (gz + 0.5) / float(p.span_z));
-    return texture(grid, coord).r;
-}
-
-void main() {
-    uint tid = gl_GlobalInvocationID.x;
-    if (tid >= uint(p.num_poses)) return;
-    int stride = int(tid) * p.num_atoms * 3;
-    float score = 0.0;
-    for (int a = 0; a < p.num_atoms; a++) {
-        int o3 = stride + a*3;
-        float x = xyz[o3], y = xyz[o3+1], z = xyz[o3+2];
-        if (active_flags[a] != 0) {
-            float vdw  = sample_grid(g_avdw, x, y, z);
-            float bvdw = sample_grid(g_bvdw, x, y, z);
-            float es   = sample_grid(g_es,   x, y, z);
-            score += vdwA[a]*vdw - vdwB[a]*bvdw + charges[a]*es;
-        }
-    }
-    out_scores[tid] = score;
-}
-)glsl";
+/* Shaders are now external files:
+ *   shaders/grid_batch_score.comp
+ *   shaders/persistent_ie.comp
+ * See load_shader_source() below. Original embedded R"glsl" removed.
+ */
 
 /* Push constant block matching the GLSL Params layout exactly (std430, 48 bytes). */
 struct PushConstants {
@@ -847,9 +728,16 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     fci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
     vkCreateFence(g_dev, &fci, NULL, &g_fence);
 
-    /* Shaders (SPIR-V cached to disk) */
-    g_mod_grid = compile_module(shader_src_grid, "grid_batch_score");
-    g_mod_ie    = compile_module(shader_src,        "persistent_ie");
+    /* Shaders (SPIR-V cached to disk) - loaded from external .comp files */
+    std::string src_grid = load_shader_source("grid_batch_score");
+    std::string src_ie   = load_shader_source("persistent_ie");
+    if (src_grid.empty() || src_ie.empty()) {
+        fprintf(stderr, "GPU-VK: shader source not found — CPU fallback\n");
+        dock_gpu_cleanup();
+        return 0;
+    }
+    g_mod_grid = compile_module(src_grid.c_str(), "grid_batch_score");
+    g_mod_ie    = compile_module(src_ie.c_str(),   "persistent_ie");
     if (!g_mod_grid || !g_mod_ie) {
         fprintf(stderr, "GPU-VK: shader compile failed — CPU fallback\n");
         dock_gpu_cleanup();

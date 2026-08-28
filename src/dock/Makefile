@@ -46,8 +46,8 @@ BIN= ../../bin
 PROGS= dock6$(DOCK_SUFFIX)
 
 OBJS= amber_typer.o base_grid.o base_mpi.o base_score.o bobyqa.o minimizer.o \
-      minimizer_transform.o minimizer_gpu.o minimizer_helpers.o conformer_pool.o \
-      conf_gen_ag.o \
+       minimizer_transform.o minimizer_gpu.o minimizer_helpers.o conformer_pool.o dock_threading.o \
+       conf_gen_ag.o \
       conf_gen_cg.o conf_gen_dn.o conf_gen_dn_ga.o conf_gen_ga.o conf_gen_hdb.o \
       conjugate_gradient.o steepest_descent.o \
       dock.o dockmol.o filter.o fingerprint.o fraggraph.o fragment.o \
@@ -63,6 +63,8 @@ all:  $(PROGS)
 
 install:  all
 	mv $(PROGS) $(BIN)
+	@mkdir -p $(BIN)/shaders
+	@cp -v shaders/*.comp $(BIN)/shaders/ 2>/dev/null || true
 
 dock:  dock6$(DOCK_SUFFIX)
 
