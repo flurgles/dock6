@@ -14,18 +14,7 @@ public:
     size_t capacity() const { return cap_; }
 
     // push - blocks if bounded and full, unless closed
-    bool push(T&& v) {
-        std::unique_lock<std::mutex> lk(m_);
-        if (closed_) return false;
-        if (cap_ > 0) {
-            cv_not_full_.wait(lk, [&]{ return closed_ || q_.size() < cap_; });
-            if (closed_) return false;
-        }
-        q_.emplace_back(std::move(v));
-        lk.unlock();
-        cv_not_empty_.notify_one();
-        return true;
-    }
+    // Use copy (not move) for DOCKMol safety - DOCKMol has shallow move
     bool push(const T& v) {
         std::unique_lock<std::mutex> lk(m_);
         if (closed_) return false;
@@ -39,12 +28,12 @@ public:
         return true;
     }
 
-    // wait_pop - blocks until item or closed
+    // wait_pop - blocks until item or closed - copy for DOCKMol safety
     bool wait_pop(T &out) {
         std::unique_lock<std::mutex> lk(m_);
         cv_not_empty_.wait(lk, [&]{ return closed_ || !q_.empty(); });
         if (q_.empty()) return false; // closed and empty
-        out = std::move(q_.front());
+        out = q_.front();
         q_.pop_front();
         lk.unlock();
         cv_not_full_.notify_one();
@@ -54,7 +43,7 @@ public:
     bool try_pop(T &out) {
         std::unique_lock<std::mutex> lk(m_);
         if (q_.empty()) return false;
-        out = std::move(q_.front());
+        out = q_.front();
         q_.pop_front();
         lk.unlock();
         cv_not_full_.notify_one();

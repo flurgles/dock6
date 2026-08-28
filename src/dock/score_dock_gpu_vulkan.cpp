@@ -64,6 +64,7 @@
 #include <sstream>
 #include <unistd.h>
 #include <limits.h>
+#include <mutex>
 
 #define GPU_MAX_POSES       4096
 #define GPU_MAX_ATOMS       512
@@ -208,6 +209,20 @@ static double   prof_last_dispatch_ms  = 0.0;
 #define PROF_ROLLING_SIZE 64
 static double   prof_wait_buf[PROF_ROLLING_SIZE];
 static int      prof_wait_idx = 0;
+
+static std::recursive_mutex g_vk_mutex; // serializes VkQueue/buffers for threaded use (recursive for set+batch)
+// Thread-local per-ligand data to allow per-batch re-copy under lock
+static thread_local float t_vdwA[GPU_MAX_ATOMS];
+static thread_local float t_vdwB[GPU_MAX_ATOMS];
+static thread_local float t_charges[GPU_MAX_ATOMS];
+static thread_local float t_ie_vdwA[GPU_MAX_ATOMS];
+static thread_local int   t_active_flags[GPU_MAX_ATOMS];
+static thread_local int   t_pair_starts[GPU_MAX_ATOMS+1];
+static thread_local int   t_pair_indices[GPU_MAX_NB_PAIRS];
+static thread_local int   t_num_atoms_tls = 0;
+static thread_local int   t_num_nb_pairs_tls = 0;
+static thread_local float t_ie_soft_delta_tls = 0;
+static thread_local float t_ie_cutoff_sq_tls = 1e10f;
 
 static void fill_push_constants(PushConstants *pc, int num_atoms, int num_poses,
                                 float ie_soft_delta, float ie_cutoff_sq, int num_nb_pairs) {
@@ -568,6 +583,7 @@ static void save_pipeline_cache(void) {
 static void dispatch_compute(VkPipeline pipeline, uint32_t num_wg,
                              const PushConstants *pc,
                              float *out_scores, int num_poses) {
+    std::lock_guard<std::recursive_mutex> lk(g_vk_mutex);
     vkWaitForFences(g_dev, 1, &g_fence, VK_TRUE, UINT64_MAX);
     vkResetFences(g_dev, 1, &g_fence);
 
@@ -873,15 +889,21 @@ int dock_gpu_set_ligand(const float *vdwA, const float *vdwB,
         return 0;
     }
     size_t bytes = sizeof(float) * (size_t)num_atoms;
-    memcpy(g_vdwA.map, vdwA, bytes);
-    memcpy(g_vdwB.map, vdwB, bytes);
-    memcpy(g_charges.map, charges, bytes);
-
-    /* Initialize active_flags to all-active (all atoms enabled) */
-    int *af = (int *)g_active_flags.map;
-    for (int i = 0; i < num_atoms; i++) af[i] = 1;
-
-    g_num_atoms = num_atoms;
+    memcpy(t_vdwA, vdwA, bytes);
+    memcpy(t_vdwB, vdwB, bytes);
+    memcpy(t_charges, charges, bytes);
+    for (int i = 0; i < num_atoms; i++) t_active_flags[i] = 1;
+    t_num_atoms_tls = num_atoms;
+    // also update global for single-thread fallback (protected)
+    {
+        std::lock_guard<std::recursive_mutex> lk(g_vk_mutex);
+        memcpy(g_vdwA.map, vdwA, bytes);
+        memcpy(g_vdwB.map, vdwB, bytes);
+        memcpy(g_charges.map, charges, bytes);
+        int *af = (int *)g_active_flags.map;
+        for (int i = 0; i < num_atoms; i++) af[i] = 1;
+        g_num_atoms = num_atoms;
+    }
     return 1;
 }
 
@@ -895,11 +917,11 @@ int dock_gpu_set_ligand_ie(const float *ie_vdwA, const float *ie_vdwB,
         fprintf(stderr, "GPU-VK: num_nb_pairs %d exceeds max %d\n", num_nb_pairs, GPU_MAX_NB_PAIRS);
         return 0;
     }
-    size_t ie_bytes = sizeof(float) * (size_t)g_num_atoms;
-    memcpy(g_ie_vdwA.map, ie_vdwA, ie_bytes);
-
-    /* Build per-atom pair lists (same as Metal backend) */
-    int na = g_num_atoms;
+    int na = t_num_atoms_tls;
+    if (na <= 0) na = g_num_atoms;
+    size_t ie_bytes = sizeof(float) * (size_t)na;
+    memcpy(t_ie_vdwA, ie_vdwA, ie_bytes);
+    // build into thread-local
     int *counts = (int *)calloc(na, sizeof(int));
     int *offsets = (int *)malloc(na * sizeof(int));
     if (!counts || !offsets) {
@@ -907,31 +929,40 @@ int dock_gpu_set_ligand_ie(const float *ie_vdwA, const float *ie_vdwB,
         free(counts); free(offsets);
         return 0;
     }
-    int *starts = (int *)g_pair_starts.map;
     int total = 0;
     for (int p = 0; p < num_nb_pairs; p++) {
         int a1 = nb_int_pairs[p*2];
         if (a1 >= 0 && a1 < na) counts[a1]++;
     }
     for (int a = 0; a < na; a++) {
-        starts[a] = total;
+        t_pair_starts[a] = total;
         offsets[a] = total;
         total += counts[a];
     }
-    starts[na] = total;
+    t_pair_starts[na] = total;
     free(counts);
-
-    int *pair_indices = (int *)g_pair_indices.map;
     for (int p = 0; p < num_nb_pairs; p++) {
         int a1 = nb_int_pairs[p*2];
         int a2 = nb_int_pairs[p*2+1];
-        if (a1 >= 0 && a1 < na) pair_indices[offsets[a1]++] = a2;
+        if (a1 >= 0 && a1 < na) t_pair_indices[offsets[a1]++] = a2;
     }
     free(offsets);
-
-    g_num_nb_pairs = num_nb_pairs;
-    g_ie_soft_delta = ie_soft_delta;
-    g_ie_cutoff_sq = ie_cutoff_sq;
+    t_num_nb_pairs_tls = num_nb_pairs;
+    t_ie_soft_delta_tls = ie_soft_delta;
+    t_ie_cutoff_sq_tls = ie_cutoff_sq;
+    // also update global under lock for single-thread fallback
+    {
+        std::lock_guard<std::recursive_mutex> lk(g_vk_mutex);
+        memcpy(g_ie_vdwA.map, ie_vdwA, ie_bytes);
+        int *starts = (int *)g_pair_starts.map;
+        int *pair_indices = (int *)g_pair_indices.map;
+        // rebuild global from thread-local (already computed)
+        for (int i=0;i<=na;i++) starts[i]=t_pair_starts[i];
+        for (int i=0;i<total;i++) pair_indices[i]=t_pair_indices[i];
+        g_num_nb_pairs = num_nb_pairs;
+        g_ie_soft_delta = ie_soft_delta;
+        g_ie_cutoff_sq = ie_cutoff_sq;
+    }
     return 1;
 }
 
@@ -941,6 +972,17 @@ int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
     if (!g_initialized) return 0;
     if (num_poses > GPU_MAX_POSES || num_atoms > GPU_MAX_ATOMS) return 0;
 
+    // Ensure per-thread ligand data is copied to global buffers atomically
+    std::lock_guard<std::recursive_mutex> lk(g_vk_mutex);
+    if (t_num_atoms_tls > 0 && t_num_atoms_tls == num_atoms) {
+        size_t b = sizeof(float)*(size_t)num_atoms;
+        memcpy(g_vdwA.map, t_vdwA, b);
+        memcpy(g_vdwB.map, t_vdwB, b);
+        memcpy(g_charges.map, t_charges, b);
+        // active_flags for grid batch: use thread-local if set
+        memcpy(g_active_flags.map, t_active_flags, sizeof(int)*(size_t)num_atoms);
+        g_num_atoms = num_atoms;
+    }
     size_t xyz_bytes = sizeof(float) * (size_t)num_poses * (size_t)num_atoms * 3;
     memcpy(g_xyz.map, xyz, xyz_bytes);
 
@@ -948,6 +990,7 @@ int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
     fill_push_constants(&pc, num_atoms, num_poses, 0.0f, 1e10f, 0);
 
     uint32_t num_wg = ((uint32_t)num_poses + 63u) / 64u;
+    // dispatch_compute also locks (recursive) - keep for single-thread path
     dispatch_compute(g_pl_grid, num_wg, &pc, out_scores, num_poses);
     return 1;
 }
@@ -961,16 +1004,39 @@ int dock_gpu_batch_score_with_ie(const float *xyz, int num_poses, int num_atoms,
 int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses, int num_atoms,
                                             const int *active_flags, float *out_scores)
 {
-    if (!g_initialized || g_num_nb_pairs == 0) return 0;
+    if (!g_initialized) return 0;
     if (num_poses > GPU_MAX_POSES || num_atoms > GPU_MAX_ATOMS) return 0;
 
+    std::lock_guard<std::recursive_mutex> lk(g_vk_mutex);
+    // Copy per-thread ligand data to global buffers
+    if (t_num_atoms_tls > 0 && t_num_atoms_tls == num_atoms) {
+        size_t b = sizeof(float)*(size_t)num_atoms;
+        memcpy(g_vdwA.map, t_vdwA, b);
+        memcpy(g_vdwB.map, t_vdwB, b);
+        memcpy(g_charges.map, t_charges, b);
+        memcpy(g_ie_vdwA.map, t_ie_vdwA, b);
+        // pair data
+        int na = num_atoms;
+        int *starts = (int *)g_pair_starts.map;
+        int *pair_indices = (int *)g_pair_indices.map;
+        for (int i=0;i<=na;i++) starts[i]=t_pair_starts[i];
+        int total = t_pair_starts[na];
+        for (int i=0;i<total;i++) pair_indices[i]=t_pair_indices[i];
+        g_num_atoms = na;
+        g_num_nb_pairs = t_num_nb_pairs_tls;
+        g_ie_soft_delta = t_ie_soft_delta_tls;
+        g_ie_cutoff_sq = t_ie_cutoff_sq_tls;
+    }
     size_t xyz_bytes = sizeof(float) * (size_t)num_poses * (size_t)num_atoms * 3;
     memcpy(g_xyz.map, xyz, xyz_bytes);
     if (active_flags) {
         memcpy(g_active_flags.map, active_flags, sizeof(int) * (size_t)num_atoms);
+        // also update thread-local active
+        for (int i=0;i<num_atoms;i++) t_active_flags[i]=active_flags[i];
     } else {
         int *af = (int *)g_active_flags.map;
         for (int i = 0; i < num_atoms; i++) af[i] = 1;
+        for (int i=0;i<num_atoms;i++) t_active_flags[i]=1;
     }
 
     /* reset atomic work-counter to 0 */

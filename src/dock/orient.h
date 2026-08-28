@@ -140,6 +140,10 @@ class           Orient {
     // Member functions
     Orient();
     virtual ~ Orient();
+    Orient(const Orient& o);
+    Orient& operator=(const Orient& o);
+    Orient(Orient&& o) noexcept;
+    Orient& operator=(Orient&& o) noexcept;
     void            input_parameters(Parameter_Reader & parm);  // Read in
                                                                 // parameters
     void            initialize(int argc, char **argv);  // initialize

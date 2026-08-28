@@ -79,8 +79,13 @@
 #include <sys/sysinfo.h>
 #endif
 #include <sstream>
+#include <thread>
+#include <vector>
+#include <atomic>
 #include "mem_info.h"
 #include "score_dock_gpu.h"
+#include "dock_threading.h"
+#include "thread_queue.h"
 
 
 // Temporary support on cygwin for calculate_simulation_time vs wall_clock_seconds
@@ -884,14 +889,151 @@ main(int argc, char **argv)
 
     // Else if you are doing flexible, rigid, or fixed anchor docking, enter here
     } else {
+    int _vs_wm = vs_calc_window_max();
     {
-        int _vs_wm = vs_calc_window_max();
         long _vs_av = getMemAvailableKB();
         const char* _vs_gpu = dock_gpu_is_active() ? (dock_gpu_is_integrated()==1?"integrated":dock_gpu_is_integrated()==0?"discrete":"unknown") : "inactive";
         fprintf(stderr, "[VS] window_max=%d per_row=650MB avail=%ldMB gpu=%s\n", _vs_wm, _vs_av/1024, _vs_gpu);
     }
 
-    while (c_library.get_mol(mol,c_filter.use_database_filter, USE_MPI, c_master_score.amber, c_typer, c_master_score, *active_min)) {
+    if (should_use_threads(USE_MPI, c_master_conf.method)) {
+        int n_workers = get_num_threads_auto();
+        int cap = _vs_wm * 2 * n_workers;
+        if (cap < n_workers*2) cap = n_workers*2;
+        if (cap > 256) cap = 256;
+        fprintf(stderr, "[VS] threading enabled workers=%d cap=%d\n", n_workers, cap);
+        BoundedQueue<DOCKMol> pending_q((size_t)cap);
+        BoundedQueue<DockResult> output_q(0);
+        std::vector<WorkerContext> contexts((size_t)n_workers);
+        // copy master state to each worker
+        for (int i=0;i<n_workers;i++) {
+            WorkerContext &ctx = contexts[i];
+            ctx.orient = c_orient;
+            ctx.master_conf = c_master_conf;
+            ctx.bmp = c_bmp_score;
+            ctx.master_score = &c_master_score;
+            ctx.typer = c_typer;
+            ctx.filter = c_filter;
+            ctx.simplex = c_simplex;
+            ctx.bobyqa = c_bobyqa;
+            ctx.sd = c_sd;
+            ctx.cg = c_cg;
+            // select active_min
+            if (c_simplex.minimizer_type == "bobyqa") ctx.active_min = &ctx.bobyqa;
+            else if (c_simplex.minimizer_type == "steepest_descent") ctx.active_min = &ctx.sd;
+            else if (c_simplex.minimizer_type == "conjugate_gradient") ctx.active_min = &ctx.cg;
+            else ctx.active_min = &ctx.simplex;
+            // copy library config (non-file parts)
+            ctx.lib_local.rank_ligands = c_library.rank_ligands;
+            ctx.lib_local.max_ranked = c_library.max_ranked;
+            ctx.lib_local.write_footprints = c_library.write_footprints;
+            ctx.lib_local.write_hbonds = c_library.write_hbonds;
+            ctx.lib_local.write_orients = c_library.write_orients;
+            ctx.lib_local.write_conformers = c_library.write_conformers;
+            ctx.lib_local.cluster_ranked_poses = c_library.cluster_ranked_poses;
+            ctx.lib_local.cluster_rmsd_threshold = c_library.cluster_rmsd_threshold;
+            ctx.lib_local.final_pose_cluster_rmsd_type = c_library.final_pose_cluster_rmsd_type;
+            ctx.lib_local.num_clusterheads_rescore = c_library.num_clusterheads_rescore;
+            ctx.lib_local.num_scored_poses = c_library.num_scored_poses;
+            ctx.lib_local.num_preclustered_conformers = c_library.num_preclustered_conformers;
+            ctx.lib_local.score_thres = c_library.score_thres;
+            ctx.lib_local.write_solv_mol2 = c_library.write_solv_mol2;
+            ctx.lib_local.calc_rmsd = c_library.calc_rmsd;
+            ctx.lib_local.constant_rmsd_ref = c_library.constant_rmsd_ref;
+            ctx.lib_local.rmsd_reference = c_library.rmsd_reference;
+        }
+        std::vector<std::thread> workers;
+        std::atomic<int> active_workers((int)n_workers);
+        for (int i=0;i<n_workers;i++) {
+            workers.emplace_back([&,i]{
+                WorkerContext &ctx = contexts[i];
+                DOCKMol wmol;
+                while (pending_q.wait_pop(wmol)) {
+                    DockResult res = dock_one_ligand(ctx, wmol);
+                    output_q.push(res);
+                }
+                active_workers--;
+            });
+        }
+        // master read loop - pushes to pending_q
+        DOCKMol read_mol_tmp;
+        // handle initial_skip via library
+        // we use read_mol directly to avoid get_mol's sort_write
+        // but need to respect initial_skip already handled in open_files
+        int pushed = 0;
+        while (c_library.read_mol(read_mol_tmp, c_master_score.amber)) {
+            pending_q.push(read_mol_tmp);
+            pushed++;
+            // backpressure is handled by BoundedQueue blocking push when full
+        }
+        pending_q.close();
+        // drain output_q as workers produce
+        int processed = 0;
+        int total_expected = pushed;
+        // we need to handle writing: for each result, merge under lock
+        // we will collect and write in order of completion (not input order - ok for VS, final ranked sorts)
+        // but we need to capture per-lig output
+        std::vector<DockResult> all_results;
+        all_results.reserve((size_t)total_expected);
+        DockResult ores;
+        while (processed < total_expected) {
+            if (output_q.wait_pop(ores)) {
+                // merge into master library under lock
+                {
+                    std::lock_guard<std::mutex> lk(g_write_mutex);
+                    // set master lib state from result
+                    c_library.ranked_poses = ores.poses;
+                    c_library.num_anchors = ores.num_anchors;
+                    c_library.num_orients = ores.num_orients;
+                    c_library.num_confs = ores.num_confs;
+                    // handle verbose output
+                    if (!ores.scored_output.empty()) {
+                        std::cout << ores.scored_output;
+                    }
+                    // per-lig timing/error messages and file writes
+                    // replicate part of serial's end-of-lig handling
+                    if (c_library.num_orients == 0) {
+                        std::cout << "\n-----------------------------------\n";
+                        std::cout << "Molecule: " << ores.title << "\n\n";
+                        std::cout << " ERROR:  Could not find a valid orientation.\n";
+                    } else if (c_library.num_confs == 0) {
+                        std::cout << "\n-----------------------------------\n";
+                        std::cout << "Molecule: " << ores.title << "\n\n";
+                        std::cout << " ERROR:  Could not complete growth.\n";
+                    } else {
+                        std::cout << "\n-----------------------------------\n";
+                        std::cout << "Molecule: " << ores.title << "\n\n";
+                        // we don't have per-lig elapsed here, but could add
+                    }
+                    c_library.submit_conformations(c_master_score);
+                    if (getenv("DOCK_VS_TIMING")) {
+                        fprintf(stderr, "[timing] lig=%s orients=%d confs=%d anchors=%d workers=%d\n",
+                                ores.title.c_str(), ores.num_orients, ores.num_confs, ores.num_anchors, n_workers);
+                    }
+                    // handle ranked_list merging - reuse write_scored_poses logic
+                    // call sort_write equivalent: sort and write, but we need ranked_poses already set
+                    // Use same as serial's sort_write but without MPI
+                    if (c_library.ranked_poses.size() > 0) {
+                        sort(c_library.ranked_poses.begin(), c_library.ranked_poses.end());
+                        if (c_library.cluster_ranked_poses) c_library.cluster_list();
+                        c_library.write_scored_poses(c_filter.use_database_filter, false, c_master_score, *active_min);
+                        // secondary etc handled similarly
+                        if (c_library.num_preclustered_conformers > 1)
+                            c_library.submit_secondary_conformation(c_master_score, *active_min);
+                    }
+                }
+                all_results.push_back(ores);
+                processed++;
+            } else {
+                // spurious wake, check if workers done and queue empty
+                if (active_workers.load() == 0 && output_q.empty()) break;
+            }
+        }
+        for (auto &t : workers) if (t.joinable()) t.join();
+        // need to set total_mols etc for final summary? total_mols already counted in read_mol
+        // fall through to fragment/secondary handling below, but need to skip serial while
+    } else {
+        while (c_library.get_mol(mol,c_filter.use_database_filter, USE_MPI, c_master_score.amber, c_typer, c_master_score, *active_min)) {
         // Buffer per-ligand verbose (ANCHOR / Lyr / VERBOSE GROWTH) into
         // a string and emit as one contiguous block just before the
         // Grid_Score, avoiding interleaving when windowed and keeping
@@ -1166,8 +1308,8 @@ main(int argc, char **argv)
                     mol.title.c_str(), c_library.num_orients, c_library.num_confs, c_library.num_anchors, _vs_t, vs_calc_window_max());
 #endif
         }
-
-    }
+        }
+        } // end else serial while
     }
     //main_dock_loop_anchors.close();
     // /////////////////////////////////////////////////////////////////////////

@@ -15,6 +15,7 @@
 #include "conjugate_gradient.h"
 #include "score.h"
 #include "trace.h"
+#include <memory>
 #include <vector>
 #include <string>
 #include <mutex>
@@ -38,7 +39,7 @@ struct WorkerContext {
     Orient orient;
     Master_Conformer_Search master_conf;
     Bump_Filter bmp;
-    Master_Score master_score;
+    Master_Score* master_score = nullptr; // points to global master (shared, protected by g_score_mutex)
     AMBER_TYPER typer;
     Filter filter;
 
@@ -48,6 +49,11 @@ struct WorkerContext {
     Steepest_Descent_Minimizer sd;
     Conjugate_Gradient_Minimizer cg;
     Minimizer* active_min = nullptr;
+    WorkerContext() = default;
+    WorkerContext(const WorkerContext&) = delete;
+    WorkerContext& operator=(const WorkerContext&) = delete;
+    WorkerContext(WorkerContext&&) = default;
+    WorkerContext& operator=(WorkerContext&&) = default;
 
     // GPU serialization for lean phase (no feeder yet)
     static std::mutex gpu_mutex;

@@ -310,6 +310,112 @@ Orient::Orient()
 
 }
 /************************************************/
+Orient::Orient(const Orient& o)
+    : orient_ligand(o.orient_ligand), original(o.original),
+      last_orient_flag(o.last_orient_flag), num_orients(o.num_orients),
+      critical_points(o.critical_points), use_ligand_spheres(o.use_ligand_spheres),
+      lig_sphere_filename(o.lig_sphere_filename), centers(o.centers), spheres(o.spheres),
+      num_spheres(o.num_spheres), num_centers(o.num_centers), num_nodes(o.num_nodes),
+      sph_dist_mat(nullptr), lig_dist_mat(nullptr), residual_mat(nullptr),
+      residual_mat_size(o.residual_mat_size), edges(o.edges),
+      level(o.level), clique_spheres(o.clique_spheres), clique_centers(o.clique_centers),
+      clique_size(o.clique_size), spheres_com(o.spheres_com), centers_com(o.centers_com),
+      cliques(o.cliques), current_clique(o.current_clique), sphere_file_name(o.sphere_file_name),
+      tolerance(o.tolerance), orig_tolerance(o.orig_tolerance), dist_min(o.dist_min),
+      min_nodes(o.min_nodes), max_nodes(o.max_nodes), max_orients(o.max_orients),
+      automated_matching(o.automated_matching), am_iteration_num(o.am_iteration_num),
+      use_chemical_matching(o.use_chemical_matching), chem_match_tbl_fname(o.chem_match_tbl_fname),
+      chem_match_tbl_labels(o.chem_match_tbl_labels), chem_match_tbl_matrix(o.chem_match_tbl_matrix),
+      chem_match_align_tbl(o.chem_match_align_tbl),
+      receptor_critical_clusters(o.receptor_critical_clusters), verbose(o.verbose)
+{
+    for (int i=0;i<3;i++) for(int j=0;j<3;j++) rotation_matrix[i][j]=o.rotation_matrix[i][j];
+    if (o.sph_dist_mat && num_spheres>0) {
+        size_t n = (size_t)num_spheres * (size_t)num_spheres;
+        sph_dist_mat = new double[n];
+        memcpy(sph_dist_mat, o.sph_dist_mat, n*sizeof(double));
+    }
+    // lig_dist_mat and residual_mat are per-ligand, start empty in copies
+    lig_dist_mat = nullptr;
+    residual_mat = nullptr;
+    residual_mat_size = 0;
+}
+Orient& Orient::operator=(const Orient& o) {
+    if (this==&o) return *this;
+    delete[] sph_dist_mat; delete[] lig_dist_mat; delete[] residual_mat;
+    sph_dist_mat=nullptr; lig_dist_mat=nullptr; residual_mat=nullptr;
+    orient_ligand=o.orient_ligand; original=o.original;
+    last_orient_flag=o.last_orient_flag; num_orients=o.num_orients;
+    critical_points=o.critical_points; use_ligand_spheres=o.use_ligand_spheres;
+    lig_sphere_filename=o.lig_sphere_filename; centers=o.centers; spheres=o.spheres;
+    num_spheres=o.num_spheres; num_centers=o.num_centers; num_nodes=o.num_nodes;
+    residual_mat_size=o.residual_mat_size; edges=o.edges;
+    level=o.level; clique_spheres=o.clique_spheres; clique_centers=o.clique_centers;
+    clique_size=o.clique_size; spheres_com=o.spheres_com; centers_com=o.centers_com;
+    cliques=o.cliques; current_clique=o.current_clique; sphere_file_name=o.sphere_file_name;
+    tolerance=o.tolerance; orig_tolerance=o.orig_tolerance; dist_min=o.dist_min;
+    min_nodes=o.min_nodes; max_nodes=o.max_nodes; max_orients=o.max_orients;
+    automated_matching=o.automated_matching; am_iteration_num=o.am_iteration_num;
+    use_chemical_matching=o.use_chemical_matching; chem_match_tbl_fname=o.chem_match_tbl_fname;
+    chem_match_tbl_labels=o.chem_match_tbl_labels; chem_match_tbl_matrix=o.chem_match_tbl_matrix;
+    chem_match_align_tbl=o.chem_match_align_tbl;
+    receptor_critical_clusters=o.receptor_critical_clusters; verbose=o.verbose;
+    for (int i=0;i<3;i++) for(int j=0;j<3;j++) rotation_matrix[i][j]=o.rotation_matrix[i][j];
+    if (o.sph_dist_mat && num_spheres>0) {
+        size_t n = (size_t)num_spheres * (size_t)num_spheres;
+        sph_dist_mat = new double[n];
+        memcpy(sph_dist_mat, o.sph_dist_mat, n*sizeof(double));
+    } else sph_dist_mat=nullptr;
+    lig_dist_mat=nullptr; residual_mat=nullptr; residual_mat_size=0;
+    return *this;
+}
+Orient::Orient(Orient&& o) noexcept
+    : orient_ligand(o.orient_ligand), original(std::move(o.original)),
+      last_orient_flag(o.last_orient_flag), num_orients(o.num_orients),
+      critical_points(o.critical_points), use_ligand_spheres(o.use_ligand_spheres),
+      lig_sphere_filename(std::move(o.lig_sphere_filename)), centers(std::move(o.centers)), spheres(std::move(o.spheres)),
+      num_spheres(o.num_spheres), num_centers(o.num_centers), num_nodes(o.num_nodes),
+      sph_dist_mat(o.sph_dist_mat), lig_dist_mat(o.lig_dist_mat), residual_mat(o.residual_mat),
+      residual_mat_size(o.residual_mat_size), edges(std::move(o.edges)),
+      level(o.level), clique_spheres(std::move(o.clique_spheres)), clique_centers(std::move(o.clique_centers)),
+      clique_size(o.clique_size), spheres_com(o.spheres_com), centers_com(o.centers_com),
+      cliques(std::move(o.cliques)), current_clique(o.current_clique), sphere_file_name(std::move(o.sphere_file_name)),
+      tolerance(o.tolerance), orig_tolerance(o.orig_tolerance), dist_min(o.dist_min),
+      min_nodes(o.min_nodes), max_nodes(o.max_nodes), max_orients(o.max_orients),
+      automated_matching(o.automated_matching), am_iteration_num(o.am_iteration_num),
+      use_chemical_matching(o.use_chemical_matching), chem_match_tbl_fname(std::move(o.chem_match_tbl_fname)),
+      chem_match_tbl_labels(std::move(o.chem_match_tbl_labels)), chem_match_tbl_matrix(std::move(o.chem_match_tbl_matrix)),
+      chem_match_align_tbl(std::move(o.chem_match_align_tbl)),
+      receptor_critical_clusters(std::move(o.receptor_critical_clusters)), verbose(o.verbose)
+{
+    for (int i=0;i<3;i++) for(int j=0;j<3;j++) rotation_matrix[i][j]=o.rotation_matrix[i][j];
+    o.sph_dist_mat=nullptr; o.lig_dist_mat=nullptr; o.residual_mat=nullptr;
+}
+Orient& Orient::operator=(Orient&& o) noexcept {
+    if (this==&o) return *this;
+    delete[] sph_dist_mat; delete[] lig_dist_mat; delete[] residual_mat;
+    orient_ligand=o.orient_ligand; original=std::move(o.original);
+    last_orient_flag=o.last_orient_flag; num_orients=o.num_orients;
+    critical_points=o.critical_points; use_ligand_spheres=o.use_ligand_spheres;
+    lig_sphere_filename=std::move(o.lig_sphere_filename); centers=std::move(o.centers); spheres=std::move(o.spheres);
+    num_spheres=o.num_spheres; num_centers=o.num_centers; num_nodes=o.num_nodes;
+    sph_dist_mat=o.sph_dist_mat; lig_dist_mat=o.lig_dist_mat; residual_mat=o.residual_mat;
+    residual_mat_size=o.residual_mat_size; edges=std::move(o.edges);
+    level=o.level; clique_spheres=std::move(o.clique_spheres); clique_centers=std::move(o.clique_centers);
+    clique_size=o.clique_size; spheres_com=o.spheres_com; centers_com=o.centers_com;
+    cliques=std::move(o.cliques); current_clique=o.current_clique; sphere_file_name=std::move(o.sphere_file_name);
+    tolerance=o.tolerance; orig_tolerance=o.orig_tolerance; dist_min=o.dist_min;
+    min_nodes=o.min_nodes; max_nodes=o.max_nodes; max_orients=o.max_orients;
+    automated_matching=o.automated_matching; am_iteration_num=o.am_iteration_num;
+    use_chemical_matching=o.use_chemical_matching; chem_match_tbl_fname=std::move(o.chem_match_tbl_fname);
+    chem_match_tbl_labels=std::move(o.chem_match_tbl_labels); chem_match_tbl_matrix=std::move(o.chem_match_tbl_matrix);
+    chem_match_align_tbl=std::move(o.chem_match_align_tbl);
+    receptor_critical_clusters=std::move(o.receptor_critical_clusters); verbose=o.verbose;
+    for (int i=0;i<3;i++) for(int j=0;j<3;j++) rotation_matrix[i][j]=o.rotation_matrix[i][j];
+    o.sph_dist_mat=nullptr; o.lig_dist_mat=nullptr; o.residual_mat=nullptr;
+    return *this;
+}
+/************************************************/
 Orient::~Orient()
 {
 
