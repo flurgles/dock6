@@ -98,18 +98,23 @@ ConformerPool::add(DOCKMol* mol,
        Caller must poll() before add() so m_converged is drained —
        conf_gen_ag does this in its backpressure / drain loops. */
     int idx = -1;
+    DOCKMol* reuse_ref = nullptr;
+    DOCKMol* reuse_tmp = nullptr;
     for (int i = 0; i < (int)m_slots.size(); i++) {
         if (m_slots[i].phase == SlotPhase::CONVERGED) {
             idx = i;
-            /* Free old slot state before reuse */
+            /* Free old simplex state but RETAIN DOCKMol objects for reuse.
+               copy_molecule's dimension-match fast path then skips the
+               ~46 delete[] + ~48 new[] churn per add that fragments the
+               main arena during VS growth (the 100-ligand heap balloon). */
             if (m_slots[idx].p) {
                 for (int j = 0; j < m_slots[idx].size + 1; j++)
                     delete[] m_slots[idx].p[j];
                 delete[] m_slots[idx].p;
             }
             delete[] m_slots[idx].y;
-            delete m_slots[idx].m_refMol;
-            delete m_slots[idx].m_tmpMol;
+            reuse_ref = m_slots[idx].m_refMol;
+            reuse_tmp = m_slots[idx].m_tmpMol;
             m_slots[idx].p = nullptr;
             m_slots[idx].y = nullptr;
             m_slots[idx].m_refMol = nullptr;
@@ -175,10 +180,12 @@ ConformerPool::add(DOCKMol* mol,
     build_initial_simplex(initial_vertex, slot.p, slot.y, size);
 
     /* Molecule state: caller's original (in-place update on convergence),
-       ref_mol (read-only copy), tmp_mol (scratch for vector_to_dockmol). */
+       ref_mol (read-only copy), tmp_mol (scratch for vector_to_dockmol).
+       Reuse DOCKMol allocations when recycling to avoid per-add
+       ~46 vector realloc churn that fragments the heap. */
     slot.m_mol              = mol;
-    slot.m_refMol           = new DOCKMol();
-    slot.m_tmpMol           = new DOCKMol();
+    slot.m_refMol           = reuse_ref ? reuse_ref : new DOCKMol();
+    slot.m_tmpMol           = reuse_tmp ? reuse_tmp : new DOCKMol();
     copy_molecule(*slot.m_refMol, *mol);
     copy_molecule(*slot.m_tmpMol, *mol);
 
