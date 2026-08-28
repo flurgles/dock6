@@ -106,7 +106,7 @@ static int vs_calc_window_max()
     long avail_kb = getMemAvailableKB();
     if (avail_kb < 0) avail_kb = 8L * 1024 * 1024;
     long avail_mb = avail_kb / 1024;
-    int per_row_mb = 650;
+    int per_row_mb = 400; // 5b tuning: lower from 650 to 400 for flex workloads (~9 vs 6 on deck)
     if (getenv("DOCK_VS_PER_ROW_MB"))
         per_row_mb = atoi(getenv("DOCK_VS_PER_ROW_MB"));
     if (per_row_mb < 100) per_row_mb = 100;
@@ -1153,6 +1153,19 @@ main(int argc, char **argv)
 
             }
 #endif
+        // 5a instrumentation: per-ligand timing / pool capacity (env-gated)
+        if (getenv("DOCK_VS_TIMING")) {
+#ifndef TIME_PRECISION
+            double _vs_t = wall_clock_seconds() - mol_start_time;
+            fprintf(stderr, "[timing] lig=%s orients=%d confs=%d anchors=%d time=%.2fs window_max=%d\n",
+                    mol.title.c_str(), c_library.num_orients, c_library.num_confs, c_library.num_anchors, _vs_t, vs_calc_window_max());
+#else
+            struct timespec _vs_stop; timespec_get(&_vs_stop, TIME_UTC);
+            double _vs_t = calculate_simulation_time(mol_start_time, _vs_stop);
+            fprintf(stderr, "[timing] lig=%s orients=%d confs=%d anchors=%d time=%.2fs window_max=%d\n",
+                    mol.title.c_str(), c_library.num_orients, c_library.num_confs, c_library.num_anchors, _vs_t, vs_calc_window_max());
+#endif
+        }
 
     }
     }

@@ -120,7 +120,7 @@ public:
        batch_max: max concurrent slots (from dock_gpu_recommended_batch_size()).
        minimizer: shared Minimizer for vector_to_dockmol / scale_vector / copy_crds.
        use_gpu:   true → pool dispatches GPU work; false → step() is a no-op. */
-    ConformerPool(int batch_max, Minimizer* minimizer, bool use_gpu);
+    ConformerPool(int batch_max, Minimizer* minimizer, bool use_gpu, int random_seed = 0);
 
     ~ConformerPool();
 
@@ -166,6 +166,7 @@ private:
     int                     m_batch_max;
     Minimizer*              m_minimizer;        // shared for dof→xyz
     bool                    m_use_gpu;
+    int                     m_random_seed; // base seed for deterministic per-conformer RNG (0=use global rand)
     int                     m_num_atoms;   // ligand atom count, set on first add()
 
     std::vector<SimplexSlot>  m_slots;

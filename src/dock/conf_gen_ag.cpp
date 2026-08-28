@@ -1465,7 +1465,7 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
 
                 bool use_gpu = dock_gpu_is_active();
                 ConformerPool pool(dock_gpu_recommended_batch_size(),
-                                   &simplex, use_gpu);
+                                   &simplex, use_gpu, simplex.random_seed);
                 bool last_seed_level = (j == seeds.size() - 1);
 
                 for (k = 0; ((k < exp_seeds.size())&&last_seed_level); k++) {
@@ -1530,6 +1530,11 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                         pool.step();
                         pool.poll();
                     }
+                }
+                // 5a instrumentation: growth layer sizes (env-gated)
+                if (getenv("DOCK_VS_TIMING") || getenv("DOCK_POOL_TIMING")) {
+                    fprintf(stderr, "[growth] exp_seeds=%zu b4min=%zu last_level=%d\n",
+                            exp_seeds.size(), b4min_seeds.size(), last_seed_level);
                 }
 
                 // Second pass: score and prune

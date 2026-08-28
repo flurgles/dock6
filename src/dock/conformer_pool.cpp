@@ -17,6 +17,8 @@ All GPU calls go through the score_dock_gpu.h C API.
 #include "conformer_pool.h"
 #include "dockmol.h"
 #include <cstdio>
+#include <cstdlib>
+#include <random>
 
 using namespace std;
 
@@ -30,14 +32,33 @@ using namespace std;
        p[0] = vertex (starting point)
        p[1..N] = vertex + random uniform [-1, 1] in each dimension
 */
-static void build_initial_simplex(const FLOATVec& vertex, float** p, float* y, int size)
+static void build_initial_simplex(const FLOATVec& vertex, float** p, float* y, int size, int det_seed = 0, void* user_data = nullptr)
 {
     for (int i = 0; i < size; i++) {
         p[0][i] = vertex[i];
     }
-    for (int i = 1; i < size + 1; i++) {
-        for (int j = 0; j < size; j++) {
-            p[i][j] = vertex[j] + 2.0f * (((float)rand() / (float)RAND_MAX) - 0.5f);
+    // 3a deterministic per-conformer RNG: when DOCK_POOL_DETERMINISTIC is set,
+    // generate the same initial simplex for a given (det_seed, k, size) regardless
+    // of batch order or global rand() consumption. Otherwise preserve legacy rand().
+    bool deterministic = (getenv("DOCK_POOL_DETERMINISTIC") != nullptr);
+    if (deterministic) {
+        uint32_t k = user_data ? (uint32_t)(uintptr_t)user_data : 0;
+        // hash det_seed (simplex_random_seed) with k and size
+        uint32_t seed = (uint32_t)det_seed ^ (k * 0x9e3779b9u) ^ ((uint32_t)size * 1009u);
+        // avoid seed 0 which gives mt19937 same sequence for all zero seeds when det_seed==0
+        if (seed == 0) seed = 0x85ebca6bu + k * 0x9e3779b9u + (uint32_t)size;
+        std::mt19937 rng(seed);
+        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+        for (int i = 1; i < size + 1; i++) {
+            for (int j = 0; j < size; j++) {
+                p[i][j] = vertex[j] + dist(rng);
+            }
+        }
+    } else {
+        for (int i = 1; i < size + 1; i++) {
+            for (int j = 0; j < size; j++) {
+                p[i][j] = vertex[j] + 2.0f * (((float)rand() / (float)RAND_MAX) - 0.5f);
+            }
         }
     }
     /* y values are filled by GPU scoring in step(), not here */
@@ -49,10 +70,11 @@ static void build_initial_simplex(const FLOATVec& vertex, float** p, float* y, i
 /*  Constructor / Destructor                                          */
 /* ------------------------------------------------------------------ */
 
-ConformerPool::ConformerPool(int batch_max, Minimizer* minimizer, bool use_gpu)
+ConformerPool::ConformerPool(int batch_max, Minimizer* minimizer, bool use_gpu, int random_seed)
     : m_batch_max(batch_max)
     , m_minimizer(minimizer)
     , m_use_gpu(use_gpu)
+    , m_random_seed(random_seed)
     , m_num_atoms(0)
     , m_xyz_buffer(nullptr)
     , m_score_buffer(nullptr)
@@ -171,7 +193,7 @@ ConformerPool::add(DOCKMol* mol,
     slot.y = new float[size + 1];
     slot.centroid.resize(size);
     slot.reflect_v.resize(size);
-    build_initial_simplex(initial_vertex, slot.p, slot.y, size);
+    build_initial_simplex(initial_vertex, slot.p, slot.y, size, m_random_seed, user_data);
 
     /* Molecule state: caller's original (in-place update on convergence),
        ref_mol (read-only copy), tmp_mol (scratch for vector_to_dockmol).
@@ -268,6 +290,11 @@ ConformerPool::step()
             }
         }
         return newly;
+    }
+
+    // 5a instrumentation: dispatch size (env-gated)
+    if (getenv("DOCK_POOL_TIMING") || getenv("DOCK_VS_TIMING")) {
+        fprintf(stderr, "[pool] dispatch candidates=%d active=%d capacity=%d na=%d\n", total, active_count(), m_batch_max, na);
     }
 
     /* Phase 2: Submit GPU dispatch */
