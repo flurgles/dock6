@@ -1485,6 +1485,16 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                                    minimize_flexible_growth) */
                                 FLOATVec vertex;
                                 for (int iv = 0; iv < 6; iv++) vertex.push_back(0.0f);
+                                /* vector_to_dockmol() reads bond_vectors[] to decide
+                                   which end of a rotatable bond defines its torsion
+                                   axis. The CPU path gets this from
+                                   minimize_flexible_growth(); the pool path drives the
+                                   same transform via ConformerPool::pack_vertex(), so
+                                   it must be set here. Without it bond_vectors is an
+                                   empty vector and the lookup is an out-of-bounds read,
+                                   which silently skips torsion updates and degrades the
+                                   minimization. */
+                                simplex.bond_vectors = bond_tors_vectors;
                                 simplex.id_torsions(exp_seeds[k].structure, vertex);
                                 simplex.torsion_scale_factors.resize(simplex.torsions.size(), 1);
 
@@ -1494,12 +1504,31 @@ AG_Conformer_Search::grow_periphery(Master_Score & score,
                                     pool.poll();
                                 }
 
+                                /* Match the CPU's growth ramp. minimize_flexible_ramp_growth()
+                                   widens the convergence tolerance for early layers and
+                                   tightens it for later ones:
+                                       adj = (initial - final)/(num_layers-1) * layer
+                                       conv = initial - adj
+                                   The pool previously always used flex_min_cycle_converge,
+                                   which silently changed the objective's stopping rule and
+                                   left the GPU searching a different space than the CPU. */
+                                float pool_score_converge = simplex.flex_min_cycle_converge;
+                                if (simplex.use_min_flex_growth_ramp && num_layers > 1) {
+                                    float diff_interval =
+                                        simplex.initial_score_converge -
+                                        simplex.flex_min_score_converge;
+                                    float adj_unit = diff_interval / (float)(num_layers - 1);
+                                    adj_unit *= (float)i;
+                                    pool_score_converge =
+                                        simplex.initial_score_converge - adj_unit;
+                                }
+
                                 pool.add(&exp_seeds[k].structure,
                                          vertex,
                                          simplex.flex_min_trans_step_size,
                                          simplex.flex_min_rot_step_size,
                                          simplex.flex_min_tors_step_size,
-                                         simplex.flex_min_cycle_converge,
+                                         pool_score_converge,
                                          simplex.flex_min_max_iterations,
                                          simplex.restrained_min,
                                          simplex.coefficient_restraint,
