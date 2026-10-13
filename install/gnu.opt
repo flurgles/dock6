@@ -3,15 +3,15 @@
 # Then: make clean && make -j4
 
 CC=          gcc
-CFLAGS=      -O3 -ffast-math -fno-signed-zeros -fno-trapping-math -march=native -mtune=native -funroll-loops -fomit-frame-pointer -flto -std=gnu17
+CFLAGS=      -O3 -fno-signed-zeros -fno-trapping-math -march=native -mtune=native -funroll-loops -std=gnu17
 CXX=         g++
-CXXFLAGS=    -O3 -ffast-math -fno-signed-zeros -fno-trapping-math -march=native -mtune=native -funroll-loops -fomit-frame-pointer -flto -std=c++11
+CXXFLAGS=    -O3 -fno-signed-zeros -fno-trapping-math -march=native -mtune=native -funroll-loops -std=c++11
 DOCK_SUFFIX= .opt
 FC=          gfortran
-FFLAGS=      -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native
+FFLAGS=      -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -mtune=native
 LIBS=        -lm -lpthread
 LINK_WITHOUT_FORTRAN_MAIN=
-LOAD=        g++ -flto
+LOAD=        g++ 
 
 AR=          ar rv
 LEX=         flex -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600

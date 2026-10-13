@@ -81,7 +81,7 @@ uninstall:
 	cd $(BIN) && /bin/rm -f dock6 dock6.mpi $(PROGS)
 
 dock6$(DOCK_SUFFIX):  configured $(OBJS) nab_objects gzstream_lig
-	$(LOAD) $(CFLAGS) -o $@ $(OBJS) nab/*.o gzstream/gzstream.o -lz \
+	$(LOAD) $(CXXFLAGS) -o $@ $(OBJS) nab/*.o gzstream/gzstream.o -lz \
 		$(LIBS) $(GPU_LIBS) $(DOCKBUILDFLAGS)
 
 nab_objects:
@@ -322,7 +322,7 @@ conjugate_gradient.o: conjugate_gradient.h minimizer.h
 
 
 sffdock6$(DOCK_SUFFIX):  configured $(OBJS) nab_objects
-	$(LOAD) $(CFLAGS) -o $@ $(OBJS) \
+	$(LOAD) $(CXXFLAGS) -o $@ $(OBJS) \
 chirvol.o database.o mme_init.o molio.o molutil.o prm.o regexp.o reslib.o select_atoms.o \
 nab/libsff.a \
 nab/stubs.o \

@@ -1,26 +1,20 @@
-# DOCK configuration file for GNU compilers.
-# This configuration file can be used on many platforms:
-#  Linux, Macintosh OS X, Windows with Cygwin, etc.
-# If gfortran is not preferred then change FC below to g95 or g77.
-
-# CC is the C compiler
-# CFLAGS is the flags for the C compiler
-# CXX is the C++ compiler
-# CXXFLAGS is the flags for the C++ compiler
-# DOCK_SUFFIX is the suffix for the dock executable
-# FC is the Fortran compiler
-# FFLAGS is the flags for the Fortran compiler
-# LIBS is the flags for the linker
-# LINK_WITHOUT_FORTRAN_MAIN is the flag for linking without Fortran's main
-# LOAD is the command to invoke the linker
+# DOCK configuration: GNU compilers + Vulkan backend.
+#
+# Build with:
+#   cd install && ./configure gnu.vulkan
+#   cd ../src/dock && make clean && make -j$(nproc)
+#   (or simply: cd ../src && make install)
+#
+# Produces dock6.gnu.vulkan in src/dock and installs it (plus shaders/*.comp)
+# into ../../bin.
 
 CC=          gcc
-CFLAGS=      -O2 -std=gnu17
+CFLAGS=      -O3 -fno-signed-zeros -fno-trapping-math -march=native -mtune=native -funroll-loops -std=gnu17
 CXX=         g++
-CXXFLAGS=    -O2 -std=c++11
+CXXFLAGS=    -O3 -fno-signed-zeros -fno-trapping-math -march=native -mtune=native -funroll-loops -std=c++11
 DOCK_SUFFIX= .gnu.vulkan
 FC=          gfortran
-FFLAGS=      -O2 -fno-automatic -fno-second-underscore -std=legacy
+FFLAGS=      -O3 -fno-automatic -fno-second-underscore -std=legacy -march=native -mtune=native
 LIBS=        -lm -lpthread
 LINK_WITHOUT_FORTRAN_MAIN=
 LOAD=        g++
@@ -42,5 +36,3 @@ AR=          ar rv
 LEX=         flex -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600
 OCFLAGS=     -O3 -std=gnu17 -D_ANSI_SOURCE
 RANLIB=      ranlib
-DOCKHOME=/home/deck/dock6/dock6
-# Created at Sat Jul 18 10:38:45 PM PDT 2026 via ./configure gnu
