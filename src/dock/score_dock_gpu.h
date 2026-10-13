@@ -108,6 +108,11 @@ int dock_gpu_mem_info(size_t *freeB, size_t *totalB);
    The conformer pool uses this as its default capacity. */
 int dock_gpu_recommended_batch_size(void);
 
+/* Per-dispatch pose ceiling enforced by the backend. Callers must size
+   their own dispatch buffers to at most this many poses; exceeding it is
+   a hard error, not a silent truncation. */
+int dock_gpu_max_poses(void);
+
 
 /* ------------------------------------------------------------------ */
 /*  GPU thermal/performance monitor (per-segment, -v only)              */

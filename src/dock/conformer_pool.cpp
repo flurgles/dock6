@@ -157,7 +157,14 @@ ConformerPool::add(DOCKMol* mol,
        conformer's dimensions define buffer sizing for the pool. */
     if (!m_xyz_buffer) {
         m_num_atoms = mol->num_atoms;
-        int max_cand = m_batch_max * max(4, size + 1);
+        /* Clamp the per-dispatch candidate count to the backend's pose
+           ceiling. Without this, a growth layer with enough DOFs
+           (m_batch_max * (size+1) > GPU_MAX_POSES) makes every dispatch
+           exceed the backend limit, which returns 0; that used to be
+           swallowed and turned into force-converged, un-minimized poses.
+           pack_slot() defers whatever does not fit, so a smaller capacity
+           costs throughput, never results. */
+        int max_cand = min(m_batch_max * max(4, size + 1), dock_gpu_max_poses());
         m_xyz_buffer      = new float[max_cand * m_num_atoms * 3];
         m_score_buffer    = new float[max_cand];
         m_active_flags    = new int[m_num_atoms];
@@ -302,20 +309,19 @@ ConformerPool::step()
         m_xyz_buffer, total, na, active_flags, m_score_buffer);
 
     if (!ok) {
-        fprintf(stderr, "[pool] GPU batch failed (%d candidates) — force-converging %d active slots\n", total, active_count());
-        /* GPU scoring failed (e.g. IE data not uploaded).
-           Mark all active slots converged with their current best
-           pose so the drain loop terminates instead of spinning. */
-        int newly = 0;
-        for (auto& slot : m_slots) {
-            if (slot.converged || slot.phase == SlotPhase::CONVERGED) continue;
-            slot.converged = true;
-            slot.phase = SlotPhase::CONVERGED;
-            fill_slot_from_mol(slot, slot.id);
-            m_converged.push_back(&slot);
-            newly++;
-        }
-        return newly;
+        /* GPU scoring failed. The pool cannot continue: returning here
+           used to mark every active slot converged and publish its
+           current best pose, which for a slot still in INIT is the
+           un-perturbed initial vertex. That silently turned a GPU failure
+           into plausible-looking, scientifically meaningless results.
+           DOCK6 is a scientific program: die loudly instead. */
+        fprintf(stderr,
+                "[pool] FATAL: GPU batch scoring failed (%d candidates, "
+                "%d active slots). Refusing to report un-minimized poses as "
+                "converged results.\n",
+                total, active_count());
+        fflush(stderr);
+        exit(1);
     }
 
     /* Phase 3: Distribute scores back to each slot */

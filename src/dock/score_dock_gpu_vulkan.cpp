@@ -580,17 +580,41 @@ static void save_pipeline_cache(void) {
 /*  Common dispatch + profiling helper                                 */
 /* ================================================================== */
 
+/* Abort on an unrecoverable Vulkan error during dispatch.
+   Every caller of dispatch_compute() would otherwise have to choose
+   between publishing stale scores and reporting failure, and DOCK6 must
+   never do the former. */
+[[noreturn]] static void vk_fatal_dispatch(VkResult vr, int num_poses)
+{
+    fprintf(stderr,
+            "GPU-VK: FATAL: compute dispatch failed (VkResult=%d) for %d "
+            "poses. Results would be stale/invalid; aborting.\n",
+            (int)vr, num_poses);
+    fflush(stderr);
+    exit(1);
+}
+
 static void dispatch_compute(VkPipeline pipeline, uint32_t num_wg,
                              const PushConstants *pc,
                              float *out_scores, int num_poses) {
     std::lock_guard<std::recursive_mutex> lk(g_vk_mutex);
-    vkWaitForFences(g_dev, 1, &g_fence, VK_TRUE, UINT64_MAX);
-    vkResetFences(g_dev, 1, &g_fence);
 
-    vkResetCommandBuffer(g_cmd, 0);
+    /* Every Vulkan call below is checked. Previously submit/wait results
+       were discarded, so a lost device silently produced stale scores that
+       the caller treated as valid. VK_SUBOPTIMAL_KHR is success-with-a-
+       warning and is accepted. */
+    VkResult vr;
+    vr = vkWaitForFences(g_dev, 1, &g_fence, VK_TRUE, UINT64_MAX);
+    if (vr != VK_SUCCESS && vr != VK_SUBOPTIMAL_KHR) vk_fatal_dispatch(vr, num_poses);
+    vr = vkResetFences(g_dev, 1, &g_fence);
+    if (vr != VK_SUCCESS) vk_fatal_dispatch(vr, num_poses);
+
+    vr = vkResetCommandBuffer(g_cmd, 0);
+    if (vr != VK_SUCCESS) vk_fatal_dispatch(vr, num_poses);
     VkCommandBufferBeginInfo cbbi = {};
     cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    vkBeginCommandBuffer(g_cmd, &cbbi);
+    vr = vkBeginCommandBuffer(g_cmd, &cbbi);
+    if (vr != VK_SUCCESS) vk_fatal_dispatch(vr, num_poses);
     vkCmdBindPipeline(g_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
     fp_vkCmdPushDescriptorSetKHR(g_cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                                  g_playout, 0, NUM_BINDINGS, g_pd_w);
@@ -601,14 +625,17 @@ static void dispatch_compute(VkPipeline pipeline, uint32_t num_wg,
     vkCmdWriteTimestamp(g_cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g_tq_pool, 0);
     vkCmdDispatch(g_cmd, num_wg, 1, 1);
     vkCmdWriteTimestamp(g_cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g_tq_pool, 1);
-    vkEndCommandBuffer(g_cmd);
+    vr = vkEndCommandBuffer(g_cmd);
+    if (vr != VK_SUCCESS) vk_fatal_dispatch(vr, num_poses);
 
     VkSubmitInfo si = {};
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &g_cmd;
-    vkQueueSubmit(g_queue, 1, &si, g_fence);
-    vkWaitForFences(g_dev, 1, &g_fence, VK_TRUE, UINT64_MAX);
+    vr = vkQueueSubmit(g_queue, 1, &si, g_fence);
+    if (vr != VK_SUCCESS && vr != VK_SUBOPTIMAL_KHR) vk_fatal_dispatch(vr, num_poses);
+    vr = vkWaitForFences(g_dev, 1, &g_fence, VK_TRUE, UINT64_MAX);
+    if (vr != VK_SUCCESS && vr != VK_SUBOPTIMAL_KHR) vk_fatal_dispatch(vr, num_poses);
 
     uint64_t ts[2] = {0, 0};
     vkGetQueryPoolResults(g_dev, g_tq_pool, 0, 2, sizeof(ts), ts, sizeof(uint64_t),
@@ -970,7 +997,14 @@ int dock_gpu_batch_score(const float *xyz, int num_poses, int num_atoms,
                          float *out_scores)
 {
     if (!g_initialized) return 0;
-    if (num_poses > GPU_MAX_POSES || num_atoms > GPU_MAX_ATOMS) return 0;
+    if (num_poses > GPU_MAX_POSES || num_atoms > GPU_MAX_ATOMS) {
+        fprintf(stderr,
+                "GPU-VK: FATAL: dispatch too large (%d poses, %d atoms; "
+                "limits %d/%d). Callers must size batches to dock_gpu_max_poses().\n",
+                num_poses, num_atoms, GPU_MAX_POSES, GPU_MAX_ATOMS);
+        fflush(stderr);
+        return 0;
+    }
 
     // Ensure per-thread ligand data is copied to global buffers atomically
     std::lock_guard<std::recursive_mutex> lk(g_vk_mutex);
@@ -1005,7 +1039,14 @@ int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses, int
                                             const int *active_flags, float *out_scores)
 {
     if (!g_initialized) return 0;
-    if (num_poses > GPU_MAX_POSES || num_atoms > GPU_MAX_ATOMS) return 0;
+    if (num_poses > GPU_MAX_POSES || num_atoms > GPU_MAX_ATOMS) {
+        fprintf(stderr,
+                "GPU-VK: FATAL: dispatch too large (%d poses, %d atoms; "
+                "limits %d/%d). Callers must size batches to dock_gpu_max_poses().\n",
+                num_poses, num_atoms, GPU_MAX_POSES, GPU_MAX_ATOMS);
+        fflush(stderr);
+        return 0;
+    }
 
     std::lock_guard<std::recursive_mutex> lk(g_vk_mutex);
     // Copy per-thread ligand data to global buffers
@@ -1183,6 +1224,11 @@ int dock_gpu_recommended_batch_size(void)
     if (size > cap) size = cap;
     if (size <= 0) size = 32;
     return size;
+}
+
+int dock_gpu_max_poses(void)
+{
+    return GPU_MAX_POSES;
 }
 
 void dock_gpu_monitor(int layer, int segment, int total_segments)

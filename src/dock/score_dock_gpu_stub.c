@@ -76,6 +76,13 @@ int dock_gpu_recommended_batch_size(void)
     return 32;  /* safe default when GPU unavailable */
 }
 
+/* Must match GPU_MAX_POSES in the Vulkan backend so the pool sizes its
+   dispatch buffers identically in both builds. */
+int dock_gpu_max_poses(void)
+{
+    return 4096;
+}
+
 
 void dock_gpu_monitor(int layer, int segment, int total_segments)
 {
