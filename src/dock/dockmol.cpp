@@ -4008,6 +4008,51 @@ void HDB_segment::initialize(int num, int start, int stop){
 /*********************************************/
 HDB_conformer::HDB_conformer(){
   list_of_seg = NULL;
+  num_of_seg = 0;
+  conf_num = 0;
+  broken = false;
+  internal_energy1 = 0.0;
+  internal_energy2 = 0.0;
+}
+/*********************************************/
+HDB_conformer::HDB_conformer(const HDB_conformer& o)
+  : conf_num(o.conf_num), num_of_seg(o.num_of_seg), broken(o.broken),
+    internal_energy1(o.internal_energy1), internal_energy2(o.internal_energy2),
+    list_of_seg(NULL)
+{
+  if (o.list_of_seg && o.num_of_seg > 0) {
+    list_of_seg = new int[o.num_of_seg];
+    for (int i = 0; i < o.num_of_seg; i++) list_of_seg[i] = o.list_of_seg[i];
+  }
+}
+HDB_conformer& HDB_conformer::operator=(const HDB_conformer& o){
+  if (this == &o) return *this;
+  delete[] list_of_seg;
+  list_of_seg = NULL;
+  conf_num = o.conf_num; num_of_seg = 0; broken = o.broken;
+  internal_energy1 = o.internal_energy1; internal_energy2 = o.internal_energy2;
+  if (o.list_of_seg && o.num_of_seg > 0) {
+    list_of_seg = new int[o.num_of_seg];
+    for (int i = 0; i < o.num_of_seg; i++) list_of_seg[i] = o.list_of_seg[i];
+    num_of_seg = o.num_of_seg;
+  }
+  return *this;
+}
+HDB_conformer::HDB_conformer(HDB_conformer&& o) noexcept
+  : conf_num(o.conf_num), num_of_seg(o.num_of_seg), broken(o.broken),
+    internal_energy1(o.internal_energy1), internal_energy2(o.internal_energy2),
+    list_of_seg(o.list_of_seg)
+{
+  o.list_of_seg = NULL; o.num_of_seg = 0;
+}
+HDB_conformer& HDB_conformer::operator=(HDB_conformer&& o) noexcept {
+  if (this == &o) return *this;
+  delete[] list_of_seg;
+  conf_num = o.conf_num; num_of_seg = o.num_of_seg; broken = o.broken;
+  internal_energy1 = o.internal_energy1; internal_energy2 = o.internal_energy2;
+  list_of_seg = o.list_of_seg;
+  o.list_of_seg = NULL; o.num_of_seg = 0;
+  return *this;
 }
 /*********************************************/
 HDB_conformer::~HDB_conformer(){
@@ -4026,18 +4071,105 @@ void HDB_conformer::initialize(int num, int size, bool fbroken, float ie1, float
 
 /*********************************************/
 HDB_Mol::HDB_Mol(){
-name = new char [100];
-atoms  = NULL;
-bonds  = NULL;
-coords = NULL;
-rigid  = NULL;
-segs   = NULL;
-confs  = NULL;
+    name = new char [100];
+    name[0] = '\0';
+    num_of_atoms = 0;
+    num_of_bonds = 0;
+    num_of_coords = 0;
+    num_of_rigid = 0;
+    num_of_segs = 0;
+    num_of_confs = 0;
+    atoms  = NULL;
+    bonds  = NULL;
+    coords = NULL;
+    rigid  = NULL;
+    segs   = NULL;
+    confs  = NULL;
 }
 
 /*********************************************/
+// Deep-copy helper: duplicates name + all six HDB_* arrays so a copied
+// HDB_Mol owns independent storage (prevents the double free when
+// Master_Conformer_Search is shallow-copied per worker). Array element
+// counts come from the source's num_of_* fields.
+static void hdb_mol_deep_copy(HDB_Mol& d, const HDB_Mol& s)
+{
+    d.name = new char[100];
+    strncpy(d.name, s.name ? s.name : "", 100);
+    d.name[99] = '\0';
+    d.num_of_atoms = s.num_of_atoms;
+    d.num_of_bonds = s.num_of_bonds;
+    d.num_of_coords = s.num_of_coords;
+    d.num_of_rigid = s.num_of_rigid;
+    d.num_of_segs = s.num_of_segs;
+    d.num_of_confs = s.num_of_confs;
+    d.atoms = NULL;  d.bonds = NULL;  d.coords = NULL;
+    d.rigid = NULL;  d.segs = NULL;   d.confs = NULL;
+    if (s.atoms && s.num_of_atoms > 0) {
+        d.atoms = new HDB_atom[s.num_of_atoms];
+        for (int i = 0; i < s.num_of_atoms; i++) d.atoms[i] = s.atoms[i];
+    }
+    if (s.bonds && s.num_of_bonds > 0) {
+        d.bonds = new HDB_bond[s.num_of_bonds];
+        for (int i = 0; i < s.num_of_bonds; i++) d.bonds[i] = s.bonds[i];
+    }
+    if (s.coords && s.num_of_coords > 0) {
+        d.coords = new HDB_coordinate[s.num_of_coords];
+        for (int i = 0; i < s.num_of_coords; i++) d.coords[i] = s.coords[i];
+    }
+    if (s.rigid && s.num_of_rigid > 0) {
+        d.rigid = new HDB_coordinate[s.num_of_rigid];
+        for (int i = 0; i < s.num_of_rigid; i++) d.rigid[i] = s.rigid[i];
+    }
+    if (s.segs && s.num_of_segs > 0) {
+        d.segs = new HDB_segment[s.num_of_segs];
+        for (int i = 0; i < s.num_of_segs; i++) d.segs[i] = s.segs[i];
+    }
+    if (s.confs && s.num_of_confs > 0) {
+        d.confs = new HDB_conformer[s.num_of_confs];
+        for (int i = 0; i < s.num_of_confs; i++) d.confs[i] = s.confs[i];
+    }
+}
+/*********************************************/
+HDB_Mol::HDB_Mol(const HDB_Mol& o)
+{
+    hdb_mol_deep_copy(*this, o);
+}
+/*********************************************/
+HDB_Mol& HDB_Mol::operator=(const HDB_Mol& o){
+    if (this == &o) return *this;
+    delete[] name;  delete[] atoms; delete[] bonds; delete[] coords;
+    delete[] rigid; delete[] segs;  delete[] confs;
+    hdb_mol_deep_copy(*this, o);
+    return *this;
+}
+/*********************************************/
+HDB_Mol::HDB_Mol(HDB_Mol&& o) noexcept
+  : name(o.name), num_of_atoms(o.num_of_atoms), num_of_bonds(o.num_of_bonds),
+    num_of_coords(o.num_of_coords), num_of_rigid(o.num_of_rigid),
+    num_of_segs(o.num_of_segs), num_of_confs(o.num_of_confs),
+    atoms(o.atoms), bonds(o.bonds), coords(o.coords), rigid(o.rigid),
+    segs(o.segs), confs(o.confs)
+{
+    o.name = NULL;  o.atoms = NULL;  o.bonds = NULL;  o.coords = NULL;
+  o.rigid = NULL;  o.segs = NULL;   o.confs = NULL;
+}
+HDB_Mol& HDB_Mol::operator=(HDB_Mol&& o) noexcept {
+    if (this == &o) return *this;
+    delete[] name;  delete[] atoms; delete[] bonds; delete[] coords;
+    delete[] rigid; delete[] segs;  delete[] confs;
+    name = o.name; num_of_atoms = o.num_of_atoms; num_of_bonds = o.num_of_bonds;
+    num_of_coords = o.num_of_coords; num_of_rigid = o.num_of_rigid;
+    num_of_segs = o.num_of_segs; num_of_confs = o.num_of_confs;
+    atoms = o.atoms; bonds = o.bonds; coords = o.coords; rigid = o.rigid;
+    segs = o.segs; confs = o.confs;
+    o.name = NULL;  o.atoms = NULL;  o.bonds = NULL;  o.coords = NULL;
+    o.rigid = NULL;  o.segs = NULL;   o.confs = NULL;
+    return *this;
+}
+/*********************************************/
 HDB_Mol::~HDB_Mol(){
-  delete[]name;  
+  delete[]name;
   delete[]atoms;
   delete[]bonds;
   delete[]coords;

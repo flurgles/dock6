@@ -510,6 +510,12 @@ class           HDB_conformer {
      //void           initialize(int, int, float, int * );
      void           initialize(int, int, bool, float, float );
      HDB_conformer();
+     // Rule-of-Five: list_of_seg is a raw new[] pointer; copies must deep-copy
+     // it or a shallow copy double-frees (see HDB_Mol / dock.cpp worker copy).
+     HDB_conformer(const HDB_conformer& o);
+     HDB_conformer& operator=(const HDB_conformer& o);
+     HDB_conformer(HDB_conformer&& o) noexcept;
+     HDB_conformer& operator=(HDB_conformer&& o) noexcept;
      ~HDB_conformer();
 };
 
@@ -537,6 +543,13 @@ class           HDB_Mol{
     //
     //void           initialize();
     HDB_Mol();
+    // Rule-of-Five: name + the 6 HDB_* arrays are raw new[] pointers. Without
+    // deep copies, the per-worker copy in dock.cpp (ctx.master_conf = c_master_conf)
+    // aliases the master's buffers and ~HDB_Mol double-frees them at teardown.
+    HDB_Mol(const HDB_Mol& o);
+    HDB_Mol& operator=(const HDB_Mol& o);
+    HDB_Mol(HDB_Mol&& o) noexcept;
+    HDB_Mol& operator=(HDB_Mol&& o) noexcept;
     ~HDB_Mol();
     void           clear_molecule();
 };
