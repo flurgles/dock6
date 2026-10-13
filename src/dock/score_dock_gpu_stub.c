@@ -83,6 +83,23 @@ int dock_gpu_max_poses(void)
     return 4096;
 }
 
+int dock_gpu_grow_anchor(const float *orient_xyz, const float *ref_xyz,
+                         int N, int na, int num_tors, int num_layers, int max_out,
+                         const int *tors_a1234, const int *tors_mask,
+                         const float *tors_angles, const int *actset_rows,
+                         int simplex_max_iter, float score_converge,
+                         float trans_step, float rot_step, float tors_step,
+                         int det_seed, float pruning_score_cutoff, float cluster_rmsd,
+                         float *out_xyz, float *out_scores, int *out_count)
+{
+    (void)orient_xyz; (void)ref_xyz; (void)N; (void)na; (void)num_tors; (void)num_layers; (void)max_out;
+    (void)tors_a1234; (void)tors_mask; (void)tors_angles; (void)actset_rows;
+    (void)simplex_max_iter; (void)score_converge; (void)trans_step; (void)rot_step; (void)tors_step;
+    (void)det_seed; (void)pruning_score_cutoff; (void)cluster_rmsd;
+    (void)out_xyz; (void)out_scores; (void)out_count;
+    return 0;
+}
+
 
 void dock_gpu_monitor(int layer, int segment, int total_segments)
 {

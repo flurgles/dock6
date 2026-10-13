@@ -62,13 +62,14 @@
 #include <string>
 #include <fstream>
 #include <sstream>
+#include <iostream>
 #include <unistd.h>
 #include <limits.h>
 #include <mutex>
 
 #define GPU_MAX_POSES       4096
-#define GPU_MAX_ATOMS       512
-#define GPU_MAX_NB_PAIRS    32768
+#define GPU_MAX_ATOMS       2048
+#define GPU_MAX_NB_PAIRS    131072
 
 /* Shader loader - external files instead of embedded strings.
  * Search order: DOCK_SHADER_PATH, dirname(/proc/self/exe)/../src/dock/shaders,
@@ -133,6 +134,42 @@ struct PushConstants {
     int   num_poses;                       // offset 44
 };                                         // total: 48 bytes
 
+/* Anchor-growth limits (matching shaders/anchor_grow.comp). */
+#define GPU_MAX_ORIENTS 1000
+#define GPU_MAX_TORS    128
+#define GPU_ANCHOR_MAX_OUT (GPU_MAX_POSES)
+#define GPU_SCRATCH_SLOTS 64   /* anchor_grow.comp: 0=ws,1=pristine,2..63=frontier (no KEEP limit) */
+#define GPU_MAX_DB_ANGLES 32   /* MAXDB in anchor_grow.comp */
+/* Must match SIMPLEX_VSTRIDE in anchor_grow.comp. */
+#define GPU_SIMPLEX_VSTRIDE 1249
+
+/* Push constants for the anchor pipeline (match anchor_grow.comp PC block). */
+struct PushConstantsAnchor {
+    float origin_x, origin_y, origin_z;   // offset  0
+    int   span_x, span_y, span_z;         // offset 12
+    float spacing;                         // offset 24
+    int   num_atoms;                       // offset 28
+    int   num_orients;                     // offset 32
+    int   num_tors;                        // offset 36
+    int   num_layers;                      // offset 40
+    int   max_out;                         // offset 44
+    int   simplex_max_iter;                // offset 48
+    int   growth_iter;                     // offset 52
+    float score_converge;                  // offset 56
+    float trans_step;                      // offset 60
+    float rot_step;                        // offset 64
+    float tors_step;                       // offset 68
+    float ie_soft_delta;                   // offset 72
+    float ie_cutoff_sq;                    // offset 76
+    int   num_nb_pairs;                    // offset 80
+    int   det_seed;                        // offset 84
+    float pruning_score_cutoff;            // offset 88
+    float cluster_rmsd;                    // offset 92
+    int   debug;                           // offset 96
+    int   glob_oid_base;                   // offset 100
+    int   anchor_total;                    // offset 104
+};                                         // total: 108 bytes (align 4)
+
 /* ================================================================== */
 /*  Static state                                                       */
 /* ================================================================== */
@@ -147,10 +184,14 @@ static VkCommandBuffer   g_cmd        = VK_NULL_HANDLE;
 
 static VkShaderModule    g_mod_grid   = VK_NULL_HANDLE;
 static VkShaderModule    g_mod_ie     = VK_NULL_HANDLE;
+static VkShaderModule    g_mod_anchor = VK_NULL_HANDLE;
 static VkPipelineLayout  g_playout    = VK_NULL_HANDLE;
+static VkPipelineLayout  g_playout_anchor = VK_NULL_HANDLE;
 static VkPipeline        g_pl_grid    = VK_NULL_HANDLE;
 static VkPipeline        g_pl_ie      = VK_NULL_HANDLE;
+static VkPipeline        g_pl_anchor  = VK_NULL_HANDLE;
 static VkDescriptorSetLayout g_dslayout = VK_NULL_HANDLE;
+static VkDescriptorSetLayout g_dslayout_anchor = VK_NULL_HANDLE;
 
 /* VMA allocator */
 static VmaAllocator g_vma = VK_NULL_HANDLE;
@@ -165,6 +206,10 @@ struct GpuBuf {
 static GpuBuf g_xyz, g_vdwA, g_vdwB, g_charges, g_scores;
 static GpuBuf g_active_flags, g_ie_vdwA;
 static GpuBuf g_pair_starts, g_pair_indices, g_pose_counter;
+
+/* Anchor growth buffers (binding layout of anchor_grow.comp) */
+static GpuBuf g_ref_xyz, g_orient_xyz, g_out_xyz, g_out_scores, g_anchor_counter;
+static GpuBuf g_tors, g_tors_mask, g_scratch, g_ang_db, g_actset, g_simplex;
 
 /* 3D textures for hardware trilinear filtering */
 static VkImage         g_img_avdw = VK_NULL_HANDLE, g_img_bvdw = VK_NULL_HANDLE, g_img_es = VK_NULL_HANDLE;
@@ -185,6 +230,14 @@ static PFN_vkCmdPushDescriptorSetKHR fp_vkCmdPushDescriptorSetKHR = NULL;
 static VkDescriptorBufferInfo g_pd_bi[NUM_BUF_INFOS];
 static VkDescriptorImageInfo  g_pd_ii[NUM_IMG_INFOS];
 static VkWriteDescriptorSet   g_pd_w[NUM_BINDINGS];
+
+/* Anchor pipeline descriptors: storage 0-4,8-20; images 5-7. */
+#define NUM_BINDINGS_ANCHOR 21
+#define NUM_BI_ANCHOR 18
+#define NUM_II_ANCHOR 3
+static VkDescriptorBufferInfo g_pd_bi_anchor[NUM_BI_ANCHOR];
+static VkDescriptorImageInfo  g_pd_ii_anchor[NUM_II_ANCHOR];
+static VkWriteDescriptorSet   g_pd_w_anchor[NUM_BINDINGS_ANCHOR];
 
 static DockGridParams g_params;
 static int  g_initialized = 0;
@@ -210,6 +263,7 @@ static double   prof_last_dispatch_ms  = 0.0;
 static double   prof_wait_buf[PROF_ROLLING_SIZE];
 static int      prof_wait_idx = 0;
 
+static bool g_anchor_device_lost = false;
 static std::recursive_mutex g_vk_mutex; // serializes VkQueue/buffers for threaded use (recursive for set+batch)
 // Thread-local per-ligand data to allow per-batch re-copy under lock
 static thread_local float t_vdwA[GPU_MAX_ATOMS];
@@ -435,6 +489,48 @@ static void prepare_push_descriptors(void) {
         } else {
             g_pd_w[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             g_pd_w[i].pBufferInfo = &g_pd_bi[bi_idx++];
+        }
+    }
+}
+
+/* Anchor push descriptors (20 bindings): storage 0-4,8-19; images 5-7. */
+static void prepare_push_descriptors_anchor(void) {
+    g_pd_bi_anchor[0]  = {g_orient_xyz.buf,    0, VK_WHOLE_SIZE};
+    g_pd_bi_anchor[1]  = {g_ref_xyz.buf,       0, VK_WHOLE_SIZE};
+    g_pd_bi_anchor[2]  = {g_vdwA.buf,          0, VK_WHOLE_SIZE};
+    g_pd_bi_anchor[3]  = {g_vdwB.buf,          0, VK_WHOLE_SIZE};
+    g_pd_bi_anchor[4]  = {g_charges.buf,       0, VK_WHOLE_SIZE};
+    g_pd_bi_anchor[5]  = {g_out_xyz.buf,       0, VK_WHOLE_SIZE};
+    g_pd_bi_anchor[6]  = {g_out_scores.buf,    0, VK_WHOLE_SIZE};
+    g_pd_bi_anchor[7]  = {g_anchor_counter.buf,0, VK_WHOLE_SIZE};
+    g_pd_bi_anchor[8]  = {g_active_flags.buf,  0, VK_WHOLE_SIZE};
+    g_pd_bi_anchor[9]  = {g_ie_vdwA.buf,       0, VK_WHOLE_SIZE};
+    g_pd_bi_anchor[10] = {g_pair_starts.buf,   0, VK_WHOLE_SIZE};
+    g_pd_bi_anchor[11] = {g_pair_indices.buf,  0, VK_WHOLE_SIZE};
+    g_pd_bi_anchor[12] = {g_tors.buf,          0, VK_WHOLE_SIZE};
+    g_pd_bi_anchor[13] = {g_tors_mask.buf,     0, VK_WHOLE_SIZE};
+    g_pd_bi_anchor[14] = {g_scratch.buf,       0, VK_WHOLE_SIZE};
+    g_pd_bi_anchor[15] = {g_ang_db.buf,        0, VK_WHOLE_SIZE};
+    g_pd_bi_anchor[16] = {g_actset.buf,        0, VK_WHOLE_SIZE};
+    g_pd_bi_anchor[17] = {g_simplex.buf,      0, VK_WHOLE_SIZE};
+    g_pd_ii_anchor[0]  = {g_sampler, g_iv_avdw, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    g_pd_ii_anchor[1]  = {g_sampler, g_iv_bvdw, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    g_pd_ii_anchor[2]  = {g_sampler, g_iv_es,   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+
+    int bi_idx = 0, ii_idx = 0;
+    for (int i = 0; i < NUM_BINDINGS_ANCHOR; i++) {
+        g_pd_w_anchor[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        g_pd_w_anchor[i].pNext = NULL;
+        g_pd_w_anchor[i].dstSet = VK_NULL_HANDLE;
+        g_pd_w_anchor[i].dstBinding = (uint32_t)i;
+        g_pd_w_anchor[i].dstArrayElement = 0;
+        g_pd_w_anchor[i].descriptorCount = 1;
+        if (i >= 5 && i <= 7) {
+            g_pd_w_anchor[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            g_pd_w_anchor[i].pImageInfo = &g_pd_ii_anchor[ii_idx++];
+        } else {
+            g_pd_w_anchor[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            g_pd_w_anchor[i].pBufferInfo = &g_pd_bi_anchor[bi_idx++];
         }
     }
 }
@@ -787,6 +883,18 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
         return 0;
     }
 
+    /* Anchor shader is optional: if missing, anchor growth stays on CPU. */
+    {
+        std::string src_anchor = load_shader_source("anchor_grow");
+        if (src_anchor.empty()) {
+            fprintf(stderr, "GPU-VK: anchor_grow.comp not found — anchor growth CPU fallback\n");
+        } else {
+            g_mod_anchor = compile_module(src_anchor.c_str(), "anchor_grow");
+            if (!g_mod_anchor)
+                fprintf(stderr, "GPU-VK: anchor_grow.comp compile failed — anchor growth CPU fallback\n");
+        }
+    }
+
     /* Descriptor set layout: bindings 0-3,7-12 = storage buffers,
      * bindings 4-6 = combined image samplers.
      * Created with PUSH_DESCRIPTOR_BIT_KHR. */
@@ -833,6 +941,43 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     VkComputePipelineCreateInfo cp2 = cp1;
     cp2.stage.module = g_mod_ie;
     vkCreateComputePipelines(g_dev, g_pcache, 1, &cp2, NULL, &g_pl_ie);
+
+    /* Anchor pipeline: separate 18-binding layout + larger push range. */
+    if (g_mod_anchor) {
+        VkDescriptorSetLayoutBinding ab[NUM_BINDINGS_ANCHOR];
+        for (int i = 0; i < NUM_BINDINGS_ANCHOR; i++) {
+            ab[i].binding = (uint32_t)i;
+            ab[i].descriptorType = (i >= 5 && i <= 7)
+                ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+                : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            ab[i].descriptorCount = 1;
+            ab[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            ab[i].pImmutableSamplers = NULL;
+        }
+        VkDescriptorSetLayoutCreateInfo adslci = {};
+        adslci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        adslci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
+        adslci.bindingCount = NUM_BINDINGS_ANCHOR;
+        adslci.pBindings = ab;
+        vkCreateDescriptorSetLayout(g_dev, &adslci, NULL, &g_dslayout_anchor);
+
+        VkPipelineLayoutCreateInfo aplci = {};
+        aplci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        aplci.setLayoutCount = 1;
+        aplci.pSetLayouts = &g_dslayout_anchor;
+        VkPushConstantRange apcr = {};
+        apcr.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        apcr.offset = 0;
+        apcr.size = sizeof(PushConstantsAnchor);
+        aplci.pushConstantRangeCount = 1;
+        aplci.pPushConstantRanges = &apcr;
+        vkCreatePipelineLayout(g_dev, &aplci, NULL, &g_playout_anchor);
+
+        VkComputePipelineCreateInfo cp3 = cp1;
+        cp3.layout = g_playout_anchor;
+        cp3.stage.module = g_mod_anchor;
+        vkCreateComputePipelines(g_dev, g_pcache, 1, &cp3, NULL, &g_pl_anchor);
+    }
 
     save_pipeline_cache();
 
@@ -895,10 +1040,27 @@ int dock_gpu_init(const float *avdw, const float *bvdw, const float *es,
     ALLOC_BUF(sizeof(float)*GPU_MAX_POSES,             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_scores);
     ALLOC_BUF(sizeof(int)*GPU_MAX_ATOMS,               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_active_flags);
     ALLOC_BUF(sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_pose_counter);
+    if (g_mod_anchor) {
+        ALLOC_BUF(sizeof(float)*3*GPU_MAX_ATOMS,                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_ref_xyz);
+        ALLOC_BUF(sizeof(float)*3*GPU_MAX_ATOMS*GPU_MAX_ORIENTS, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_orient_xyz);
+        ALLOC_BUF(sizeof(float)*3*GPU_MAX_ATOMS*GPU_MAX_ORIENTS*GPU_SCRATCH_SLOTS + sizeof(float)*16*GPU_MAX_ORIENTS, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_scratch);
+        ALLOC_BUF(sizeof(float)*3*GPU_MAX_ATOMS*GPU_ANCHOR_MAX_OUT, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_out_xyz);
+        ALLOC_BUF(sizeof(float)*GPU_ANCHOR_MAX_OUT,     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_out_scores);
+        ALLOC_BUF(sizeof(uint32_t),                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_anchor_counter);
+        ALLOC_BUF(sizeof(int)*5*GPU_MAX_TORS,           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_tors);
+        ALLOC_BUF(sizeof(int)*GPU_MAX_TORS*GPU_MAX_ATOMS, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_tors_mask);
+        ALLOC_BUF(sizeof(float)*GPU_MAX_TORS*GPU_MAX_DB_ANGLES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_ang_db);
+        ALLOC_BUF(sizeof(int)*(GPU_MAX_TORS+1)*GPU_MAX_ATOMS, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_actset);
+        /* Nelder-Mead working set: SIMPLEX_VSTRIDE floats per invocation.
+           Kept in a storage buffer so per-invocation private memory stays
+           constant instead of scaling with the DOF count. */
+        ALLOC_BUF(sizeof(float)*GPU_SIMPLEX_VSTRIDE*64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &g_simplex);
+    }
     #undef ALLOC_BUF
 
     /* Build push descriptor writes (static — reused every dispatch) */
     prepare_push_descriptors();
+    if (g_mod_anchor) prepare_push_descriptors_anchor();
 
     g_initialized = 1;
     g_num_nb_pairs = 0;
@@ -1092,6 +1254,215 @@ int dock_gpu_batch_score_with_ie_persistent(const float *xyz, int num_poses, int
     return 1;
 }
 
+/* Grow all orients of one anchor in a SINGLE dispatch.
+ * Shader anchor_grow.comp handles growth per workgroup (one per orient).
+ * Returns 1 on success (out_count = survivors), 0 → caller falls back to CPU. */
+int dock_gpu_grow_anchor(const float *orient_xyz, const float *ref_xyz,
+                         int N, int na, int num_tors, int num_layers, int max_out,
+                         const int *tors_a1234, const int *tors_mask,
+                         const float *tors_angles, const int *actset_rows,
+                         int simplex_max_iter, float score_converge,
+                         float trans_step, float rot_step, float tors_step,
+                         int det_seed, float pruning_score_cutoff, float cluster_rmsd,
+                         float *out_xyz, float *out_scores, int *out_count)
+{
+    if (!g_initialized || !g_pl_anchor) return 0;
+    if (g_anchor_device_lost) return 0;
+    if (N <= 0 || na <= 0 || num_tors < 0) return 0;
+    if (na > GPU_MAX_ATOMS) {
+        fprintf(stderr, "GPU-VK: na=%d exceeds compile-time maximum %d – CPU fallback\n", na, GPU_MAX_ATOMS);
+        return 0;
+    }
+    if (num_tors > GPU_MAX_TORS) {
+        fprintf(stderr, "GPU-VK: ntor=%d exceeds %d – CPU fallback\n", num_tors, GPU_MAX_TORS);
+        return 0;
+    }
+    if (num_layers < 1) num_layers = 1;
+    // Anchor growth is dispatched in chunks sized from free VRAM so that
+    // each vkQueueSubmit stays below the driver watchdog on any GPU. No
+    // hard-coded atom/torsion limits are applied here; the chunker in
+    // the loop below handles large systems without changing the result.
+    if (num_layers < 1) num_layers = 1;
+    if (max_out <= 0 || max_out > GPU_ANCHOR_MAX_OUT) max_out = GPU_ANCHOR_MAX_OUT;
+    if (!orient_xyz || !ref_xyz || !tors_a1234 || !tors_angles || !actset_rows ||
+        !out_xyz || !out_scores || !out_count) return 0;
+
+    std::lock_guard<std::recursive_mutex> lk(g_vk_mutex);
+
+    /* Copy per-thread ligand params into the global buffers the anchor
+     * pipeline reads (same scheme as batch_score_with_ie_persistent). */
+    if (t_num_atoms_tls > 0 && t_num_atoms_tls == na) {
+        size_t b = sizeof(float) * (size_t)na;
+        memcpy(g_vdwA.map, t_vdwA, b);
+        memcpy(g_vdwB.map, t_vdwB, b);
+        memcpy(g_charges.map, t_charges, b);
+        memcpy(g_ie_vdwA.map, t_ie_vdwA, b);
+        memcpy(g_active_flags.map, t_active_flags, sizeof(int) * (size_t)na);
+        int *starts = (int *)g_pair_starts.map;
+        int *pair_indices = (int *)g_pair_indices.map;
+        for (int i = 0; i <= na; i++) starts[i] = t_pair_starts[i];
+        int total = t_pair_starts[na];
+        for (int i = 0; i < total; i++) pair_indices[i] = t_pair_indices[i];
+        g_num_atoms = na;
+        g_num_nb_pairs = t_num_nb_pairs_tls;
+        g_ie_soft_delta = t_ie_soft_delta_tls;
+        g_ie_cutoff_sq = t_ie_cutoff_sq_tls;
+    } else if (g_num_atoms != na) {
+        fprintf(stderr, "GPU-VK: grow_anchor num_atoms %d != ligand %d\n", na, g_num_atoms);
+        return 0;
+    }
+
+    /* Orient/ref/torsion upload */
+    memcpy(g_orient_xyz.map, orient_xyz, sizeof(float) * (size_t)N * (size_t)na * 3);
+    memcpy(g_ref_xyz.map, ref_xyz, sizeof(float) * (size_t)na * 3);
+    if (num_tors > 0) {
+        memcpy(g_tors.map, tors_a1234, sizeof(int) * (size_t)num_tors * 5);
+        memcpy(g_tors_mask.map, tors_mask, sizeof(int) * (size_t)num_tors * (size_t)na);
+        memcpy(g_ang_db.map, tors_angles, sizeof(float) * (size_t)num_tors * GPU_MAX_DB_ANGLES);
+    }
+    memcpy(g_actset.map, actset_rows, sizeof(int) * (size_t)(num_tors + 1) * (size_t)na);
+
+    uint32_t *counter = (uint32_t *)g_anchor_counter.map;
+    counter[0] = 0;
+    auto t0c = std::chrono::steady_clock::now();
+
+    PushConstantsAnchor pc = {};
+    pc.origin_x = g_params.origin_x;
+    pc.origin_y = g_params.origin_y;
+    pc.origin_z = g_params.origin_z;
+    pc.span_x = g_params.span_x;
+    pc.span_y = g_params.span_y;
+    pc.span_z = g_params.span_z;
+    pc.spacing = g_params.spacing;
+    pc.num_atoms = na;
+    pc.num_orients = N;
+    pc.num_tors = num_tors;
+    pc.num_layers = num_layers;
+    pc.max_out = max_out;
+    pc.simplex_max_iter = simplex_max_iter;
+    pc.growth_iter = simplex_max_iter;
+    pc.ie_soft_delta = g_ie_soft_delta;
+    pc.ie_cutoff_sq = g_ie_cutoff_sq;
+    pc.num_nb_pairs = g_num_nb_pairs;
+    pc.det_seed = det_seed;
+    pc.pruning_score_cutoff = pruning_score_cutoff;
+    pc.cluster_rmsd = cluster_rmsd;
+    pc.debug = getenv("DOCK_GPU_ANCHOR_DEBUG") ? 1 : 0;
+    pc.anchor_total = N;
+
+    // Dispatch is chunked so each vkQueueSubmit stays below the
+    // driver watchdog (typically 2s) on any GPU. The initial chunk is
+    // derived from free VRAM, then adaptively sized from measured
+    // per-workgroup time.
+    size_t freeB = 0, totalB = 0;
+    dock_gpu_mem_info(&freeB, &totalB);
+    size_t bytes_per_orient = (size_t)GPU_SCRATCH_SLOTS * (size_t)na * 3 * sizeof(float) + 4096;
+    int vram_chunk = freeB > 0 && bytes_per_orient > 0 ? (int)((freeB * 2 / 10) / bytes_per_orient) : 32;
+    if (vram_chunk < 4) vram_chunk = 4;
+    if (vram_chunk > 64) vram_chunk = 64;
+    const int CHUNK = vram_chunk;
+    const int CHUNK_MIN = 1;
+    const double TARGET_CHUNK_MS = 1500.0;
+    int chunk_now = CHUNK;
+    double total_dispatch_ms = 0;
+    vkWaitForFences(g_dev, 1, &g_fence, VK_TRUE, UINT64_MAX);
+    vkResetFences(g_dev, 1, &g_fence);
+
+    double wall_prev_ms = 0;
+    for (int base = 0; base < N; base += chunk_now) {
+        int cnt_this = N - base;
+        if (cnt_this > chunk_now) cnt_this = chunk_now;
+        pc.num_orients = cnt_this;
+        pc.glob_oid_base = base;
+
+        vkResetCommandBuffer(g_cmd, 0);
+        VkCommandBufferBeginInfo cbbi = {};
+        cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        vkBeginCommandBuffer(g_cmd, &cbbi);
+        vkCmdBindPipeline(g_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_pl_anchor);
+        fp_vkCmdPushDescriptorSetKHR(g_cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                     g_playout_anchor, 0, NUM_BINDINGS_ANCHOR, g_pd_w_anchor);
+        vkCmdPushConstants(g_cmd, g_playout_anchor, VK_SHADER_STAGE_COMPUTE_BIT,
+                           0, sizeof(PushConstantsAnchor), &pc);
+
+        vkCmdResetQueryPool(g_cmd, g_tq_pool, 0, 2);
+        vkCmdWriteTimestamp(g_cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g_tq_pool, 0);
+        vkCmdDispatch(g_cmd, (uint32_t)cnt_this, 1, 1);
+        vkCmdWriteTimestamp(g_cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g_tq_pool, 1);
+        vkEndCommandBuffer(g_cmd);
+
+        VkSubmitInfo si = {};
+        si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &g_cmd;
+        VkResult rS = vkQueueSubmit(g_queue, 1, &si, g_fence);
+        VkResult rW = vkWaitForFences(g_dev, 1, &g_fence, VK_TRUE, UINT64_MAX);
+        if (rS != VK_SUCCESS || rW != VK_SUCCESS) {
+            fprintf(stderr, "GPU-VK: grow_anchor chunk %d submit=%d wait=%d\n", base, (int)rS, (int)rW);
+            if (rS == VK_ERROR_DEVICE_LOST || rW == VK_ERROR_DEVICE_LOST) g_anchor_device_lost = true;
+            return 0;
+        }
+
+        uint64_t ts[2] = {0, 0};
+        vkGetQueryPoolResults(g_dev, g_tq_pool, 0, 2, sizeof(ts), ts, sizeof(uint64_t),
+                              VK_QUERY_RESULT_64_BIT);
+        double dispatch_ms = (double)(ts[1] - ts[0]) * g_timestamp_period_ns * 1e-6;
+        total_dispatch_ms += dispatch_ms;
+        double wall_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0c).count();
+        double chunk_wall = wall_ms - wall_prev_ms;
+        wall_prev_ms = wall_ms;
+        if (base + cnt_this < N) {
+            double per_wg = chunk_wall / (double)cnt_this;
+            int want = (int)(TARGET_CHUNK_MS / per_wg + 0.5);
+            if (want < CHUNK_MIN) want = CHUNK_MIN;
+            if (want > CHUNK) want = CHUNK;
+            chunk_now = want;
+        }
+        if (getenv("DOCK_GPU_ANCHOR_DEBUG"))
+            fprintf(stderr, "[grow] chunk base=%d n=%d next=%d qry_ms=%.2f wall_ms=%.2f cnt_now=%u\n",
+                    base, cnt_this, chunk_now, dispatch_ms, wall_ms, counter[0]);
+    }
+
+    uint32_t cnt = counter[0];
+    if (cnt > (uint32_t)max_out) cnt = (uint32_t)max_out;
+    if (cnt > 0) {
+        memcpy(out_xyz, g_out_xyz.map, sizeof(float) * (size_t)cnt * (size_t)na * 3);
+        memcpy(out_scores, g_out_scores.map, sizeof(float) * (size_t)cnt);
+    }
+    if (getenv("DOCK_GPU_ANCHOR_DEBUG")) {
+        float *dbg = (float *)g_out_scores.map;
+        const float *scr = (const float *)g_scratch.map;
+        size_t dbase = (size_t)N * 7u * (size_t)na * 3u;
+        int n8 = N < 8 ? N : 8;
+        for (int i = 0; i < n8; i++) {
+            const float *g = scr + dbase + (size_t)i * 16;
+            fprintf(stderr, "\n[grow] oid%d s0=%.3f alive=%s stages=", i, dbg[i], g[11] < 0 ? "y" : "n");
+            for (int s = 0; s < 8 && g[s] >= 0; s++) fprintf(stderr, "%d,", (int)g[s]);
+            fprintf(stderr, " best=%.1f worst=%.1f cand=%d", g[8], g[9], (int)g[10]);
+        }
+        int dead = 0;
+        for (int i = 0; i < (int)N; i++) {
+            const float *g = scr + dbase + (size_t)i * 16;
+            if (g[11] >= 0) { if (dead < 12) fprintf(stderr, "\n[grow] oid%d DEAD (no alive marker)", i); dead++; }
+        }
+        if (dead) fprintf(stderr, "\n[grow] total dead=%d/%d\n", dead, N);
+    }
+    *out_count = (int)cnt;
+
+    prof_dispatch_count++;
+    prof_total_conformers += cnt;
+    prof_total_dispatch_ms += total_dispatch_ms;
+    prof_last_dispatch_ms = total_dispatch_ms;
+    prof_wait_buf[prof_wait_idx] = total_dispatch_ms;
+    prof_wait_idx = (prof_wait_idx + 1) % PROF_ROLLING_SIZE;
+
+    if (getenv("DOCK_VS_TIMING")) {
+        fprintf(stderr, "GPU-VK: anchor dispatch N=%d orients max_out=%d → %u poses %.2fms\n",
+                N, max_out, cnt, total_dispatch_ms);
+    }
+    return 1;
+}
+
 void dock_gpu_cleanup(void)
 {
     if (g_dev) {
@@ -1118,6 +1489,19 @@ void dock_gpu_cleanup(void)
         destroy_buf(&g_active_flags);
         destroy_buf(&g_pose_counter);
 
+        /* Anchor growth buffers */
+        destroy_buf(&g_ref_xyz);
+        destroy_buf(&g_orient_xyz);
+        destroy_buf(&g_scratch);
+        destroy_buf(&g_out_xyz);
+        destroy_buf(&g_out_scores);
+        destroy_buf(&g_anchor_counter);
+        destroy_buf(&g_tors);
+        destroy_buf(&g_tors_mask);
+        destroy_buf(&g_ang_db);
+        destroy_buf(&g_actset);
+        destroy_buf(&g_simplex);
+
         /* VMA allocator */
         if (g_vma) { vmaDestroyAllocator(g_vma); g_vma = VK_NULL_HANDLE; }
 
@@ -1125,10 +1509,14 @@ void dock_gpu_cleanup(void)
         if (g_fence)    vkDestroyFence(g_dev, g_fence, NULL);
         if (g_pl_grid)  vkDestroyPipeline(g_dev, g_pl_grid, NULL);
         if (g_pl_ie)    vkDestroyPipeline(g_dev, g_pl_ie, NULL);
+        if (g_pl_anchor) vkDestroyPipeline(g_dev, g_pl_anchor, NULL);
         if (g_playout)  vkDestroyPipelineLayout(g_dev, g_playout, NULL);
+        if (g_playout_anchor) vkDestroyPipelineLayout(g_dev, g_playout_anchor, NULL);
         if (g_dslayout) vkDestroyDescriptorSetLayout(g_dev, g_dslayout, NULL);
+        if (g_dslayout_anchor) vkDestroyDescriptorSetLayout(g_dev, g_dslayout_anchor, NULL);
         if (g_mod_grid) vkDestroyShaderModule(g_dev, g_mod_grid, NULL);
         if (g_mod_ie)   vkDestroyShaderModule(g_dev, g_mod_ie, NULL);
+        if (g_mod_anchor) vkDestroyShaderModule(g_dev, g_mod_anchor, NULL);
         if (g_cmdpool)  vkDestroyCommandPool(g_dev, g_cmdpool, NULL);
         if (g_pcache)   vkDestroyPipelineCache(g_dev, g_pcache, NULL);
         vkDestroyDevice(g_dev, NULL);
@@ -1140,7 +1528,9 @@ void dock_gpu_cleanup(void)
     g_queue = VK_NULL_HANDLE; g_cmdpool = VK_NULL_HANDLE; g_cmd = VK_NULL_HANDLE;
     g_fence = VK_NULL_HANDLE;
     g_mod_grid = g_mod_ie = VK_NULL_HANDLE;
+    g_mod_anchor = VK_NULL_HANDLE;
     g_pl_grid = g_pl_ie = VK_NULL_HANDLE; g_playout = VK_NULL_HANDLE; g_dslayout = VK_NULL_HANDLE;
+    g_pl_anchor = VK_NULL_HANDLE; g_playout_anchor = VK_NULL_HANDLE; g_dslayout_anchor = VK_NULL_HANDLE;
     g_tq_pool = VK_NULL_HANDLE; g_pcache = VK_NULL_HANDLE;
     g_sampler = VK_NULL_HANDLE;
     g_img_avdw = g_img_bvdw = g_img_es = VK_NULL_HANDLE;

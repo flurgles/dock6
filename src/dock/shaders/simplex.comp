@@ -1,0 +1,247 @@
+#version 450
+// GPU simplex minimizer — full Nelder-Mead per workgroup, one WG per seed
+// Externalized; one VkDispatch per 4096 seeds (chunked), zero CPU round-trips
+// Matches simplex.cpp / conformer_pool.cpp Nelder-Mead with
+//   alpha=1 gamma=2 beta=0.5 sigma=0.5  (classical)  — adaptive path disabled
+//   scale_vector: trans*1 rot*0.1 tors*10  / (cycle+1)  cycle==0 here
+//   vector_to_dockmol: COM + quaternion R + trans + tors rotations
+// Grid sampling matches base_grid trilinear; IE soft 1.0 cutoff 36 (6A^2)
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) buffer BSeedVert { float seed_vert[]; }; // [num_seeds * ndim]
+layout(std430, binding = 1) buffer BRefXYZ   { float ref_xyz[]; };   // [na*3]
+layout(std430, binding = 2) buffer BVDWA     { float vdwA[]; };
+layout(std430, binding = 3) buffer BVDWB     { float vdwB[]; };
+layout(std430, binding = 4) buffer BCHG      { float charges[]; };
+layout(binding = 5) uniform sampler3D g_avdw;
+layout(binding = 6) uniform sampler3D g_bvdw;
+layout(binding = 7) uniform sampler3D g_es;
+layout(std430, binding = 8) buffer BOutXYZ   { float out_xyz[]; };   // [num_seeds*na*3]
+layout(std430, binding = 9) buffer BOutScore { float out_scores[]; };
+layout(std430, binding = 10) buffer BAct     { int active_flags[]; };
+layout(std430, binding = 11) buffer BIEVDWA  { float ie_vdwA[]; };
+layout(std430, binding = 12) buffer BPairStarts { int pair_starts[]; };
+layout(std430, binding = 13) buffer BPairIdx { int pair_indices[]; };
+layout(std430, binding = 14) buffer BTors    { int tors_a1234[]; }; // [num_tors*4] a1a2a3a4
+layout(std430, binding = 15) buffer BTorsMask { int tors_mask[]; }; // [num_tors*na] 0/1 child mask
+layout(std430, binding = 16) buffer BScratch  { float scratch[]; };  // [num_seeds*na*3] per-WG tmp
+
+layout(push_constant) uniform P {
+    float origin_x, origin_y, origin_z;
+    int   span_x, span_y, span_z;
+    float spacing;
+    int   num_atoms;
+    int   num_seeds;
+    int   num_tors;
+    int   ndim;              // 6+num_tors
+    int   max_iterations;    // 500
+    float score_converge;    // 0.1
+    float trans_step;
+    float rot_step;
+    float tors_step;
+    float ie_soft_delta;
+    float ie_cutoff_sq;
+    int   num_nb_pairs;
+    int   det_seed;          // m_random_seed for simplex init
+} p;
+
+// hash for simplex init — approximates mt19937 uniform [-1,1] used in build_initial_simplex
+uint hash_u32(uint x){ x ^= x>>16; x*=0x7feb352du; x ^= x>>15; x*=0x846ca68bu; x ^= x>>16; return x; }
+float rand_uniform_11(uint seed, uint iv, uint j){
+    uint h = uint(p.det_seed) ^ (iv * 0x9e3779b9u) ^ (j* 1009u) ^ (seed* 2654435761u);
+    if(h==0u) h = 0x85ebca6bu + iv*0x9e3779b9u + j;
+    h = hash_u32(h);
+    return float(h & 0x7fffffff) / 1073741824.0 - 1.0; // [-1,1)
+}
+
+float sample_grid(sampler3D g, float x, float y, float z){
+    float gx = (x - p.origin_x)/p.spacing;
+    float gy = (y - p.origin_y)/p.spacing;
+    float gz = (z - p.origin_z)/p.spacing;
+    if(gx<0.0 || gy<0.0 || gz<0.0 || gx>=float(p.span_x-1) || gy>=float(p.span_y-1) || gz>=float(p.span_z-1)) return 0.0;
+    vec3 c = vec3((gx+0.5)/float(p.span_x),(gy+0.5)/float(p.span_y),(gz+0.5)/float(p.span_z));
+    return texture(g,c).r;
+}
+
+int get_qmat(mat3 m, vec3 qin){
+    float q[3]; float q2[3]; float sum2=0.0;
+    for(int i=0;i<3;i++){ q[i]=qin[i];
+        if(q[i]>1.0) q[i]=mod(q[i]+1.0,2.0)-1.0; else if(q[i]<-1.0) q[i]=mod(q[i]-1.0,2.0)+1.0;
+        q2[i]=q[i]*q[i]; sum2+=q2[i];
+    }
+    float qn2, qn; float qn_arr[3];
+    for(int i=0;i<3;i++) qn_arr[i]=q[i];
+    if(sum2 < 1.0){ qn2=1.0-sum2; qn=sqrt(qn2); }
+    else if(sum2==1.0) qn=qn2=0.0;
+    else { for(int i=0;i<3;i++) q2[i]/=sum2; float s=sqrt(sum2); for(int i=0;i<3;i++) qn_arr[i]/=s; qn=qn2=0.0; for(int i=0;i<3;i++) q[i]=qn_arr[i]; }
+    float t1 = q[0]*q[1], t2 = q[0]*q[2], t3 = q[1]*q[2];
+    float qnq0 = qn*q[0], qnq1 = qn*q[1], qnq2 = qn*q[2];
+    // Store C[row][col] -> GLSL[col][row] (transpose) so GLSL column = C column
+    float c00 = qn2+q2[0]-q2[1]-q2[2]; float c01 = 2.0*(t1+qnq2);     float c02 = 2.0*(t2-qnq1);
+    float c10 = 2.0*(t1-qnq2);        float c11 = qn2-q2[0]+q2[1]-q2[2]; float c12 = 2.0*(t3+qnq0);
+    float c20 = 2.0*(t2+qnq1);        float c21 = 2.0*(t3-qnq0);     float c22 = qn2-q2[0]-q2[1]+q2[2];
+    m[0][0]=c00; m[1][0]=c01; m[2][0]=c02;
+    m[0][1]=c10; m[1][1]=c11; m[2][1]=c12;
+    m[0][2]=c20; m[1][2]=c21; m[2][2]=c22;
+    return 0;
+}
+
+// score scratch buffer [na*3] -> scalar
+float score_scratch(int na, int seed){
+    float s=0.0;
+    int base = seed * na * 3;
+    for(int a=0;a<na;a++){
+        if(active_flags[a]==0) continue;
+        float x = scratch[base + a*3], y = scratch[base + a*3+1], z = scratch[base + a*3+2];
+        s += vdwA[a]*sample_grid(g_avdw,x,y,z) - vdwB[a]*sample_grid(g_bvdw,x,y,z) + charges[a]*sample_grid(g_es,x,y,z);
+        int s0 = pair_starts[a]; int s1 = (a+1 < na) ? pair_starts[a+1] : p.num_nb_pairs;
+        for(int pi=s0; pi<s1; pi++){
+            int a2 = pair_indices[pi];
+            if(a2<0 || a2>=na || active_flags[a2]==0) continue;
+            float x2 = scratch[base + a2*3], y2 = scratch[base + a2*3+1], z2 = scratch[base + a2*3+2];
+            float dx=x-x2, dy=y-y2, dz=z-z2;
+            float r2 = dx*dx+dy*dy+dz*dz;
+            if(r2 > p.ie_cutoff_sq) continue;
+            float r2d = r2 + p.ie_soft_delta;
+            float r6 = r2d*r2d*r2d; float r12=r6*r6;
+            s += ie_vdwA[a]*ie_vdwA[a2]/r12;
+        }
+    }
+    return s;
+}
+
+void vertex_to_scratch(float vert[32], int na, int seed){
+    int base = seed * na * 3;
+    // copy ref
+    for(int a=0;a<na;a++){ scratch[base + a*3]=ref_xyz[a*3]; scratch[base + a*3+1]=ref_xyz[a*3+1]; scratch[base + a*3+2]=ref_xyz[a*3+2]; }
+    // COM of active atoms
+    float comx=0, comy=0, comz=0; int cnt=0;
+    for(int a=0;a<na;a++) if(active_flags[a]!=0){ comx+=scratch[base + a*3]; comy+=scratch[base + a*3+1]; comz+=scratch[base + a*3+2]; cnt++; }
+    if(cnt>0){ comx/=float(cnt); comy/=float(cnt); comz/=float(cnt); }
+    // scale vertex -> new_vec
+    float nv[32];
+    for(int i=0;i<3;i++){ nv[i]=vert[i]*p.trans_step; nv[i+3]=vert[i+3]*p.rot_step; }
+    for(int i=6;i<p.ndim;i++) nv[i]=vert[i]*p.tors_step; // torsion_scale 1, cycle 0
+    // quaternion matrix
+    vec3 q = vec3(nv[3],nv[4],nv[5]); mat3 R; get_qmat(R,q);
+    float dvx=nv[0], dvy=nv[1], dvz=nv[2];
+    // transform (matches dockmol::transform col-wise)
+    for(int a=0;a<na;a++){
+        float tx = scratch[base + a*3]-comx; float ty=scratch[base + a*3+1]-comy; float tz=scratch[base + a*3+2]-comz;
+        float nx = R[0][0]*tx + R[0][1]*ty + R[0][2]*tz;
+        float ny = R[1][0]*tx + R[1][1]*ty + R[1][2]*tz;
+        float nz = R[2][0]*tx + R[2][1]*ty + R[2][2]*tz;
+        scratch[base + a*3]=nx+comx+dvx; scratch[base + a*3+1]=ny+comy+dvy; scratch[base + a*3+2]=nz+comz+dvz;
+    }
+    // torsions — Rodrigues around a2->a3
+    const float PI=3.14159265;
+    for(int t=0; t<p.num_tors; t++){
+        int a2 = tors_a1234[t*4+1], a3 = tors_a1234[t*4+2];
+        float ang = nv[6+t] * PI/180.0;
+        if(abs(ang) < 1e-6) continue;
+        float ax = scratch[base + a3*3]-scratch[base + a2*3];
+        float ay = scratch[base + a3*3+1]-scratch[base + a2*3+1];
+        float az = scratch[base + a3*3+2]-scratch[base + a2*3+2];
+        float mag = sqrt(ax*ax+ay*ay+az*az); if(mag < 1e-6) continue;
+        float nx=ax/mag, ny=ay/mag, nz=az/mag;
+        float cs=cos(ang), sn=sin(ang), tc=1.0-cs;
+        float px = scratch[base + a2*3], py = scratch[base + a2*3+1], pz = scratch[base + a2*3+2];
+        // precompute rotation matrix from axis-angle
+        // We rotate each affected atom in place
+        for(int a=0;a<na;a++){
+            if(tors_mask[t*na + a]==0) continue;
+            float vx = scratch[base + a*3]-px, vy=scratch[base + a*3+1]-py, vz=scratch[base + a*3+2]-pz;
+            float rx = (tc*nx*nx+cs)*vx + (tc*nx*ny+sn*nz)*vy + (tc*nx*nz-sn*ny)*vz;
+            float ry = (tc*nx*ny-sn*nz)*vx + (tc*ny*ny+cs)*vy + (tc*ny*nz+sn*nx)*vz;
+            float rz = (tc*nx*nz+sn*ny)*vx + (tc*ny*nz-sn*nx)*vy + (tc*nz*nz+cs)*vz;
+            scratch[base + a*3]=rx+px; scratch[base + a*3+1]=ry+py; scratch[base + a*3+2]=rz+pz;
+        }
+    }
+}
+
+shared float s_best; // debug
+
+void main(){
+    uint seed = gl_WorkGroupID.x;
+    if(seed >= uint(p.num_seeds)) return;
+    uint lid = gl_LocalInvocationID.x;
+    if(lid != 0) return; // one thread per seed does simplex serial; others assist out copy
+    int na = p.num_atoms;
+    int ndim = p.ndim;
+    int nvert = ndim + 1;
+    if(ndim <=0 || ndim>32) return;
+    // local simplex storage — max 33x32
+    float s_p[33][32];
+    float s_y[33];
+    float s_pbar[32];
+    float s_pr[32];
+    float s_prr[32]; // not used separate, we compute 4 variants
+    // init simplex
+    int voff = int(seed)*ndim;
+    for(int j=0;j<ndim;j++) s_p[0][j]=seed_vert[voff+j];
+    for(int i=1;i<nvert;i++) for(int j=0;j<ndim;j++) s_p[i][j]=seed_vert[voff+j] + rand_uniform_11(seed, uint(i), uint(j));
+    // score initial
+    for(int i=0;i<nvert;i++){
+        vertex_to_scratch(s_p[i], na, int(seed));
+        s_y[i]=score_scratch(na, int(seed));
+    }
+    // rank helper inlined
+    int ilo=0, ihi=0, inhi=0;
+    if(s_y[0] > s_y[1]){ ihi=0; inhi=1; } else { ihi=1; inhi=0; }
+    for(int i=0;i<nvert;i++){
+        if(s_y[i] < s_y[ilo]) ilo=i;
+        if(s_y[i] > s_y[ihi]){ inhi=ihi; ihi=i; } else if(s_y[i] > s_y[inhi] && i!=ihi) inhi=i;
+    }
+    // iterations
+    const float alpha=1.0, gamma=2.0, beta=0.5, sigma=0.5;
+    for(int iter=0; iter<p.max_iterations; iter++){
+        float delta = abs(s_y[ihi]-s_y[ilo]);
+        if(delta <= p.score_converge) break;
+        // centroid
+        for(int j=0;j<ndim;j++) s_pbar[j]=0.0;
+        for(int i=0;i<nvert;i++) if(i!=ihi) for(int j=0;j<ndim;j++) s_pbar[j]+=s_p[i][j];
+        for(int j=0;j<ndim;j++){ s_pbar[j]/=float(ndim); s_pr[j]=(1.0+alpha)*s_pbar[j]-alpha*s_p[ihi][j]; }
+        // speculative 4 candidates: pr, exp, cA, cB
+        float pr_exp[32], pr_cA[32], pr_cB[32];
+        for(int j=0;j<ndim;j++){
+            pr_exp[j]=gamma*s_pr[j]+(1.0-gamma)*s_pbar[j];
+            pr_cA[j]=beta*s_pr[j]+(1.0-beta)*s_pbar[j];
+            pr_cB[j]=beta*s_p[ihi][j]+(1.0-beta)*s_pbar[j];
+        }
+        float ypr, yexp, ycA, ycB;
+        vertex_to_scratch(s_pr, na, int(seed)); ypr=score_scratch(na,int(seed));
+        vertex_to_scratch(pr_exp, na,int(seed)); yexp=score_scratch(na,int(seed));
+        vertex_to_scratch(pr_cA, na,int(seed)); ycA=score_scratch(na,int(seed));
+        vertex_to_scratch(pr_cB, na,int(seed)); ycB=score_scratch(na,int(seed));
+        bool replaced=false;
+        if(ypr <= s_y[ilo]){
+            if(yexp < s_y[ilo]){ for(int j=0;j<ndim;j++) s_p[ihi][j]=pr_exp[j]; s_y[ihi]=yexp; }
+            else { for(int j=0;j<ndim;j++) s_p[ihi][j]=s_pr[j]; s_y[ihi]=ypr; }
+            replaced=true;
+        } else if(ypr >= s_y[inhi]){
+            if(ypr < s_y[ihi]){ for(int j=0;j<ndim;j++) s_p[ihi][j]=s_pr[j]; s_y[ihi]=ypr; replaced=true; }
+            float yc = (ypr < s_y[ihi]) ? ycA : ycB;
+            float cvec[32]; for(int j=0;j<ndim;j++) cvec[j]=(ypr < s_y[ihi])? pr_cA[j]:pr_cB[j];
+            if(yc < s_y[ihi]){ for(int j=0;j<ndim;j++) s_p[ihi][j]=cvec[j]; s_y[ihi]=yc; replaced=true; }
+            if(!replaced){
+                // shrink toward ilo
+                for(int i=0;i<nvert;i++) if(i!=ilo) for(int j=0;j<ndim;j++) s_p[i][j]=sigma*s_p[i][j]+(1.0-sigma)*s_p[ilo][j];
+                for(int i=0;i<nvert;i++) if(i!=ilo){ vertex_to_scratch(s_p[i], na,int(seed)); s_y[i]=score_scratch(na,int(seed)); }
+                // re-rank after shrink and continue
+            }
+        } else {
+            for(int j=0;j<ndim;j++) s_p[ihi][j]=s_pr[j]; s_y[ihi]=ypr; replaced=true;
+        }
+        // re-rank
+        ilo=0; if(s_y[0] > s_y[1]){ ihi=0; inhi=1; } else { ihi=1; inhi=0; }
+        for(int i=0;i<nvert;i++){
+            if(s_y[i] < s_y[ilo]) ilo=i;
+            if(s_y[i] > s_y[ihi]){ inhi=ihi; ihi=i; } else if(s_y[i] > s_y[inhi] && i!=ihi) inhi=i;
+        }
+    }
+    // best is ilo
+    vertex_to_scratch(s_p[ilo], na, int(seed));
+    int base = int(seed)*na*3;
+    for(int a=0;a<na;a++){ out_xyz[base + a*3]=scratch[base + a*3]; out_xyz[base + a*3+1]=scratch[base + a*3+1]; out_xyz[base + a*3+2]=scratch[base + a*3+2]; }
+    out_scores[seed]=s_y[ilo];
+}

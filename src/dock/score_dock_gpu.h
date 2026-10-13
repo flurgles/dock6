@@ -114,6 +114,49 @@ int dock_gpu_recommended_batch_size(void);
 int dock_gpu_max_poses(void);
 
 
+/* Scrollable channel serializer for growth layers (see conf_gen_ag.cpp).
+   Never called for the CPU path; only used on GPU when the whole growth
+   loop is offloaded.  Returns 1 on success, 0 if unavailable. */
+
+/* ------------------------------------------------------------------ */
+/*  GPU anchor growth                                                  */
+/* ------------------------------------------------------------------ */
+
+/* Grow ALL orients of one anchor in a SINGLE GPU dispatch.
+ * The anchor shader (anchor_grow.comp) runs one workgroup per orient:
+ * per-layer torsion drive, simplex minimization, pruning and RMSD
+ * clustering all run on the GPU; the CPU thread only submits and waits.
+ *
+ * orient_xyz: [N*na*3] one full-molecule coordinate copy per orient
+ *             (the anchor as positioned in that orientation, all atoms).
+ * ref_xyz:    [na*3] ligand template — the anchor positions for the
+ *             minimization (na = total ligand atoms).
+ * tors_a1234: [num_tors*4] rotatable-bond atoms (a1,a2,a3,a4) in the
+ *             layer/segment order used by grow_periphery.
+ * tors_mask:  [num_tors*na] 1 where atom `a` is driven by torsion `t`.
+ *
+ * Growth parameters mirror the CPU flex.growth options:
+ *   simplex_max_iter  (500 anchor / 250 grow)
+ *   score_converge    (0.1)
+ *   trans_step, rot_step, tors_step
+ *   det_seed, pruning_score_cutoff (100), cluster_rmsd (2.0)
+ *
+ * out_xyz:    [max_out*na*3] survivor poses.
+ * out_scores: [max_out] their grid+IE scores.
+ * out_count:  number of survivors (≤ max_out), poses are in slot order.
+ *
+ * Returns 1 on success, 0 on failure (caller MUST fall back to CPU growth).
+ * Requires prior dock_gpu_set_ligand() + dock_gpu_set_ligand_ie(). */
+int dock_gpu_grow_anchor(const float *orient_xyz, const float *ref_xyz,
+                         int N, int na, int num_tors, int num_layers, int max_out,
+                         const int *tors_a1234, const int *tors_mask,
+                         const float *tors_angles, const int *actset_rows,
+                         int simplex_max_iter, float score_converge,
+                         float trans_step, float rot_step, float tors_step,
+                         int det_seed, float pruning_score_cutoff, float cluster_rmsd,
+                         float *out_xyz, float *out_scores, int *out_count);
+
+
 /* ------------------------------------------------------------------ */
 /*  GPU thermal/performance monitor (per-segment, -v only)              */
 /* ------------------------------------------------------------------ */
