@@ -37,10 +37,15 @@ static void build_initial_simplex(const FLOATVec& vertex, float** p, float* y, i
     for (int i = 0; i < size; i++) {
         p[0][i] = vertex[i];
     }
-    // 3a deterministic per-conformer RNG: when DOCK_POOL_DETERMINISTIC is set,
-    // generate the same initial simplex for a given (det_seed, k, size) regardless
-    // of batch order or global rand() consumption. Otherwise preserve legacy rand().
-    bool deterministic = (getenv("DOCK_POOL_DETERMINISTIC") != nullptr);
+    // 3a deterministic per-conformer RNG: generate the same initial simplex
+    // for a given (det_seed, k, size) regardless of batch order or of how much
+    // of the global rand() stream other threads happened to consume.
+    //
+    // This is the default because the pool runs under the VS worker threads
+    // and they all draw from one global rand(): concurrent reads are a data
+    // race, so identical inputs produced different poses on different runs.
+    // DOCK_POOL_LEGACY_RAND restores the old racy behaviour for A/B tests.
+    bool deterministic = (getenv("DOCK_POOL_LEGACY_RAND") == nullptr);
     if (deterministic) {
         uint32_t k = user_data ? (uint32_t)(uintptr_t)user_data : 0;
         // hash det_seed (simplex_random_seed) with k and size
